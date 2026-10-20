@@ -140,8 +140,13 @@ issue_token() {
 consume_token() {
 	_want="$1"
 	_got="$2"
-	[ -n "$got" ] || return 1
-	_file="$TOKEN_DIR/$got"
+	[ -n "$_got" ] || return 1
+	# The token becomes a file name below, so a dot, a slash or any other
+	# path character must never reach $TOKEN_DIR.
+	case "$_got" in
+		*[!A-Za-z0-9-]*) return 1 ;;
+	esac
+	_file="$TOKEN_DIR/$_got"
 	[ -f "$_file" ] || return 1
 	read -r _purpose _expires < "$_file"
 	rm -f "$_file"
@@ -214,8 +219,24 @@ case "$action" in
 		consume_token "set-password" "$token" || fail "403 Forbidden" '{"error":"令牌无效或已过期"}'
 		[ -n "$username" ] && [ -n "$password" ] || fail "400 Bad Request" '{"error":"缺少用户名或密码"}'
 		[ ${#username} -le 32 ] && [ ${#password} -le 128 ] || fail "400 Bad Request" '{"error":"参数过长"}'
-		printf '%s:%s\n' "$username" "$password" | chpasswd >/dev/null 2>&1 ||
-			fail "500 Internal Server Error" '{"error":"修改失败"}'
+		# The name is passed to passwd as one argument; reject anything that
+		# could be read as an option or that no account name may contain.
+		case "$username" in
+			-*|*[!A-Za-z0-9._-]*) fail "400 Bad Request" '{"error":"用户名包含非法字符"}' ;;
+		esac
+		# chpasswd is not part of BusyBox, so many firmware images only ship
+		# /bin/passwd. Prefer chpasswd (reads "user:password" from stdin), then
+		# fall back to passwd, which reads the password and its confirmation
+		# from stdin when it has no tty to prompt on.
+		if command -v chpasswd >/dev/null 2>&1; then
+			printf '%s:%s\n' "$username" "$password" | chpasswd >/dev/null 2>&1 ||
+				fail "500 Internal Server Error" '{"error":"修改失败"}'
+		elif command -v passwd >/dev/null 2>&1; then
+			printf '%s\n%s\n' "$password" "$password" | passwd "$username" >/dev/null 2>&1 ||
+				fail "500 Internal Server Error" '{"error":"修改失败"}'
+		else
+			fail "500 Internal Server Error" '{"error":"系统缺少密码修改工具（chpasswd 或 passwd）"}'
+		fi
 		ok '{"ok":true}'
 		;;
 

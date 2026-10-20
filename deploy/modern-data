@@ -76,8 +76,50 @@ if (params.what == "stations") {
 		devices = [];
 	}
 
-	if (!length(devices))
-		devices = [ "phy0-ap0", "phy1-ap0" ];
+	// Fallback 1: iwinfo knows the wireless devices itself.
+	if (!length(devices)) {
+		try {
+			let listed = ubus.call("iwinfo", "devices", {});
+			if (listed != null && type(listed.devices) == "array") {
+				for (let name in listed.devices) {
+					if (type(name) != "string" || !length(name))
+						continue;
+					let known = false;
+					for (let existing in devices)
+						if (existing == name) known = true;
+					if (!known)
+						push(devices, name);
+				}
+			}
+		} catch (e) {
+			devices = [];
+		}
+	}
+
+	// Fallback 2: every netdev of every radio is exported by sysfs.
+	if (!length(devices)) {
+		try {
+			let paths = fs.glob("/sys/class/ieee80211/*/device/net/*");
+			if (type(paths) == "array") {
+				for (let path in paths) {
+					let parts = split(path, "/");
+					let name = parts[length(parts) - 1];
+					if (type(name) != "string" || !length(name))
+						continue;
+					let known = false;
+					for (let existing in devices)
+						if (existing == name) known = true;
+					if (!known)
+						push(devices, name);
+				}
+			}
+		} catch (e) {
+			devices = [];
+		}
+	}
+
+	// Still nothing found: report no stations instead of guessing device
+	// names that only exist on one particular board.
 
 	let stations = {};
 	for (let device in devices) {

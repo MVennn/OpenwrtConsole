@@ -10,8 +10,20 @@
 # here. The sid is validated against rpcd; the owrt_sid cookie is accepted as
 # a fallback for callers that can set one.
 
-API_BASE="http://127.0.0.1:9999"
 CFG_FILE="/etc/ShellCrash/configs/ShellCrash.cfg"
+RUNTIME_CONFIG="/tmp/ShellCrash/config.yaml"
+
+# The control API of the running core. The port is read from the runtime
+# configuration (ShellCrash may move it away from the default 9999); both
+# ":9999" and "127.0.0.1:9999" are accepted, and an unreadable value falls
+# back to 9999.
+CONTROLLER_PORT="$(sed -n 's/^[[:space:]]*external-controller:[[:space:]]*//p' "$RUNTIME_CONFIG" 2>/dev/null |
+	head -n 1 | tr -d '\r' | tr -d '"' | tr -d "'" | tr -d '[:space:]' |
+	sed -n 's/.*:\([0-9][0-9]*\)$/\1/p')"
+case "$CONTROLLER_PORT" in
+	''|*[!0-9]*) CONTROLLER_PORT=9999 ;;
+esac
+API_BASE="http://127.0.0.1:$CONTROLLER_PORT"
 
 # Byte oriented tools (grep / tr / awk) must not switch to a UTF-8 locale.
 LC_ALL=C
@@ -215,6 +227,12 @@ ubus call session get "{\"ubus_rpc_session\":\"$sid\"}" 2>/dev/null | grep -q '"
 
 secret="$(sed -n 's/^secret=//p' "$CFG_FILE" 2>/dev/null | head -n 1)"
 [ -n "$secret" ] || fail "503 Service Unavailable" '{"error":"shellcrash not configured"}'
+
+# Every action talks to the core through curl. Without it the request would
+# hang first and then answer with an empty body, so it is checked up front.
+if ! command -v curl >/dev/null 2>&1; then
+	fail "503 Service Unavailable" '{"ok":false,"error":"缺少 curl，无法访问 ShellCrash 控制接口。请先安装：apk add curl 或 opkg update && opkg install curl"}'
+fi
 
 # The query string arrives percent encoded; decode it once and use the plain
 # name for every further check. A POST carries its payload in the body, so the

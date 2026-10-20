@@ -56,12 +56,29 @@ CACHE_DIR="/tmp/modern-pkg-cache"
 # 不指定时 apk 用 /var/cache/apk，那里的索引会被后续查询清掉，
 # 仓库列表刚更新完又会变空。
 APK_CACHE_DIR="/tmp/modern-pkg-cache/apk"
-APK_PROXY="http://127.0.0.1:7890"
+# The runtime configuration of ShellCrash carries the port its mixed proxy
+# really listens on.
+RUNTIME_CONFIG="/tmp/ShellCrash/config.yaml"
+
+# The mixed port of ShellCrash; 7890 is its default.
+shellcrash_mixed_port() {
+	_p="$(sed -n 's/^[[:space:]]*mixed-port:[[:space:]]*\([0-9][0-9]*\).*/\1/p' "$RUNTIME_CONFIG" 2>/dev/null | head -n 1)"
+	case "$_p" in
+		''|*[!0-9]*) _p=7890 ;;
+	esac
+	printf '%s' "$_p"
+}
 
 # 准备 apk 缓存目录；ShellCrash 混合端口在时让 apk 走代理出网。
+#
+# netstat prints an IPv6 listener as ":::7890" and an IPv4 one as
+# "127.0.0.1:7890", so the check matches the port itself instead of a fixed
+# address.
 apk_env() {
 	mkdir -p "$APK_CACHE_DIR" 2>/dev/null
-	if netstat -lnt 2>/dev/null | grep -q '127.0.0.1:7890'; then
+	_mp="$(shellcrash_mixed_port)"
+	if netstat -lnt 2>/dev/null | grep -q ":$_mp[[:space:]]"; then
+		APK_PROXY="http://127.0.0.1:$_mp"
 		http_proxy="$APK_PROXY"
 		https_proxy="$APK_PROXY"
 		export http_proxy https_proxy
@@ -175,6 +192,16 @@ confirm="$(json_string confirm)"
 job_id="$(json_string job)"
 
 [ -n "$action" ] || fail "400 Bad Request" '{"error":"缺少操作名称"}'
+
+# The console speaks apk only. A firmware that still uses opkg gets a clear
+# answer for every action instead of an empty list or an "unsupported action"
+# that hides the real cause; a box with neither tool gets its own error.
+if ! command -v apk >/dev/null 2>&1; then
+	if command -v opkg >/dev/null 2>&1; then
+		fail "501 Not Implemented" '{"ok":false,"error":"此固件使用 opkg，控制台目前只支持 apk（OpenWrt 24.10+）","code":"opkg_not_supported"}'
+	fi
+	fail "501 Not Implemented" '{"ok":false,"error":"当前固件没有 apk 或 opkg，无法管理软件包","code":"package_manager_missing"}'
+fi
 
 mkdir -p "$STATE_DIR" "$JOB_ROOT" 2>/dev/null
 cleanup

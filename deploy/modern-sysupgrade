@@ -47,7 +47,7 @@ FIRMWARE_PATH="/tmp/openwrt-firmware.bin"
 BACKUP_PATH="/tmp/openwrt-backup.tar.gz"
 MAX_UPLOAD=41943040
 MAX_OUTPUT=204800
-FIRMWARE_GLOB="/tmp/*.bin /tmp/*.tar /tmp/*.img"
+FIRMWARE_GLOB="/tmp/*.bin /tmp/*.tar /tmp/*.img /tmp/*.img.gz /tmp/*.itb"
 BACKUP_GLOB="/tmp/*.tar.gz"
 
 # Background jobs of the update check and of the firmware download.
@@ -56,9 +56,19 @@ JOB_ROOT="/tmp/modern-fw-jobs"
 # show the state again without asking the download server a second time.
 UPDATE_DIR="/tmp/modern-fw-update"
 
-# The mixed port of the local proxy. A direct connection is used when the
-# proxy refuses the request.
-PROXY="http://127.0.0.1:7890"
+# The mixed port of the local proxy, read from the runtime configuration of
+# ShellCrash (7890 is its default). The proxy is only used when the port
+# really listens: a stopped core would otherwise make every request wait for
+# the proxy timeout before the direct connection is tried.
+RUNTIME_CONFIG="/tmp/ShellCrash/config.yaml"
+PROXY_PORT="$(sed -n 's/^[[:space:]]*mixed-port:[[:space:]]*\([0-9][0-9]*\).*/\1/p' "$RUNTIME_CONFIG" 2>/dev/null | head -n 1)"
+case "$PROXY_PORT" in
+	''|*[!0-9]*) PROXY_PORT=7890 ;;
+esac
+PROXY=""
+if netstat -lnt 2>/dev/null | grep -q ":$PROXY_PORT[[:space:]]"; then
+	PROXY="http://127.0.0.1:$PROXY_PORT"
+fi
 
 RELEASES_BASE="https://downloads.openwrt.org/releases"
 NOTES_BASE="https://openwrt.org/releases"
@@ -333,7 +343,7 @@ valid_download_url() {
 		*..*) return 1 ;;
 	esac
 	case "$_rest" in
-		*.bin) ;;
+		*.bin|*.img.gz|*.itb) ;;
 		*) return 1 ;;
 	esac
 	[ "${#_rest}" -le 200 ] || return 1
@@ -346,7 +356,7 @@ write_check_worker() {
 #!/bin/sh
 # Collects the update information from the official OpenWrt download server.
 #   $1 job dir, $2 proxy, $3 board name, $4 target, $5 current version,
-#   $6 model, $7 cache dir, $8 maximum number of notes
+#   $6 model, $7 cache dir, $8 maximum number of notes, $9 distribution
 job="$1"
 proxy="$2"
 board="$3"
@@ -355,6 +365,7 @@ current="$5"
 model="$6"
 cache="$7"
 max_notes="$8"
+distribution="$9"
 [ -n "$max_notes" ] || max_notes=8
 
 releases_base="https://downloads.openwrt.org/releases"
@@ -389,6 +400,17 @@ fail() {
 }
 
 esc() { printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g' | tr -d '\r\n'; }
+
+# Appends one note to the warning that travels with the result. Several
+# findings are joined into one string rather than overwriting each other.
+warning=""
+add_warning() {
+	if [ -z "$warning" ]; then
+		warning="$1"
+	else
+		warning="$warning；$1"
+	fi
+}
 
 # Compares two versions. Prints 1 when the first one is newer.
 version_newer() {
@@ -437,16 +459,26 @@ fetch "$target_url" "$job/target.html" 30 ||
 [ -s "$job/target.html" ] || fail "目标平台的固件列表为空"
 
 device="$(printf '%s' "$board" | tr ',' '_')"
-row="$(grep '<td class="n"><a href="[^"]*sysupgrade\.bin"' "$job/target.html" |
+
+# A file of a target is listed as <td class="n"><a href="...">. The
+# sysupgrade image is preferred; some targets only ship a compressed image
+# (.img.gz) or a FIT image (.itb), so those are the fallback.
+rows="$(grep '<td class="n"><a href="[^"]*"' "$job/target.html")"
+row="$(printf '%s\n' "$rows" | grep '<a href="[^"]*sysupgrade\.bin"' |
 	grep -F -- "$device" | grep -F -- '-squashfs-sysupgrade.bin"' | head -n 1)"
-[ -n "$row" ] || row="$(grep '<td class="n"><a href="[^"]*sysupgrade\.bin"' "$job/target.html" |
+[ -n "$row" ] || row="$(printf '%s\n' "$rows" | grep '<a href="[^"]*sysupgrade\.bin"' |
+	grep -F -- "$device" | head -n 1)"
+# Within the compressed / FIT fallback a sysupgrade image still wins over a
+# plain image of the same device (e.g. an initramfs FIT image).
+[ -n "$row" ] || row="$(printf '%s\n' "$rows" | grep -E '<a href="[^"]*sysupgrade[^"]*\.(img\.gz|itb)"' |
+	grep -F -- "$device" | head -n 1)"
+[ -n "$row" ] || row="$(printf '%s\n' "$rows" | grep -E '<a href="[^"]*\.(img\.gz|itb)"' |
 	grep -F -- "$device" | head -n 1)"
 
 file_name=""
 sha=""
 size=0
 file_date=""
-warning=""
 if [ -n "$row" ]; then
 	file_name="$(printf '%s' "$row" | sed -n 's/.*<a href="\([^"]*\)">.*/\1/p')"
 	sha="$(printf '%s' "$row" | sed -n 's/.*<td class="sh">\([0-9a-f]*\)<.*/\1/p')"
@@ -460,7 +492,7 @@ if [ -n "$row" ]; then
 		[ -n "$off" ] && sha="$off"
 	fi
 else
-	warning="官方源中暂时没有该机型的 sysupgrade 固件"
+	add_warning "官方源中暂时没有该机型的升级固件（.bin/.img.gz/.itb）"
 fi
 
 # 4. the release notes of the wiki
@@ -485,10 +517,27 @@ if fetch "$notes_url" "$job/notes.html" 45; then
 fi
 
 # 5. compare the versions
+#
+# Official stable releases have three numeric segments (24.10.0). A SNAPSHOT,
+# an rNNNNN build or a self built image has no version that can be compared
+# with the release list, so those never get an "upgradable" answer - the
+# warning tells the user why.
+comparable="$(printf '%s' "$current" | awk -F. '{
+	if (NF == 3 && $1 ~ /^[0-9]+$/ && $2 ~ /^[0-9]+$/ && $3 ~ /^[0-9]+$/) print 1;
+	else print 0;
+}')"
+[ -n "$comparable" ] || comparable=0
 upgradable=false
-if [ -n "$latest" ] && [ -n "$current" ]; then
+if [ -n "$latest" ] && [ "$comparable" = "1" ]; then
 	[ "$(version_newer "$latest" "$current")" = "1" ] && upgradable=true
 fi
+if [ -n "$current" ] && [ "$comparable" != "1" ]; then
+	add_warning "当前系统版本「$current」不是三段式数字版本号，无法与官方稳定版比较，请在升级前自行确认"
+fi
+case "$distribution" in
+	''|OpenWrt) ;;
+	*) add_warning "当前发行版「$distribution」不是 OpenWrt 官方发行版，固件兼容性请自行确认" ;;
+esac
 
 download_url=""
 [ -n "$file_name" ] && download_url="$target_url$file_name"
@@ -674,6 +723,12 @@ board_field() {
 	printf '%s' "$1" | sed -n 's/.*"'"$2"'"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p'
 }
 
+# The update check and the download use curl; the local actions do not.
+require_curl() {
+	command -v curl >/dev/null 2>&1 ||
+		fail "503 Service Unavailable" '{"ok":false,"error":"缺少 curl，固件更新检查与下载需要 curl。请先安装：apk add curl 或 opkg update && opkg install curl"}'
+}
+
 # ---------------------------------------------------------------- actions ---
 case "$action" in
 	info)
@@ -711,8 +766,8 @@ case "$action" in
 		esac
 		[ "${#upload_name}" -le 64 ] || fail "400 Bad Request" '{"error":"文件名过长，最多 64 个字符"}'
 		case "$upload_name" in
-			*.bin|*.tar) ;;
-			*) fail "400 Bad Request" '{"error":"只支持 .bin 或 .tar 固件文件"}' ;;
+			*.bin|*.tar|*.img|*.gz|*.itb) ;;
+			*) fail "400 Bad Request" '{"error":"只支持 .bin、.tar、.img、.gz 或 .itb 固件文件"}' ;;
 		esac
 		clen="${CONTENT_LENGTH:-0}"
 		case "$clen" in
@@ -804,6 +859,7 @@ case "$action" in
 		;;
 
 	check-update)
+		require_curl
 		cleanup_jobs
 		board_raw="$(ubus call system board 2>/dev/null | tr '\n' ' ')"
 		[ -n "$board_raw" ] || fail "500 Internal Server Error" '{"error":"无法读取设备信息"}'
@@ -811,6 +867,7 @@ case "$action" in
 		cur_target="$(board_field "$board_raw" target)"
 		cur_version="$(board_field "$board_raw" version)"
 		cur_model="$(board_field "$board_raw" model)"
+		cur_distribution="$(board_field "$board_raw" distribution)"
 		[ -n "$cur_board" ] || fail "500 Internal Server Error" '{"error":"无法读取设备标识"}'
 		[ -n "$cur_target" ] || fail "500 Internal Server Error" '{"error":"无法读取目标平台"}'
 		job="$(new_job)"
@@ -818,7 +875,8 @@ case "$action" in
 		job_dir="$JOB_ROOT/$job"
 		write_check_worker "$job_dir"
 		setsid "$job_dir/worker.sh" "$job_dir" "$PROXY" "$cur_board" "$cur_target" \
-			"$cur_version" "$cur_model" "$UPDATE_DIR" "$MAX_NOTES" > "$job_dir/log" 2>&1 </dev/null &
+			"$cur_version" "$cur_model" "$UPDATE_DIR" "$MAX_NOTES" "$cur_distribution" \
+			> "$job_dir/log" 2>&1 </dev/null &
 		if wait_for_result "$job" "$WAIT_CHECK"; then
 			ok "$(cat "$job_dir/result")"
 		elif [ -s "$job_dir/result" ]; then
@@ -829,6 +887,7 @@ case "$action" in
 		;;
 
 	download)
+		require_curl
 		[ -n "$download_url" ] || fail "400 Bad Request" '{"error":"缺少下载地址"}'
 		valid_download_url "$download_url" ||
 			fail "400 Bad Request" '{"error":"下载地址不在允许的官方源范围内"}'

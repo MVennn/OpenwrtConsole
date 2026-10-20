@@ -50,8 +50,9 @@ TASK_SH="/etc/ShellCrash/task/task.sh"
 SUB_UPDATE_STATE="/tmp/ShellCrash/modern-shellcrash.subupdate"
 SUB_UPDATE_LOG="/tmp/ShellCrash/modern-shellcrash.subupdate.log"
 
-# The ports the console asks about. They are the ShellCrash defaults, the
-# runtime configuration may use other ones - that is shown next to them.
+# The ports the console asks about. They are the ShellCrash defaults; the
+# runtime configuration may use other ones. action_ports looks at the union
+# of these defaults and the ports of the running configuration.
 TRACKED_PORTS="7890 7892 7893 1053 9999"
 
 # The keys the console may read and write. Everything else in the file
@@ -299,6 +300,13 @@ autostart_enabled() {
 # Reads a scalar from the runtime mihomo config.
 runtime_num() {
 	sed -n "s/^$1:[[:space:]]*\([0-9][0-9]*\).*/\1/p" "$RUNTIME_CONFIG" 2>/dev/null | head -n 1
+}
+
+# Reads the port out of a "host:port" value of the runtime config, e.g.
+# "listen: 0.0.0.0:1053", "listen: :1053" or
+# "external-controller: 127.0.0.1:9090".
+runtime_host_port() {
+	sed -n "s/^[[:space:]]*$1:[[:space:]]*.*:\([0-9][0-9]*\).*/\1/p" "$RUNTIME_CONFIG" 2>/dev/null | head -n 1
 }
 
 # The host part of a URL, without the scheme, the path and the token.
@@ -942,8 +950,31 @@ port_owners() {
 
 action_ports() {
 	_netstat=$(netstat -lntp 2>/dev/null)
+
+	# The defaults plus every port the running configuration really uses
+	# (mixed / redir / tproxy / dns / controller), without duplicates.
+	_ports=""
+	for _p in $TRACKED_PORTS \
+		"$(runtime_num 'mixed-port')" \
+		"$(runtime_num 'redir-port')" \
+		"$(runtime_num 'tproxy-port')" \
+		"$(runtime_host_port 'listen')" \
+		"$(runtime_host_port 'external-controller')"; do
+		case "$_p" in
+			'' | *[!0-9]*) continue ;;
+		esac
+		[ "$_p" -gt 0 ] 2>/dev/null || continue
+		[ "$_p" -le 65535 ] 2>/dev/null || continue
+		_dup=0
+		for _q in $_ports; do
+			[ "$_q" = "$_p" ] && { _dup=1; break; }
+		done
+		[ "$_dup" = 1 ] && continue
+		_ports="$_ports $_p"
+	done
+
 	_items=""
-	for _p in $TRACKED_PORTS; do
+	for _p in $_ports; do
 		_first=$(port_owners "$_p" | head -n 1)
 		if [ -n "$_first" ]; then
 			_listening=true
