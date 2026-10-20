@@ -22,6 +22,8 @@
 
 参照系列仓 gsauxiliary 的门面格式，把根 `README.md` 收敛为**面向用户**的说明：
 
+- 调整 文档 —— 根 README 顶部去掉「一句话」引言块，门面定位由副标题承担（对齐 gsauxiliary）；`tools/check-docs.py` 同步豁免根 README 的引言块检查
+
 - 调整 文档 —— 根 README 重写为 logo 头 + 徽章 + 这是什么 / 适用环境 / 快速开始 / 功能 / 限制 / 反馈 / 免责声明 / 开源鸣谢 / 许可证
 - 调整 文档 —— 「技术栈与产物体积」的体积基线与归因迁入 [docs/MAINTENANCE.md](docs/MAINTENANCE.md) §7
 - 调整 文档 —— 「认证链路」「数据来源」两节删除（正本本就在 docs/ARCHITECTURE.md 的三层数据流与通道表，属重复）

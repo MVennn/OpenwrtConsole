@@ -14,8 +14,6 @@
 
 ---
 
-> **一句话**：Vue 3 + Vite + TypeScript 编译成静态文件丢进路由器的 `/www/modern/`，LuCI 只留作应急入口 —— 读走 ubus，写标准配置走 rpcd，特权动作走 9 个 root CGI。
-
 ## 这是什么
 
 一个基于 [art-design-pro](https://github.com/Daymychen/art-design-pro) 设计语言的 OpenWrt 管理控制台。
