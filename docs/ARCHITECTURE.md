@@ -53,7 +53,7 @@
 | 读 DHCP 租约 / hosts / resolv | CGI `modern-read` | 这些是 `/tmp` 下的运行时文件，rpcd 不暴露 |
 | 读无线终端信号 | CGI `modern-data` | `iwinfo assoclist` 只有 root 能读 |
 | 改标准配置 | `/ubus` → `uci.set/add/delete/commit` | rpcd 会话对白名单配置文件有写权 |
-| 应用配置 | CGI `modern-uci` 的 `net-reload` / `wifi-reload` / `firewall-reload` | 重载服务是特权动作，rpcd 被拒 |
+| 应用配置 | 提交走 rpcd（`uci.commit`），重载服务走 CGI `modern-uci` 的 `net-reload` / `wifi-reload` / `firewall-reload`（或 `uci-apply`） | 提交是标准 UCI 写，会话有权限；重载服务是特权动作，rpcd 被拒 |
 | 丢弃暂存 / 改密码 / 重启 / 恢复出厂 | CGI `modern-uci` | rpcd 会话被明确拒绝 |
 | 装软件 / 刷固件 / 代理切换 / ShellCrash 设置 | 对应 CGI | 全部超出 rpcd 会话权限 |
 
@@ -76,10 +76,10 @@
 | 5 | CGI `modern-read` | `GET ?what=leases\|hosts\|resolv` | `{leases:[…]}` / `{hosts:[…]}` / `{nameservers:[…],search:[…]}` | dnsmasq 运行时状态 | 无 | sid 校验；路径是**字面常量**，请求不能自带路径 |
 | 6 | CGI `modern-exec` | `POST {tool,target}` | `{tool,target,command,output,exit_code,duration_ms,truncated}` | ping / nslookup / traceroute / 路由表 / 监听端口 | 无（只执行白名单命令） | sid 校验；工具名白名单 5 个；目标字符集 `[A-Za-z0-9._:-]`；单次 12 秒；输出 >200 KB 截断 |
 | 7 | CGI `modern-proxy` | `GET ?path=…` / `POST {group,node}` | mihomo 的原始 JSON | `/version` `/configs` `/proxies` `/connections`、单组详情、延迟探测 | **切换策略组节点**（PUT `/proxies/<组>`） | sid 校验；名字白名单（可打印字符，去掉 `"` `\` `/` `..`）；真正的授权是**向 mihomo 回读组成员表**；延迟探测 URL 只允许三个固定地址 |
-| 8 | CGI `modern-uci` | `POST {action,…}` | `{ok:true}` / `{token,expires_in}` / `uci changes` 原文 / 服务列表原文 | 暂存改动、服务列表 | 丢弃暂存、提交、应用、重载 network/wifi/firewall、改时区、**改密码**、**重启**、**恢复出厂**、备份 / 恢复 | sid 校验；配置文件名与服务名双重白名单；**危险动作需一次性令牌（120 秒、单次使用）** |
+| 8 | CGI `modern-uci` | `POST {action,…}` | `{ok:true}` / `{token,expires_in}` / 服务列表原文 | 服务清单（`svc-list`） | 丢弃暂存（`uci-revert`）、提交（`uci-commit`）、应用（`uci-apply`）、重载 network/wifi/firewall、服务启停（`svc-action`）、改时区（`set-localtime`）、**改密码**、**重启**、**恢复出厂**、备份 / 恢复 | sid 校验；配置文件名与服务名双重白名单；**危险动作需一次性令牌（120 秒、单次使用）** |
 | 9 | CGI `modern-pkg` | `POST {action,…}` | 包列表 / 计数 / `{job_id,status,output}` | 已装列表、仓库列表、检索、统计 | **安装 / 卸载 / 更新索引 / 全量升级** | sid 校验；包名字符集 `[A-Za-z0-9._+-]` 且不以 `-` 开头；写动作必须 `confirm=yes`；写动作是**后台任务**，用 `status` 轮询 |
-| 10 | CGI `modern-sysupgrade` | `POST ?action=…` | 板卡 / 版本 / 文件列表 / 任务状态 | 固件信息、`/tmp` 下的固件与备份清单、更新检查 | **上传固件**、**刷写固件**、备份、**恢复备份**、下载官方固件 | sid 校验；固件名只允许 `.bin` / `.tar` 且 ≤64 字符；上传 ≤40 MB；**刷写与恢复需令牌**（用途 `firmware-upgrade` / `backup-restore`） |
-| 11 | CGI `modern-shellcrash` | `POST {action,params}` | 服务状态 / 配置键值 / 覆写文件清单 / 订阅概览 / 日志 | ShellCrash 服务与核心状态、白名单配置键、覆写文件启用状态、订阅概览（不含 token）、日志、CrashCore 自愈状态 | **服务启停与开机自启**、**写白名单配置键**、**启停覆写文件** | sid 校验；**所有路径是字面常量**；`secret` 与订阅 URL **永不下发到浏览器**；写动作需 `confirm=yes` |
+| 10 | CGI `modern-sysupgrade` | `POST ?action=…` | 板卡 / 版本 / 文件列表 / 任务状态 | 固件信息、`/tmp` 下的固件与备份清单、更新检查、**固件校验（`verify`：大小 + 校验和对比）** | **上传固件**、**刷写固件**、备份、**恢复备份**、下载官方固件 | sid 校验；固件名只允许 `.bin` / `.tar` 且 ≤64 字符；上传 ≤40 MB；**刷写与恢复需令牌**（用途 `firmware-upgrade` / `backup-restore`） |
+| 11 | CGI `modern-shellcrash` | `POST {action,params}` | 服务状态 / 配置键值 / 覆写文件清单 / 订阅概览 / 日志 | ShellCrash 服务与核心状态、白名单配置键、覆写文件启用状态、订阅概览（不含 token）、日志、CrashCore 自愈状态、**监听端口（`ports`，5 个端口）**、**自愈历史（`heal`）**、**订阅热更新状态（`sub-update-state`）** | **服务启停与开机自启**、**写白名单配置键**、**启停覆写文件**、**订阅热更新（`sub-update`，需核心在运行）** | sid 校验；**所有路径是字面常量**；`secret` 与订阅 URL **永不下发到浏览器**；写动作需 `confirm=yes`；**服务启停是后台任务**：完成记录写在 `/tmp/ShellCrash/modern-shellcrash.last`，**完成记录 = 状态已到位**，前端等 `running` 变成期望值才回报成功 |
 
 > 表里列了 11 行：`/ubus` 拆成 3 行（`system`/`uci`、`luci-rpc`、`luci`），
 > 加上 8 个 CGI（`modern-login` 除外）。按「传输 + 权限模型」算，通道仍是 **10 个**。
@@ -116,30 +116,37 @@
 2. **sid 字符集**：`[A-Za-z0-9._~+/=-]`，其它字符直接 401 —— sid 会被拼进 ubus 的 JSON 参数，
    不能让它逃出字符串。
 3. **响应头**：`Content-Type: application/json; charset=utf-8` + `Cache-Control: no-store`
-   + `X-Content-Type-Options: nosniff`。
+   —— **9 个 CGI 全部都有**；`X-Content-Type-Options: nosniff` 现在**也全部 9 个都有**
+   （`modern-uci` 与 `modern-sysupgrade` 是今天刚补齐的）。
 4. **错误码**：`401` 会话无效 / `400` 参数或动作不合法 / `403` 缺令牌或缺确认 /
-   `404` 对象不存在 / `405` 方法不对 / `413` 请求体过大 / `500` 内部失败 / `503` 依赖未就绪。
+   `404` 对象不存在 / `405` 方法不对 / `409` 冲突（订阅更新已在执行 / 核心未运行）/
+   `413` 请求体过大 / `500` 内部失败 / `503` 依赖未就绪。
 5. **路径与参数不来自请求**：所有文件路径都是脚本里的字面常量；用户输入只作为
    **一个已校验的引号参数**传给命令（`modern-exec`）或作为 **JSON 字符串字段**（其余）。
 6. **必须 LF 换行**：CRLF 会让 shebang 报 `No such file or directory`。
-7. **原子替换**：CGI 用「同目录临时文件 + rename」更新，直接覆盖会与正在处理的请求竞态。
+7. **文件改写**：**没有 CGI 调用 `rename(2)` / `mktemp`**，实际做法是
+   「**先备份 + 写临时文件 + 覆盖原 inode**」——
+   - `modern-shellcrash` 的 `config-write`：先备份成 `ShellCrash.cfg.bak-<时间戳>`，
+     再把临时文件写回**原 inode**（`cat > ShellCrash.cfg`），因此**保留原文件的权限与属主**；
+     中途被打断时的恢复路径就是那份备份；
+   - `modern-sysupgrade` 的固件上传：先写 `/tmp/.openwrt-firmware.bin.part`，
+     再 `mv` 到 `/tmp/openwrt-firmware.bin`。
 
 ## 4. 目录结构与分层规则
 
 ```
 OpenwrtConsole/
 ├─ src/
-│  ├─ api/            每个功能域一个模块；只做「取数 / 发请求 / 解析成类型」
+│  ├─ api/            21 个模块：19 个功能域模块 + configPending.ts（四个配置页共享的暂存区工具）+ proxyState.ts（浏览器本地出口状态）；只做「取数 / 发请求 / 解析成类型」
 │  ├─ views/          页面组件；只做「展示与交互」，不直接 fetch
-│  ├─ components/     跨页面复用的展示组件（按域分子目录，带前缀）
-│  ├─ composables/    与视图解耦的响应式逻辑（轮询、主题、刷新、构建自愈）
+│  ├─ components/     44 个非归档组件（按域分子目录，带前缀）；新增 cfg-pending/ 、config-sc/ 、fw-verify/ 三个子目录，proxy-* / monitor-* / DraftNotice.vue 平铺在根
+│  ├─ composables/    6 个：与视图解耦的响应式逻辑（轮询、主题、刷新、构建自愈、useDraft 草稿与未保存守卫、useMediaQuery 媒体查询）
 │  ├─ layouts/        AppLayout（侧栏 + 顶栏 + 滚动内容）
 │  ├─ plugins/        Element Plus 的显式注册与样式清单
 │  ├─ router/         路由表与路由守卫
 │  ├─ stores/         全局状态（会话）
-│  ├─ styles/         设计令牌 / Element Plus 覆盖 / 布局
-│  ├─ utils/          纯函数工具（格式化、客户端合并、代理组解析）
-│  └─ styles/         tokens.css 是「视觉唯一真源」
+│  ├─ styles/         设计令牌(tokens.css) / Element Plus 覆盖 / 布局
+│  └─ utils/          纯函数工具（格式化、客户端合并、代理组解析）
 ├─ deploy/            路由器端：9 个 CGI + 2 个部署脚本（不是 Node 代码）
 ├─ docs/              本目录
 ├─ public/            静态资源（favicon）
@@ -153,19 +160,25 @@ OpenwrtConsole/
 
 | 层 | 可以依赖 | **不可以**做 |
 | --- | --- | --- |
-| `views/` | `components/` `composables/` `api/` `stores/` | 直接 `fetch`；直接读 `localStorage` 里的会话 |
+| `views/` | `components/` `composables/` `api/` `stores/` | 直接 `fetch`；直接读 `localStorage` 里的会话；持有跨页面的全局状态（**页面级草稿与暂存记录除外**，见下方例外） |
 | `components/` | `composables/` `utils/` `api/`（只读型） | 依赖某个具体 view；改全局状态 |
-| `api/` | `api/ubus.ts` `api/uci.ts` `api/systemOps.ts` | 依赖 `views/`；自己拼 URL 字符串（统一从常量来） |
+| `api/` | `api/ubus.ts` `api/uci.ts` `api/systemOps.ts` | 依赖 `views/`；自己拼 URL 字符串（统一从常量来）；**依赖 `composables/`**（`configPending.ts` 一处，见下方例外） |
 | `composables/` | `utils/` `api/` | 依赖 `views/` |
 | `utils/` | 无（纯函数） | 依赖 `api/` `views/` |
 | `stores/` | `api/ubus.ts` | 依赖 `views/` |
 | `deploy/modern-*` | 无（路由器上的独立程序） | 依赖 `src/`；**接受请求传来的文件路径** |
 
+> **v4 打破了两条分层规则（已知例外，不是新规范）**：
+> ① `src/api/configPending.ts` **反向依赖** `composables/useDraft` 的 `Draft` 类型 ——
+> 暂存区工具要读草稿的类型，只能从 `composables` 引；这是**纯类型 import**，不构成运行时依赖；
+> ② 四个可写配置视图（网络 / 无线 / 防火墙 / DHCP 与系统设置）**自己持有草稿与暂存记录状态**
+> —— 一份 `useDraft` 草稿 + 一份本地 `StagedEdit` 列表，页面级状态没有下沉到 `api/` 或 `composables/`。
+
 ### 两条命名硬规则
 
 1. **视图文件统一 `XxxView.vue`**，并在文件里导出 `defineOptions({ name: 'XxxView' })`。
-   > 实测 20 个视图里 **10 个有、10 个没有**。规则写在一次性的开发契约里、没进长期规范，
-   > 所以无人遵守。缺口清单见根 [../CHANGELOG.md](../CHANGELOG.md) 的「修复」段（该段收录的是**待修**缺陷）。
+   > **已补齐**：20 个视图文件（含归档的 `_archive/FirewallView.vue`）**全部**导出了
+   > `defineOptions({ name: 'XxxView' })`，`name` 与文件名逐个一致。
 2. **新增 Element Plus 组件时，必须把它的样式加进 `src/plugins/element.ts`**。
    > 原因：该文件里的样式被**提到入口 chunk** 里加载；只写模板而不加样式，
    > 组件样式会落进懒加载的 view chunk，晚于 `src/styles/element.css` 加载而失效
@@ -181,9 +194,11 @@ OpenwrtConsole/
 | `runSystemOp(action, params)` | `src/api/systemOps.ts` | POST 形式的 `modern-uci`；带 sid；把错误码翻成中文 |
 
 其它 CGI（`modern-pkg` / `modern-sysupgrade` / `modern-shellcrash` / `modern-proxy` /
-`modern-exec`）各有一个自己的薄封装模块（`packages.ts` / `firmware.ts` /
-`shellcrashConfig.ts` / `proxyActions.ts` / `diagnostics.ts`），**不共用** `runSystemOp` ——
-它们的请求体形状与错误语义各不相同。
+`modern-exec`）各有一个自己的薄封装模块，**不共用** `runSystemOp` ——
+它们的请求体形状与错误语义各不相同。全部薄封装模块（14 个）：
+`packages` / `firmware` / `shellcrashConfig` / `proxyActions` / `proxyState` /
+`diagnostics` / `ops` / `dns` / `monitor` / `setup` / `systemSettings` /
+`firewallConfig` / `networkConfig` / `wirelessConfig`。
 
 **会话过期的统一处理**：所有入口在判定会话失效时
 `window.dispatchEvent(new Event('owrt:session-expired'))`，

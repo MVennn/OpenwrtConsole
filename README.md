@@ -1,3 +1,9 @@
+<div align="center">
+
+<img src="assets/logo.png" width="128" alt="OpenWrt 现代 Web 控制台">
+
+</div>
+
 # OpenWrt Console
 
 > **可见性**：公开 —— 仓内**零凭据、零设备标识**；vendored 只有 art-design-pro（MIT）。第三方组件声明见 [NOTICE](NOTICE)。
@@ -93,7 +99,7 @@ ROUTER_HOST=root@<路由器IP> ./deploy/deploy.sh
 | **网络** | WAN / WAN6 / LAN 摘要、全部接口表、网络设备计数与错误统计 |
 | **无线** | 射频 / SSID / 信道 / 发射功率、平均信号、关联终端信号与链路速率 |
 | **客户端** | DHCP 租约与无线终端的合并视图，支持搜索与有线/无线筛选 |
-| **防火墙** | 安全区域、默认策略、区域转发、端口转发、出站规则、流量卸载 —— **可写**，配置入口见下方「配置（可写）」；旧的只读页已归档到 `src/views/_archive/FirewallView.vue`，`firewall` 路由已删 |
+| **防火墙** | 安全区域、默认策略、区域转发、端口转发、出站规则、流量卸载 —— **可写**（`src/views/config/FirewallConfigView.vue`，含「保存并应用 / 放弃修改」）；旧的只读页已归档到 `src/views/_archive/FirewallView.vue`，`firewall` 路由已删 |
 | **DNS** | dnsmasq 上游、地址池、静态租约、当前租约、自定义主机名 |
 | **代理** | ShellCrash / mihomo 运行状态、策略组、当前出口（解析嵌套选择器）、活动连接、运行配置，可**直接切换策略组节点**（二次确认后写入 mihomo） |
 | **诊断** | ping / DNS 解析 / 路由跟踪 / 路由表 / 监听端口，命令在路由器本地执行 |
@@ -252,11 +258,15 @@ ROUTER_HOST=root@<路由器IP> ./deploy/deploy.sh
   | 文件 | 现状 | 待办 |
   | --- | --- | --- |
   | `PROGRESS.md` | 源目录副本 | 阶段清单停在 v3，需补 v4/v5/v6 三批 |
-  | `DESIGN.md` | 源目录副本 | 「防火墙与 DNS 页保持只读，修改仍交给 LuCI」已**过期** —— v3 已有完整的防火墙写入层 |
+  | `DESIGN.md` | 源目录副本 | 「防火墙与 DNS 页保持只读，修改仍交给 LuCI」已**过期** —— 防火墙（连同网络 / 无线 / DHCP 与系统设置）现已**可写**；**只有 DNS 状态页仍只读**，地址池与静态租约的修改入口在「DHCP 与系统设置」页 |
   | `docs/V2-CONTRACT.md` | 源目录副本 | 一次性的并行开发契约，其中「文件归属表」已失效 |
   | `docs/V3-CONTRACT.md` | 源目录副本 | 同上；其中**长期有效**的 rpcd 授权边界与写入范式已提炼进 [docs/WRITE-LAYER.md](docs/WRITE-LAYER.md) |
-- **已知缺陷清单**（本仓文档已登记，代码未修）：部署脚本字面 `\n`、DEPLOY.md CGI 数量、
-  会话过期 fallback、重复建模与孤儿路由等 —— 逐条见 [CHANGELOG.md](CHANGELOG.md) 的「修复」段（该段收录的是**待修**缺陷）。
+- **已知缺陷清单**（本仓文档已登记，代码未修）：**DHCP 配置被建模了两次** ——
+  `src/api/dns.ts` 的 `getDhcpSettings` 与 `src/api/systemSettings.ts` 的
+  `parseDnsmasq` / `parsePools` / `parseLeases` 读的是同一份 `uci.get dhcp`；
+  `UciSection` 类型也定义了**两份**（`src/api/uci.ts` 与 `src/api/dns.ts`）。
+  逐条见 [CHANGELOG.md](CHANGELOG.md) 的「修复」段 —— 那一段同时收录已修与待修，
+  **带「待修」标记的**才是仍未动的。
 
 ## 记忆文档
 
