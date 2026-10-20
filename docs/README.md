@@ -41,7 +41,7 @@
 | 仓库根 [CHANGELOG.md](../CHANGELOG.md) | 开发者记录：变更历史 + **待修缺陷清单**（含「待补」项）；**版本号本身**在这里维护，规则见 [VERSIONING.md](VERSIONING.md) |
 | 仓库根 [DEPLOY.md](../DEPLOY.md) | 部署细则（源目录副本，**待同步**：CGI 数量等处已过期） |
 | 仓库根 [DESIGN.md](../DESIGN.md) | 设计令牌与组件规范（源目录副本，**待同步**：只读/可写的旧结论已过期） |
-| 仓库根 [README.md](../README.md) | 门面：这是什么、功能、技术栈、限制、仓库现状 |
+| 仓库根 [README.md](../README.md) | 门面：这是什么、适用环境、快速开始、功能、限制、反馈、免责声明、开源鸣谢、许可证 |
 | 仓库根 [AGENTS.md](../AGENTS.md) | 机器协议：给自动化代理看的三条硬约定 |
 | 仓库根 [LICENSE](../LICENSE) | 许可证全文（**MIT**）—— 与根 [NOTICE](../NOTICE) 的第三方声明配套；本仓**不含**任何 GPL-3.0 派生件（ShellCrash 的 GPL-3.0 派生件在 `ShellcrashRules` 仓） |
 | 仓库根 [third-party/](../third-party/README.md) | **随仓分发的上游文件**：每个子目录一份 `UPSTREAM.md`（来源 URL / 钉住的 commit / 许可 / 怎么用 / 怎么更新） |

@@ -236,3 +236,51 @@ ssh root@<路由器IP> 'cat > /www/cgi-bin/.modern-uci.new && chmod +x /www/cgi-
 - [ ] 文档按 [DOC-RULES.md](DOC-RULES.md) §5 的触发矩阵同步
 - [ ] 根 [../CHANGELOG.md](../CHANGELOG.md) 追加了本次变更（内部改动**按对象单列一行**）
 - [ ] 计数类内容重新数过
+
+
+## 7. 产物体积基线
+
+> 数据是 2026-10-20 17:49 在源目录上的一次构建实测（**v4 / v5 / v6 三批改动之前**），
+> 不代表当前产物 —— 复测请先 `npm run build` 再量。
+
+| 产物 | 原始 | gzip |
+|---|---|---|
+| 首屏入口 JS | 255 KB（261 568 B） | 94 KB（96 651 B） |
+| 首屏入口 CSS | 160 KB（163 619 B） | 23 KB（23 708 B） |
+| **首屏合计** | **415 KB** | **117 KB**（120 359 B） |
+
+- Element Plus **全量引入**时首屏是 1.42 MB（gzip 396 KB）；按需引入后降到 415 KB / gzip 117 KB，**减少约 71%**。
+- 最大的剩余块是 **`BaseChart` chunk（483 406 B ≈ 472 KB）**，里面装的是 ECharts；
+  它被 `DashboardView` 与 `config/MonitorView` **两个**页面引用，随页面懒加载。
+- 每一代 chunk 约 1.4 MB；部署侧只保留「当前代 + 上一代」（见 §2）。
+
+## 8. 与源目录的同步状态
+
+本仓是**从上游 OpenWrt 运维仓的 `frontend/` 目录**复制出来的快照，用于让控制台能独立上传 GitLab、
+独立看懂、独立演进。源目录仍在前端开发线里被活跃修改，两边**不会自动同步**。
+
+- **快照时间**：初版 2026-10-20 18:24；**已同步到源目录 2026-10-20 23:20 的状态**。
+- **当前与源目录的关系（2026-10-20 23:20 逐文件比对）**：
+
+  | 范围 | 与源目录的关系 |
+  |---|---|
+  | `src/` + `deploy/` | **已同步**：共 **118 个文件**（源目录 117 + 本仓自有的 `src/api/device.ts`），同步实际改动 **59 个文件**（**44 改 + 15 新增**），含 v3 写入层收口、v4 四个配置页、v5 ShellCrash 保存链路修复、v6 服务动作状态跟踪。本仓自己的 **5 处更新**保留：`src/api/device.ts`（新）、`src/views/LoginView.vue`（真实机型）、`vite.config.ts`（`ROUTER_URL` 环境变量）、`src/api/firmware.ts`（脱敏注释）、`src/views/config/FirmwareView.vue`（注释脱敏） |
+  | `README.md`、`DEPLOY.md`、`docs/` 全套 | **本仓重写版**，不再是源目录副本 |
+  | `DESIGN.md`、`docs/V2-CONTRACT.md`、`docs/V3-CONTRACT.md` | 仍是源目录副本，待重写（见下表） |
+
+  同步后 `vue-tsc --noEmit` 零报错、`vite build` 通过。
+
+- **仍是源目录副本、需要后续同步的**：
+
+  | 文件 | 现状 | 待办 |
+  |---|---|---|
+  | `PROGRESS.md` | **已重写** | 阶段清单已补 v4/v5/v6 三批 |
+  | `DESIGN.md` | 源目录副本 | 「防火墙与 DNS 页保持只读，修改仍交给 LuCI」已**过期** —— 防火墙（连同网络 / 无线 / DHCP 与系统设置）现已**可写**；**只有 DNS 状态页仍只读**，地址池与静态租约的修改入口在「DHCP 与系统设置」页 |
+  | `docs/V2-CONTRACT.md` | 源目录副本 | 一次性的并行开发契约，其中「文件归属表」已失效 |
+  | `docs/V3-CONTRACT.md` | 源目录副本 | 同上；其中**长期有效**的 rpcd 授权边界与写入范式已提炼进 [WRITE-LAYER.md](WRITE-LAYER.md) |
+
+- **已知缺陷清单**（文档已登记，代码未修）：**DHCP 配置被建模了两次** ——
+  `src/api/dns.ts` 的 `getDhcpSettings` 与 `src/api/systemSettings.ts` 的
+  `parseDnsmasq` / `parsePools` / `parseLeases` 读的是同一份 `uci.get dhcp`；
+  `UciSection` 类型也定义了**两份**（`src/api/uci.ts` 与 `src/api/dns.ts`）。
+  逐条见根 [../CHANGELOG.md](../CHANGELOG.md) 的「修复」段 —— 带「待修」标记的才是仍未动的。

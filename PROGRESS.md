@@ -52,3 +52,21 @@ LuCI 只保留为应急入口。
 - `deploy/` — 9 个 CGI + deploy.sh / install-remote.sh
 - `README.md` / `DESIGN.md` / `DEPLOY.md` / `docs/CGI-CONTRACT.md` / `docs/WRITE-LAYER.md`
 - 线上：<https://<路由器IP>/modern/>，根路径 `/` 已指向控制台
+# 2026-10-21 README 收敛
+
+## 背景
+- 参照系列仓 gsauxiliary 的门面格式，根 `README.md` 收敛为面向用户的说明。
+
+## 已完成变更
+- [x] 重写根 `README.md`（logo 头 + 徽章 + 九节用户门面）
+- [x] 产物体积基线 → docs/MAINTENANCE.md §7；仓库现状说明 → §8「与源目录的同步状态」
+- [x] 「认证链路」「数据来源」删除（正本在 docs/ARCHITECTURE.md，属重复）
+- [x] docs/README.md 门面一行同步；CHANGELOG 增补「README 收敛批次」
+
+## 自检
+- `python tools/check-docs.py` ✓（22 篇）
+- 未触碰 src/ 与 deploy/（CI 的 vue-tsc + build 不受影响）
+
+## 状态: 已完成
+
+---
