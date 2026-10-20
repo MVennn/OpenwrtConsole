@@ -63,7 +63,7 @@
 
 | 原因 | 解法 |
 | --- | --- |
-| **前端过期时间 fallback 是 300 秒，服务端是 3600 秒** | 已知缺陷：`src/stores/session.ts` 的 `data.expires || 300`。服务端不返回 `expires` 时前端按 5 分钟算过期。修法：把 fallback 改成与服务端一致的 3600，或去掉 fallback 直接用服务端值。登记见根 [../CHANGELOG.md](../CHANGELOG.md) |
+| 前端过期时间 fallback 曾经是 300 秒，与服务端 3600 秒不一致 | **已修**：`src/stores/session.ts` 现在是 `data.expires \|\| 3600`，与服务端 `timeout: 3600` 对齐。若仍被提前踢回登录页，按第 9 节比对 `owrt-sid-exp` 与服务端实际过期时间 |
 | 服务端会话真的过期了（1 小时到了） | 重新登录。这是设计行为，不是 bug |
 | 浏览器清掉了 localStorage | 重新登录；注意隐私模式 / 无痕窗口会在关闭后清掉 |
 | `sid` 被复制到另一台设备上用 | ubus session 与客户端绑定（IP + UA），换设备就失效。重新登录 |
@@ -104,17 +104,17 @@
 
 ### 现象
 
-「代理」页空白，或提示未检测到 ShellCrash / mihomo；下拉框里没有节点。
+「代理」页空白，或提示未检测到 ShellCrash 核心；下拉框里没有节点。
 
 ### 排查步骤
 
-1. 先确认 mihomo 在跑、端口通：
+1. 先确认核心在跑、端口通（端口取自 `/tmp/ShellCrash/config.yaml` 的 `external-controller:`，默认 9999）：
 
    ```bash
    ssh root@<路由器IP> 'curl -s -m 5 http://127.0.0.1:9999/version'
    ```
 
-   连不上 → mihomo 没跑（不是控制台的问题）。
+   连不上 → 核心没跑或控制口不在该端口（不是控制台的问题）。
 
 2. 确认 `secret` 存在（**只查在不在，别把值贴到聊天/工单里**）：
 
@@ -136,11 +136,13 @@
 
 | 原因 | 解法 |
 | --- | --- |
-| mihomo 没运行 | 去 ShellCrash 起服务。注意实测设备上的 init 脚本处于「保守模式」（`start_old=ON`），`service_status` 显示 `inactive` 属正常，真实状态看 `running` |
+| 核心没运行 | 去 ShellCrash 起服务。注意实测设备上的 init 脚本处于「保守模式」（`start_old=ON`），`service_status` 显示 `inactive` 属正常，真实状态看 `running` |
 | `secret` 没配 | 在 ShellCrash 里设置 secret |
-| **控制台把策略组名硬编码成了中文正则** | `src/utils/proxy.ts` 用硬编码中文正则匹配组名（如「节点选择」「手动切换」「GLOBAL」）。**组名改了、正则没跟上，页面就显示不出出口。** 这是本仓已登记的耦合点 —— 见 [../AGENTS.md](../AGENTS.md) 第 2 条：策略组与规则的真源在 `ShellcrashRules` 仓 |
+| 核心控制口不在 9999 | 控制台与 CGI 都从 `/tmp/ShellCrash/config.yaml` 的 `external-controller:` 读端口（回退 9999）。先 `grep external-controller /tmp/ShellCrash/config.yaml` 确认真实端口，再试 `curl -s http://127.0.0.1:<端口>/version` |
+| 路由器上没有 `curl` | 代理页所有请求都经过 CGI 的 `curl`，缺失时回 `503`「缺少 curl」。装：`apk add curl` 或 `opkg update && opkg install curl` |
+| 主组入口选错（区域组被当成主组） | 现在按**类型优先**（Selector → URLTest → Fallback → LoadBalance）再按通用名称词（「节点选择」「Proxy」「Select」「手动切换」「GLOBAL」等）排序。若订阅用了非常规主组名，页面仍以类型优先，必要时在 `ShellcrashRules` 仓调整组定义 |
 | 组名含控制台不支持的字符 | 引号、反斜杠、`/`、`..` 会被 CGI 拒（`invalid name`）；多数 emoji 与中文名可用 |
-| 切换节点报 `switch failed` | mihomo 未运行或 secret 未配；先跑第 1 步 |
+| 切换节点报 `switch failed` | 核心未运行或 secret 未配；先跑第 1 步 |
 
 ---
 
@@ -153,7 +155,8 @@
 ### 排查步骤
 
 1. 看响应里的 `duration_ms` 与 `exit_code`：
-   - `duration_ms ≈ 12000` 且 `exit_code ≠ 0` → **被看门狗杀了**（12 秒上限）；
+   - `duration_ms` 接近该工具的超时上限且 `exit_code ≠ 0` → **被看门狗杀了**
+     （ping 30 秒 `T_PING` / dns 15 秒 `T_DNS` / trace 120 秒 `T_TRACE` / routes 与 ports 10 秒 `T_LOCAL`）；
    - `duration_ms` 很小且 `exit_code = 127` → **命令不存在**。
 2. 在路由器上确认工具在位：
 
@@ -164,7 +167,7 @@
 3. 手动跑一次，看真实耗时：
 
    ```bash
-   ssh root@<路由器IP> 'time ping -c 3 -W 3 example.com'
+   ssh root@<路由器IP> 'time ping -c 5 -s 56 -W 3 example.com'
    ```
 
 4. 看目标是否可达：
@@ -178,7 +181,7 @@
 | 原因 | 解法 |
 | --- | --- |
 | 目标真的不通（DNS 解析失败、外网被墙） | 这是诊断结果，不是控制台的 bug。换目标或先修网络 |
-| **超过 12 秒硬上限** | `modern-exec` 的 `RUN_TIMEOUT=12`：路由器没有 coreutils `timeout`，实现是「后台跑 + 看门狗 `sleep 12; kill -9`」。只能缩短目标或换工具 |
+| **超过该工具的超时上限** | 超时按工具区分：ping 30 秒、DNS 15 秒、路由跟踪 120 秒、路由表与监听端口 10 秒（`T_PING` / `T_DNS` / `T_TRACE` / `T_LOCAL`）。路由器没有 coreutils `timeout`，实现是「后台跑 + 看门狗 `sleep <超时>; kill -9`」。只能缩短目标 / 跳数或换工具 |
 | 路由器上缺 `ping` / `nslookup` / `traceroute` / `ip` / `netstat` | 装对应的包（`apk add busybox-extras` 之类，按路由器实际情况）。脚本已用 `netstat` 代替缺失的 `ss` |
 | 输出超过 200 KB 被截断 | 正常行为：`MAX_OUTPUT=204800`，尾部会标 `[输出超过 204800 字节，已截断]`，`truncated` 为 `true` |
 | 目标带非法字符 / 以 `-` 开头 | `400 {"error":"目标地址包含非法字符"}` / `{"error":"目标地址不能以 - 开头"}` |
@@ -219,7 +222,7 @@
 
 | 原因 | 解法 |
 | --- | --- |
-| **`deploy/deploy.sh` 的 for 循环里有一个字面 `\n`** | **已知缺陷（待修）**，见根 [../CHANGELOG.md](../CHANGELOG.md)。第 7 次迭代会把 `\n` 当成词 `n`，输入重定向指向不存在的 `deploy/n` → 重定向失败 → `set -eu` 下脚本直接退出 → **`modern-pkg` / `modern-sysupgrade` / `modern-shellcrash` 三个 CGI 永不部署**，末尾那两行 echo 也不打印。**临时绕行**：手工把这三个 CGI 传上去（见 [../DEPLOY.md](../DEPLOY.md) 的手动部署段） |
+| 用的是旧版 `deploy/deploy.sh`（for 循环里有一个字面 `\n`） | **已在当前脚本修复**：第 7 次迭代曾把 `\n` 当成词 `n`，输入重定向指向不存在的 `deploy/n`，在 `set -eu` 下脚本直接退出 → `modern-pkg` / `modern-sysupgrade` / `modern-shellcrash` 三个 CGI 不部署、末尾 echo 也不打印。**若仍遇到**，说明用的是旧脚本 —— 更新本仓后重新跑，或按 [../DEPLOY.md](../DEPLOY.md) 的手动部署段补齐 |
 | 旧 chunk 已被删除，旧标签页还在请求它 | 这是**设计如此**：uhttpd 不发 `Cache-Control`，浏览器启发式缓存 `index.html`。部署侧用 `/www/modern/assets.manifest` 保留「当前代 + 上一代」来兜底；命中 404 时应用会自动带 `?_reload=` 重载 |
 | `dist/` 里的 `base` 不是 `/modern/` | 重新构建。`vite.config.ts` 的 `base` 固定为 `/modern/` |
 | 路由器的 overlay 满了 | `df -h` 看 `/`；世代保留机制最多留两代（约 2.8 MB），多出来的要手工清 `/www/modern/assets` |
@@ -271,7 +274,8 @@
 | **CRLF 换行** | `sed -i 's/\r$//'` 或用 `deploy/deploy.sh` 重新部署（走 `cat` 传输不会引入 CRLF） |
 | 少了可执行位 | `chmod +x /www/cgi-bin/modern-*` |
 | 路由器上的 CGI 版本比前端旧 | `modern-pkg` 会回 `{"error":"不支持的操作","code":"unsupported_action"}`，前端据此判定「版本太旧」并回退。解法：把 CGI 全部重新传一遍 |
-| 改的是源目录、本仓没同步 | 本仓是快照 —— 见根 [../README.md](../README.md) 的「仓库现状说明」 |
+| **只更新了 `dist/`，没更新 CGI** | 客户端在线状态依赖 `modern-read` 新增的 `what=neighbors`，令牌动作依赖 `modern-uci` 的 `consume_token` 修复 —— 旧 CGI 不会有这些行为。重新跑 `deploy/deploy.sh`（它同时传 `dist/` 与 9 个 CGI） |
+| 改的是源目录、本仓没同步 | 本仓是快照 —— 见 [MAINTENANCE.md](MAINTENANCE.md) §8「与源目录的同步状态」 |
 | 脚本语法错误被 `set -e` 吞掉 | 在路由器上手动跑一遍 CGI，看 stderr |
 
 ---
@@ -329,7 +333,7 @@ import 'element-plus/es/components/table/style/css'   // 例：新增 el-table �
 
 | 原因 | 解法 |
 | --- | --- |
-| **前端 fallback 是 300 秒，服务端是 3600 秒** | 已知缺陷（待修）。`src/stores/session.ts` 的 `const expires = data.expires || 300`。服务端正常会返回 `expires`，但**一旦没返回，前端就按 5 分钟算** —— 表现为「明明才登录几分钟就被踢」。修法见根 [../CHANGELOG.md](../CHANGELOG.md) |
+| 前端 fallback 曾经是 300 秒，与服务端 3600 秒不一致 | **已修**：`src/stores/session.ts` 的 fallback 现在是 `3600`，与服务端一致。若仍提前过期，按上面的步骤 2–3 比对，并把 `owrt-sid-exp` 与服务端 `ubus call session get` 的剩余时间记下来排查 |
 | 服务端会话真的过期（1 小时） | 重新登录。这是设计行为 |
 | 路由器重启 | ubus 会话在 rpcd 重启后全部失效。重新登录 |
 | `validateSession()` 把**临时网络抖动**当成了会话失效 | 不会：它只在 `SessionExpiredError`（ubus `-32002`）时清会话，普通网络错误保留会话 |
@@ -396,3 +400,212 @@ curl -sk -X POST -H 'Content-Type: application/json'   -d '{"action":"config-wri
 | **前端拿到完成记录就停止轮询**，之后再也不拉状态；那个每秒跳的计时器只更新计数 | 前端拿到完成记录后继续等 `running` 变成期望值（启动/重启等 true，停止等 false），任务进行中每 3 秒拉一次状态；核心起得慢时后台继续跟踪 |
 | 核心真的没起来 | 看 `ps | grep CrashCore` 与 `/etc/ShellCrash/logs/`；ShellCrash 的 init 脚本是「保守模式」（`start_old=ON`），核心由 `start.sh` 拉起、不在 procd 下，所以 `service_status` 一直显示 `inactive` 属正常 |
 
+---
+
+## 12. 改密码失败
+
+### 现象
+
+「DHCP 与系统设置」页修改管理员密码后报「修改失败」或「令牌无效或已过期」，
+密码实际没变。
+
+### 排查步骤
+
+1. 看响应状态码：
+   - `403 {"error":"令牌无效或已过期"}` → 令牌路径的问题；
+   - `500 {"error":"修改失败"}` → 改密工具执行失败；
+   - `500 {"error":"系统缺少密码修改工具（chpasswd 或 passwd）"}` → 两个工具都不在。
+2. 在路由器上确认 CGI 版本与工具：
+
+   ```bash
+   ssh root@<路由器IP> 'md5sum /www/cgi-bin/modern-uci'
+   md5sum deploy/modern-uci
+   ssh root@<路由器IP> 'command -v chpasswd; command -v passwd'
+   ```
+
+### 原因 / 解法
+
+| 原因 | 解法 |
+| --- | --- |
+| 路由器上的 `modern-uci` 还是旧版 | 旧版的 `consume_token` 检查未定义的 `$got`，**所有令牌动作必然报令牌无效**。重新部署 CGI（见 [../DEPLOY.md](../DEPLOY.md)） |
+| 固件只有 BusyBox `passwd`、没有 `chpasswd` | 当前版本已回退到 `passwd`（stdin 喂两行密码），确认 `command -v passwd` 有输出；若两边都没有，需要固件自带一个改密工具 |
+| `passwd` 执行失败 | 检查根文件系统是否只读（`mount \| grep ' / '`）、用户名是否在当前系统里存在；CGI 只允许 `[A-Za-z0-9._-]` 且不以 `-` 开头的用户名 |
+| 输入了非法用户名 | 返回 `400 {"error":"用户名包含非法字符"}`，换成字母 / 数字 / `.` `_` `-` |
+
+---
+
+## 13. 提示缺少 curl
+
+### 现象
+
+代理页、固件页的更新检查 / 下载返回 503，提示「缺少 curl」。
+
+### 排查步骤
+
+```bash
+ssh root@<路由器IP> 'command -v curl || echo MISSING'
+```
+
+### 原因 / 解法
+
+| 原因 | 解法 |
+| --- | --- |
+| 固件没带 `curl` | apk 固件：`apk add curl`；opkg 固件：`opkg update && opkg install curl` |
+| 只关心本地动作 | 固件的 `info` / `upload` / `upgrade` / `backup` / `restore` **不需要** `curl`；只有 `check-update` 与 `download` 需要 |
+
+---
+
+## 14. 概览 / 无线 / 客户端页没有数据
+
+### 现象
+
+登录正常，但这三页的无线、终端、租约数据是空的；网络页和其它页正常。
+
+### 排查步骤
+
+```bash
+ssh root@<路由器IP> 'ubus list | grep -E "^(luci|luci-rpc)$"'
+```
+
+两条都不在（或只有 `luci`）→ 固件缺少对应 ubus 对象。
+
+### 原因 / 解法
+
+| 原因 | 解法 |
+| --- | --- |
+| 精简固件没装 LuCI 相关包 | `apk add rpcd-mod-luci`（或 `apk add luci-base`）；opkg 固件用 `opkg update && opkg install rpcd-mod-luci` |
+| 无线页仍为空，但 `luci-rpc` 在 | `modern-data` 会按 luci-rpc → `iwinfo devices` → `/sys/class/ieee80211/*/device/net/*` 逐级回退；再查 `iwinfo` 是否存在、无线是否启用 |
+| 客户端页只显示部分设备 | 在线判定用「无线关联表 + 邻居表」；路由器上执行 `ip neigh show` 确认有对应条目。邻居表由 `modern-read?what=neighbors` 读取，**旧 CGI 没有这个 action** |
+
+---
+
+## 15. 软件包页提示只支持 apk
+
+### 现象
+
+软件包页所有操作都返回「此固件使用 opkg，控制台目前只支持 apk（OpenWrt 24.10+）」
+（HTTP 501，`code: opkg_not_supported`）。
+
+### 排查步骤
+
+```bash
+ssh root@<路由器IP> 'command -v apk; command -v opkg'
+```
+
+### 原因 / 解法
+
+| 原因 | 解法 |
+| --- | --- |
+| 固件是 OpenWrt 24.10 之前的 opkg 版本 | 这是**已知限制，不是 bug**：控制台尚未实现 opkg 后端。升级固件到 24.10+，或继续用 LuCI / SSH 管理软件包 |
+| 两个包管理器都没有 | 返回 `package_manager_missing`；该固件本身无法管理软件包 |
+
+---
+
+## 16. 固件页不判定可升级
+
+### 现象
+
+固件页不显示「有更新」，也不显示「已是最新」，只显示一条 warning。
+
+### 排查步骤
+
+```bash
+ssh root@<路由器IP> 'ubus call system board'
+```
+
+看 `release.version` 与 `release.distribution`。
+
+### 原因 / 解法
+
+| 原因 | 解法 |
+| --- | --- |
+| 版本是 `SNAPSHOT` / `rNNNNN` / 自编版本号 | 三段式数字版本号才能与官方稳定版比较；无法比较时只给 warning，**不判「可升级」也不判「已是最新」**。升级前自行确认目标固件兼容性 |
+| `distribution` 不是 `OpenWrt` | 非官方发行版同样只给 warning |
+| 官方源没有该机型的镜像 | warning 写「官方源中暂时没有该机型的升级固件（.bin/.img.gz/.itb）」；可手动上传 `.bin` / `.tar` / `.img` / `.gz` / `.itb` |
+
+---
+
+## 17. 静态路由的「生效状态」显示未知
+
+### 现象
+
+「网络配置 → 静态路由」的生效状态一直显示「未知」，即使接口里有路由。
+
+### 排查步骤
+
+1. 在路由器上直接问 netifd：
+
+   ```bash
+   ssh root@<路由器IP> 'ubus call network route'
+   ```
+
+2. 若该命令报错或返回不含 `routes` 的结构，再看接口 dump：
+
+   ```bash
+   ssh root@<路由器IP> 'ubus call network.interface dump'
+   ```
+
+### 原因 / 解法
+
+| 原因 | 解法 |
+| --- | --- |
+| netifd 版本不提供 `network route` | 当前版本已回退到 `network.interface dump` 的 `route` 数组（`target` + `mask`），生效状态仍可计算 |
+| 两个来源都取不到 | 只有这时才显示「未知」；通常是 netifd 未运行或会话 ACL 异常 |
+| 前端版本旧 | 该回退在 `src/api/networkConfig.ts` 的 `fetchActiveRoutes()` 里，重新部署 `dist/` |
+
+---
+
+## 18. 无线页没有 6 GHz / 多 SSID 显示不对
+
+### 现象
+
+无线页只列出一个 SSID，或频段筛选里没有 6 GHz，或信道显示的是配置值而不是实际值。
+
+### 排查步骤
+
+1. 看运行时数据：
+
+   ```bash
+   ssh root@<路由器IP> 'iwinfo; iwinfo phy0 info 2>/dev/null | head -20'
+   ```
+
+2. 看配置里的射频与 SSID 数量：
+
+   ```bash
+   ssh root@<路由器IP> 'uci show wireless | grep -E "wifi-device|wifi-iface|band|channel|htmode"'
+   ```
+
+### 原因 / 解法
+
+| 原因 | 解法 |
+| --- | --- |
+| 设备本来没有 6 GHz 射频 | 频段筛选按**实际存在的射频**动态生成，没有 6 GHz 就不显示该筛选项 |
+| 多个 SSID 挂在同一射频下 | 现在按射频聚合全部 SSID 的终端 / 信号 / 流量，标题显示「主 SSID +N」；SSID 数量按实际段数统计 |
+| 信道显示的是配置值而不是实际值 | 页面优先显示 `iwinfo` 上报的信道；`iwinfo` 不可用时才回退配置值 |
+| 6 GHz / DFS 信道缺失 | 可用性取决于国家码与驱动；配置页列出候选信道，最终以驱动接受为准 |
+
+---
+
+## 19. 侧栏和登录页没有 LuCI 入口
+
+### 现象
+
+侧栏底部或登录页显示「LuCI 未安装」，没有「应急入口：LuCI」链接。
+
+### 排查步骤
+
+1. 浏览器 F12 → Network，找 `/cgi-bin/luci/` 的 HEAD 请求：404 表示确实没装。
+2. 在路由器上确认：
+
+   ```bash
+   ssh root@<路由器IP> 'ls /www/cgi-bin/luci >/dev/null 2>&1 && echo present || echo missing'
+   ```
+
+### 原因 / 解法
+
+| 原因 | 解法 |
+| --- | --- |
+| 固件没装 LuCI | 装 `luci-base`（或对应 LuCI 包）后刷新页面 |
+| LuCI 已装，但 HEAD 请求返回 403 等错误 | 入口探测只把 `<400` 与 `405` 当作「可用」，其它状态都按未安装处理；确认 uhttpd 没有拦截 `/cgi-bin/luci/` |
+| 探测超时 | 探测上限 2 秒，路由器极慢时会判为未安装；刷新页面会重新探测 |
+| HTTPS 提示不对 | 登录页按 `window.location.protocol` 显示：HTTPS 显示「HTTPS 已启用」，HTTP 显示「HTTP 连接（建议 HTTPS）」 |

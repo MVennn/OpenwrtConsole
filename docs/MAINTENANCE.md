@@ -89,6 +89,22 @@ curl -sk https://<路由器IP>/modern/ | head -5             # 期望能看到 <
 浏览器里走一遍：登录 → 概览有数 → 无线页能列出终端 → 诊断页 ping 一下 →
 代理页能看到策略组 → 软件包页能看到已装列表。
 
+### 1.5 路由器运行时依赖
+
+控制台不随包安装这些依赖，部署前确认它们在路由器上存在：
+
+| 依赖 | 谁在用 | apk 固件（24.10+） | opkg 固件 |
+| --- | --- | --- | --- |
+| `rpcd-mod-luci` | `luci` / `luci-rpc` ubus 对象；概览、无线、客户端页 | `apk add rpcd-mod-luci`（或 `apk add luci-base`） | `opkg update && opkg install rpcd-mod-luci` |
+| `curl` | 代理页；固件页的更新检查与下载 | `apk add curl` | `opkg update && opkg install curl` |
+| `apk` | 软件包页（唯一后端） | 自带 | 无 —— 软件包页不可用（返回 501） |
+
+缺少时的现象与排错见 [TROUBLESHOOTING.md](TROUBLESHOOTING.md) 第 13–15 节。
+
+> **部署必须同时更新 `dist/` 与 `/www/cgi-bin/modern-*`。** 只传 `dist/` 会让新前端配旧 CGI：
+> 客户端在线状态依赖 `modern-read` 新增的 `what=neighbors`，令牌动作依赖 `modern-uci`
+> 对 `consume_token` 的修复 —— 两者都在 CGI 里，`deploy/deploy.sh` 会一起传。
+
 ## 2. 世代保留机制
 
 **问题**：uhttpd 不发 `Cache-Control`，浏览器会启发式缓存 `index.html`。
@@ -218,7 +234,7 @@ ssh root@<路由器IP> 'cat > /www/cgi-bin/.modern-uci.new && chmod +x /www/cgi-
   「本仓根目录」的部署路径；PROGRESS.md 补齐 v4 / v5 / v6 三批），**不再是源目录副本**。
 - 仍是源目录副本的只有 `DESIGN.md` / `docs/V2-CONTRACT.md` / `docs/V3-CONTRACT.md` ——
   它们有过期内容，但**刻意不在本仓修**（改了反而与源目录产生无谓偏差）。
-  已登记的过期点见根 [../README.md](../README.md) 的「仓库现状说明」表格。
+  已登记的过期点见本篇 §8「与源目录的同步状态」表格。
 - 需要同步时：**以源目录为准**做一次定向 diff，把真正需要的内容并过来。
 
 ## 6. 收尾清单
@@ -229,6 +245,7 @@ ssh root@<路由器IP> 'cat > /www/cgi-bin/.modern-uci.new && chmod +x /www/cgi-
 - [ ] `npm run build` 通过，`dist/index.html` 的引用带 `/modern/` 前缀
 - [ ] 部署到路由器（`deploy.sh` 的字面 `\n` 缺陷已修，**首次修复后仍要真机跑一次**，
       确认 9 个 CGI 全部到位、末尾两行 `echo` 有输出）
+- [ ] 路由器运行时依赖在位：`rpcd-mod-luci`、`curl`、`apk`（见 §1.5）
 - [ ] 9 个 CGI 都在 `/www/cgi-bin/`、都有 `x` 位、都是 LF
 - [ ] 浏览器里走一遍：登录 → 概览 → 无线 → 诊断 → 代理 → 软件包 → 固件
 - [ ] 新加的 Element Plus 组件样式已进 `src/plugins/element.ts`

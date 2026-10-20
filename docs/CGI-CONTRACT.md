@@ -33,6 +33,7 @@
 | `405` | 方法不允许 | `{"error":"只接受 POST 请求"}` |
 | `413` | 请求体过大 | `{"error":"请求体过大"}` |
 | `500` | 内部失败 | `{"error":"..."}` |
+| `501` | 固件不支持该能力（如没有 apk） | `{"ok":false,"error":"此固件使用 opkg，控制台目前只支持 apk（OpenWrt 24.10+）","code":"opkg_not_supported"}` |
 | `503` | 依赖未就绪 | `{"error":"shellcrash not configured"}` |
 
 ### 一次性令牌机制（`modern-uci` 签发，`modern-sysupgrade` 消费）
@@ -43,9 +44,15 @@
 - **有效期**：**120 秒**。
 - **单次使用**：校验时**先把文件删掉再比对用途与有效期**。
   → **用途写错等于令牌作废**，必须重新申请；同一次操作不要重试同一个令牌。
+- **令牌字符集**：`[A-Za-z0-9-]`（令牌会拼成文件名，点、斜杠等路径字符一律拒绝）。
 - **用途必须完全一致**，已知用途：
   `set-password` · `reboot` · `factory-reset` · `backup-restore` · `firmware-upgrade`。
 - **口令与固件刷写这类动作还要求界面上的确认词**（前端先弹确认框，用户输入确认词后才去申请令牌）。
+
+> **历史缺陷（本版已修）**：`consume_token` 原来检查的是未定义的 `$got`（实际参数名是 `$_got`），
+> 空值判断永远成立，于是**所有令牌动作**（改密码 / 重启 / 恢复出厂 / 恢复备份）
+> 一律回 `403 {"error":"令牌无效或已过期"}`。修法是改为检查 `$_got`，并限制令牌字符集。
+> 如果升级后仍报令牌无效，先确认路由器上的 `modern-uci` 已在本次部署中更新。
 
 ---
 
@@ -80,7 +87,7 @@ curl -sk -X POST -H 'Content-Type: application/json'   -d '{"action":"status","p
 ```
 
 > 例外：`modern-uci` 的 `svc-list` 直接透传 `ubus call luci getInitList` 的原始 JSON，
-> `modern-proxy` 直接透传 mihomo 的应答 —— 两者上游本身就是 JSON，不经过拼装。
+> `modern-proxy` 直接透传核心的应答 —— 两者上游本身就是 JSON，不经过拼装。
 
 ---
 
@@ -104,7 +111,7 @@ curl -sk -X POST -H 'Content-Type: application/json'   -d '{"action":"status","p
 { "sid": "0123456789abcdef…", "expires": 3600 }
 ```
 
-- `expires` 单位是**秒**。取值优先级：`ubus session.login` 返回的 `expires` → 其 `timeout` → 兜底 **300**。
+- `expires` 单位是**秒**。取值优先级：`ubus session.login` 返回的 `expires` → 其 `timeout` → 兜底 **3600**。
 - 服务端申请时用的是 `timeout: 3600`（1 小时）。
 
 **响应 `401`**：`{"error":"用户名或密码错误"}`（服务端会先 `sleep(1)` 再回，用于拖慢暴力破解）。
@@ -129,7 +136,8 @@ curl -sk -X POST -H 'Content-Type: application/json'   -d '{"action":"status","p
 ```
 
 - 键是无线接口名，值是该接口的 `iwinfo assoclist` 结果数组。
-- 取不到无线设备时**兜底**用 `phy0-ap0` / `phy1-ap0` 两个接口名去试。
+- 无线接口名按 **luci-rpc `getWirelessDevices` → `iwinfo devices` → `/sys/class/ieee80211/*/device/net/*` → 空数组** 逐级探测；
+  **不再猜测** `phy0-ap0` / `phy1-ap0` 这类只在个别板子上成立的名字。
 - `rx.rate` / `tx.rate` 单位是 **Kbit/s**。
 
 **`what=logs` 响应 `200`**
@@ -144,9 +152,9 @@ curl -sk -X POST -H 'Content-Type: application/json'   -d '{"action":"status","p
 
 ---
 
-## 3. `modern-read` —— dnsmasq 运行时状态
+## 3. `modern-read` —— dnsmasq 运行时状态与邻居表
 
-**路径**：`GET /cgi-bin/modern-read?what=leases|hosts|resolv[&sid=]`
+**路径**：`GET /cgi-bin/modern-read?what=leases|hosts|resolv|neighbors[&sid=]`
 **运行时**：ucode。**纯只读。**
 
 **`what=leases` 响应 `200`**（读 `/tmp/dhcp.leases`）
@@ -170,10 +178,23 @@ curl -sk -X POST -H 'Content-Type: application/json'   -d '{"action":"status","p
 { "nameservers": ["192.168.1.1"], "search": ["lan"] }
 ```
 
+**`what=neighbors` 响应 `200`**（读 `ip neigh show` 与 `ip -6 neigh show`）
+
+```json
+{ "neighbors": [ { "ip": "192.168.1.100", "mac": "aa:bb:cc:dd:ee:ff", "device": "br-lan", "state": "REACHABLE" } ] }
+```
+
+- 每行格式是 `<ip> dev <device> [lladdr <mac>] <state>`；应答只返回 `ip` / `mac` / `device` / `state`，
+  行内其它字段不返回。
+- **没有 `lladdr` 的条目被丢弃**（INCOMPLETE / FAILED 探测没有 MAC，无法归属到设备）；
+  `state` 为 `FAILED` 的条目也丢弃。
+- IPv4 与 IPv6 两张表都读，某一家族不可用（如 IPv6 关闭）只损失那一半。
+
 **其它**：`401` · `400 {"error":"unknown action"}`。
 
-> **文件路径是字面常量**，`what` 只能在三个读取器里选，请求无法到达任意路径。
+> **文件路径是字面常量**，`what` 只能在**四个**读取器里选，请求无法到达任意路径。
 > 文件缺失或读不到 → **返回空数组 + 200**，不是错误。
+> `neighbors` 只执行两条固定的 `ip neigh` 命令，不接受任何参数。
 
 ---
 
@@ -188,16 +209,26 @@ curl -sk -X POST -H 'Content-Type: application/json'   -d '{"action":"status","p
 { "tool": "ping", "target": "example.com" }
 ```
 
-| `tool` | 实际命令 | 是否需要 `target` |
+| `tool` | 实际命令（默认参数） | 是否需要 `target` |
 | --- | --- | --- |
-| `ping` | `ping -c 3 -W 3 <target>` | 是 |
+| `ping` | `ping -c 5 -s 56 -W 3 <target>` | 是 |
 | `dns` | `nslookup <target>` | 是 |
-| `trace` | `traceroute -n -w 1 -q 3 <target>` | 是 |
+| `trace` | `traceroute -n -w 1 -q 3 -m 15 <target>` | 是 |
 | `routes` | `ip route show` | 否（忽略） |
 | `ports` | `netstat -lntup` | 否（忽略） |
 
 - `target` 字符集 `[A-Za-z0-9._:-]`，最长 253 字符，**不能以 `-` 开头**（会被当成选项）。
 - `target` 是唯一的用户输入，作为**一个带引号的参数**传给命令，shell 不会二次解析。
+- 数字预设有可选参数，**只接受数字**，越界时回落到默认值（见下表）。
+
+| 参数 | 作用 | 范围 | 默认 |
+| --- | --- | --- | --- |
+| `count` | ping 次数 | 1–20 | 5 |
+| `size` | ping 包大小 | 56–1400 | 56 |
+| `wait` | ping 单次等待（秒） | 1–10 | 3 |
+| `hops` | traceroute 最大跳数 | 1–30 | 15 |
+| `twait` | traceroute 单跳等待（秒） | 1–5 | 1 |
+| `probes` | traceroute 每跳探测数 | 1–3 | 3 |
 
 **响应 `200`**
 
@@ -205,7 +236,8 @@ curl -sk -X POST -H 'Content-Type: application/json'   -d '{"action":"status","p
 {
   "tool": "ping",
   "target": "example.com",
-  "command": "ping -c 3 -W 3 example.com",
+  "command": "ping -c 5 -s 56 -W 3 example.com",
+  "params": { "count": 5, "size": 56, "wait": 3 },
   "output": "PING example.com (…)\n…",
   "exit_code": 0,
   "duration_ms": 3012,
@@ -214,8 +246,10 @@ curl -sk -X POST -H 'Content-Type: application/json'   -d '{"action":"status","p
 ```
 
 - `output` 是纯文本（已做 JSON 转义）；换行以 `\n` 呈现。
-- **单次最长 12 秒**（`RUN_TIMEOUT=12`）：路由器没有 coreutils `timeout`，
-  实现是「后台跑 + 看门狗 `sleep 12; kill -9`」。
+- `params` 是**实际生效**的数字预设（`routes` / `ports` 为空对象）。
+- **单次超时按工具区分**：ping **30 秒**（`T_PING`）、DNS **15 秒**（`T_DNS`）、
+  路由跟踪 **120 秒**（`T_TRACE`）、路由表与监听端口 **10 秒**（`T_LOCAL`）。
+  路由器没有 coreutils `timeout`，实现是「后台跑 + 看门狗 `sleep <超时>; kill -9`」。
 - **输出超过 204 800 字节（200 KB）截断**，尾部追加 `[输出超过 204800 字节，已截断]`，
   同时 `truncated` 置 `true`。
 
@@ -227,24 +261,28 @@ curl -sk -X POST -H 'Content-Type: application/json'   -d '{"action":"status","p
 
 ---
 
-## 5. `modern-proxy` —— mihomo 代理桥
+## 5. `modern-proxy` —— 核心代理桥
 
 **路径**：`GET /cgi-bin/modern-proxy?path=<路径>[&url=<延迟探测地址>][&sid=]`
 **路径**：`POST /cgi-bin/modern-proxy?sid=<sid>`，body `{"group":"…","node":"…"}`
 **运行时**：sh。
 
+**控制口地址**：`http://127.0.0.1:<port>`。端口从运行时配置
+`/tmp/ShellCrash/config.yaml` 的 `external-controller:` 解析（接受 `:9999` 与 `127.0.0.1:9999`
+两种写法），**读不到时回退 9999** —— ShellCrash 可能把控制口挪到别的端口。
+
 **GET 的 `path` 取值**
 
 | `path` | 含义 |
 | --- | --- |
-| `/version` | mihomo 版本 |
+| `/version` | 核心版本 |
 | `/configs` | 运行配置 |
 | `/proxies` | 全部策略组与节点 |
 | `/connections` | 活动连接 |
 | `/proxies/<组名>` | 单个策略组详情 |
 | `/proxies/<节点名>/delay` | 延迟探测（可带 `url=`） |
 
-- 响应体是 **mihomo 的原始 JSON**（透传，不加工）。
+- 响应体是**核心的原始 JSON**（透传，不加工）。
 - `delay` 的 `url` **只允许三个固定地址**：
   `http://www.gstatic.com/generate_204`、`http://cp.cloudflare.com/generate_204`、
   `https://www.gstatic.com/generate_204`；不传则用第一个。
@@ -255,18 +293,19 @@ curl -sk -X POST -H 'Content-Type: application/json'   -d '{"action":"status","p
 { "ok": true, "group": "🤖 AI接口#🚀 节点选择", "node": "日本-优化" }
 ```
 
-失败时（mihomo 返回非 200/204）：
+失败时（核心返回非 200/204）：
 
 ```json
 { "ok": false, "error": "switch failed" }
 ```
 
-> **真正的授权在服务端**：切换前会先向 mihomo 回读该策略组的成员表，
+> **真正的授权在服务端**：切换前会先向核心回读该策略组的成员表，
 > 节点不在组内 → `400 {"error":"node not in group"}`；组不存在 → `400 {"error":"group not found"}`。
 > 名字白名单允许 emoji / 中文 / `#` / `&` / 空格，但拒绝控制字符、`"`、`\`、`/`、`..`，长度 ≤ 64 字符。
 
 **其它**：`401` · `503 {"error":"shellcrash not configured"}`（读不到 `secret`）·
-`400 {"error":"bad path"}` · `400 {"error":"invalid name"}` ·
+`503 {"ok":false,"error":"缺少 curl，无法访问 ShellCrash 控制接口。请先安装：apk add curl 或 opkg update && opkg install curl"}`
+（路由器没有 `curl`）· `400 {"error":"bad path"}` · `400 {"error":"invalid name"}` ·
 `400 {"error":"url not allowed"}` · `400 {"error":"missing group or node"}`。
 
 > `secret` 只在路由器本地从 `/etc/ShellCrash/configs/ShellCrash.cfg` 读取，**永不下发到浏览器**。
@@ -305,7 +344,12 @@ curl -sk -X POST -H 'Content-Type: application/json'   -d '{"action":"status","p
 - `service` 必须匹配 `[A-Za-z0-9_-]+` **且** `/etc/init.d/<service>` 存在，否则 `400 {"error":"服务不存在"}`。
 - `svc_action` 只能是 `start|stop|restart|reload|enable|disable`，否则 `400 {"error":"不支持的动作"}`。
 - 备份 / 恢复路径必须以 `/tmp/` 开头，否则 `400 {"error":"备份路径必须位于 /tmp"}`。
-- `set-password`：`username ≤ 32`、`password ≤ 128`，否则 `400 {"error":"参数过长"}`。
+- `set-password`：`username ≤ 32`、`password ≤ 128`，否则 `400 {"error":"参数过长"}`；
+  用户名还限 **`[A-Za-z0-9._-]` 且不能以 `-` 开头**（会被 `passwd` 当成选项），
+  否则 `400 {"error":"用户名包含非法字符"}`。
+- `set-password` 的改密工具：**优先 `chpasswd`**（从 stdin 读 `user:password`）；
+  路由器没有 `chpasswd`（BusyBox 不提供）时**回退 `/bin/passwd`**，用 stdin 喂两行密码；
+  两者都没有 → `500 {"error":"系统缺少密码修改工具（chpasswd 或 passwd）"}`。
 - `reboot` / `factory-reset` / `backup-restore` 是**延迟执行**的（`sleep 1` 后在后台跑），
   返回 `{"ok":true}` 时设备**还没重启**。
 
@@ -313,7 +357,9 @@ curl -sk -X POST -H 'Content-Type: application/json'   -d '{"action":"status","p
 `400 {"error":"请求体为空"}` · `403 {"error":"令牌无效或已过期"}` ·
 `400 {"error":"缺少用途"}` · `400 {"error":"缺少用户名或密码"}` · `400 {"error":"缺少时间"}` ·
 `400 {"error":"缺少备份路径"}` · `400 {"error":"备份文件不存在"}` · `400 {"error":"不支持的操作"}` ·
-`500 {"error":"无法签发令牌"}` · `500 {"error":"修改失败"}` · `500 {"error":"备份失败"}`。
+`400 {"error":"用户名包含非法字符"}` ·
+`500 {"error":"无法签发令牌"}` · `500 {"error":"修改失败"}` ·
+`500 {"error":"系统缺少密码修改工具（chpasswd 或 passwd）"}` · `500 {"error":"备份失败"}`。
 
 ---
 
@@ -321,6 +367,17 @@ curl -sk -X POST -H 'Content-Type: application/json'   -d '{"action":"status","p
 
 **路径**：`POST /cgi-bin/modern-pkg?sid=<sid>`
 **运行时**：sh。请求体**扁平**：`{"action":"…","name":"…",…}`。
+
+**包管理器：只支持 apk（OpenWrt 24.10+）**
+
+- 所有 action 执行前先检查 `command -v apk`。没有 apk 但有 `opkg` →
+  **`501`** `{"ok":false,"error":"此固件使用 opkg，控制台目前只支持 apk（OpenWrt 24.10+）","code":"opkg_not_supported"}`；
+- 两者都没有 → `501 {"ok":false,"error":"当前固件没有 apk 或 opkg，无法管理软件包","code":"package_manager_missing"}`。
+- **opkg 的完整支持尚未实现**，当前只返回可读错误，不是空列表。
+
+**代理**：需要出网时，端口取自 `/tmp/ShellCrash/config.yaml` 的 `mixed-port:`
+（回退 7890），并用 `netstat` 按**端口**判断是否在监听（兼容 netstat 把 IPv6 监听打印成
+`:::7890` 的写法）；端口没在监听就不设 `http_proxy` / `https_proxy`。
 
 **动作与响应**
 
@@ -367,6 +424,8 @@ curl -sk -X POST -H 'Content-Type: application/json'   -d '{"action":"status","p
 **其它**：`401` · `405` · `400 {"error":"请求体为空"}` · `413 {"error":"请求体过大"}` ·
 `400 {"error":"缺少操作名称"}` · `400 {"error":"任务编号无效"}` ·
 `404 {"error":"任务不存在或已过期"}` · `500 {"error":"无法创建临时目录"}` · `500 {"error":"无法启动任务"}` ·
+`501 {"ok":false,"error":"此固件使用 opkg，控制台目前只支持 apk（OpenWrt 24.10+）","code":"opkg_not_supported"}` ·
+`501 {"ok":false,"error":"当前固件没有 apk 或 opkg，无法管理软件包","code":"package_manager_missing"}` ·
 `400 {"error":"不支持的操作","code":"unsupported_action"}`（**带 `code` 字段** ——
 前端据此判定「路由器上的 CGI 版本太旧」，可以回退到旧路径）。
 
@@ -388,6 +447,13 @@ curl -sk -X POST -H 'Content-Type: application/json'   -d '{"action":"status","p
 **参数来源**：`token` / `path` / `filename` 可以来自查询参数，也可以来自 JSON 体
 （`Content-Type: application/json` 时才解析体，≤8192 字节）。
 固件文件名来自 `X-Filename` 头（uhttpd 导出为 `HTTP_X_FILENAME`），回退到 `?filename=`。
+
+**网络与依赖**
+
+- **`check-update` 与 `download` 需要 `curl`**，缺失时 `503 {"ok":false,"error":"缺少 curl，固件更新检查与下载需要 curl。请先安装：apk add curl 或 opkg update && opkg install curl"}`；
+  **`info` / `upload` / `upgrade` / `backup` / `restore` 等本地动作不要求 `curl`**。
+- 代理端口取自 `/tmp/ShellCrash/config.yaml` 的 `mixed-port:`（回退 7890）；
+  **端口没有在监听时不设代理**，避免核心没运行时每个请求都先等代理超时。
 
 **动作与响应**
 
@@ -417,12 +483,22 @@ curl -sk -X POST -H 'Content-Type: application/json'   -d '{"action":"status","p
 }
 ```
 
-- `update` 是上次成功检查的结果（缓存在 `/tmp/modern-fw-update/result.json`），没有则为 `null`。
+- `update` 是上次成功检查的结果（缓存在 `/tmp/modern-fw-update/result.json`），没有则为 `null`；
+  结果里的 `warning` 是**多个告警合并后的一段文字**（官方源缺图、版本号无法比较、非官方发行版等）。
 - `update_checked_at` 是上次检查的 Unix 秒。
+
+**更新检查的判定**
+
+- 官方镜像按 **`.bin` / `.img.gz` / `.itb`** 查找，优先 sysupgrade 镜像；不再只认 `.bin`。
+- **只有三段式数字版本号**（如 `24.10.0`）才与官方稳定版比较。SNAPSHOT、`rNNNNN`、
+  自编版本号一律**不判「可升级」**，而是回 `warning`（`upgradable: false`）。
+- 发行版（`distribution`）不是 `OpenWrt` 时同样只加 `warning`，不判定可升级。
+- 前端在 `warning` 存在时**不显示「已是最新」**，只显示告警。
 
 **校验规则**
 
-- 固件文件名只允许 `[A-Za-z0-9._-]`，≤64 字符，且后缀必须是 **`.bin` 或 `.tar`**。
+- 上传的固件文件名只允许 `[A-Za-z0-9._-]`，≤64 字符，且后缀必须是
+  **`.bin` / `.tar` / `.img` / `.gz` / `.itb`** 之一。
 - 上传 ≤ **40 MB**（41943040 字节）；空文件 → `400 {"error":"上传内容为空"}`。
 - `upgrade` 前必须已有非空固件文件，否则 `400 {"error":"请先上传固件文件"}`。
 - 备份 / 恢复路径必须以 `/tmp/` 开头，文件名只允许 `[A-Za-z0-9._-]`。
@@ -432,8 +508,9 @@ curl -sk -X POST -H 'Content-Type: application/json'   -d '{"action":"status","p
 **其它**：`401` · `405` · `400 {"error":"缺少操作名称"}` · `413 {"error":"固件文件超过 40MB 上限"}` ·
 `403 {"error":"令牌无效或已过期"}` · `400 {"error":"缺少固件文件名"}` ·
 `400 {"error":"文件名只允许字母、数字、点、下划线和连字符"}` · `400 {"error":"文件名过长，最多 64 个字符"}` ·
-`400 {"error":"只支持 .bin 或 .tar 固件文件"}` · `400 {"error":"固件文件为空"}` ·
-`400 {"error":"备份文件不存在"}` · `500 {"error":"固件文件保存失败"}`。
+`400 {"error":"只支持 .bin、.tar、.img、.gz 或 .itb 固件文件"}` · `400 {"error":"固件文件为空"}` ·
+`400 {"error":"备份文件不存在"}` · `500 {"error":"固件文件保存失败"}` ·
+`503 {"ok":false,"error":"缺少 curl，固件更新检查与下载需要 curl。请先安装：apk add curl 或 opkg update && opkg install curl"}`。
 
 ---
 
@@ -453,8 +530,20 @@ curl -sk -X POST -H 'Content-Type: application/json'   -d '{"action":"status","p
 | `overrides` | — | `{"ok":true,"files":[{"name":"config.yaml","enabled":true,"description":"…"}],"global_disabled":false}` |
 | `override-toggle` | `file`、`enable=yes\|no`、`confirm=yes` | `{"ok":true,"file":"rules.yaml","enabled":true,"message":"覆写文件已启用，需重启 ShellCrash 生效"}` |
 | `subs` | — | `{"ok":true,"count":N,"url_count":N,"provider_count":N,"url_id":"…","update_source":"…","alias":"…","subs":[…],"providers":[…]}` |
+| `ports` | — | `{"ok":true,"ports":[{"port":7890,"listening":true,"pid":9998,"process":"CrashCore"}]}` |
 | `log` | `file`（可选） | `{"ok":true,"file":"…","lines":[…],"files":[…]}` |
 | `crash` | — | `{"ok":true,"running":true,"pid":N,"core_version":"…","start_time":N,"uptime":N,"alive_ts":N,"alive_age":N,"probe_ts":N,"last_fallback_heal":N,"start_error":false,"guardian_cron":"…","guardian_log":[…]}` |
+
+**`ports` 的端口集合**
+
+`action=ports` 询问的端口是**默认五端口与运行时配置里实际端口的并集**，去重后逐个检查：
+
+- 默认值：`7890` / `7892` / `7893` / `1053` / `9999`；
+- 运行时追加：`mixed-port`、`redir-port`、`tproxy-port`、`listen`（dns）的 host:port、
+  `external-controller` 的 host:port（都取自 `/tmp/ShellCrash/config.yaml`）。
+
+`status` 里的 `ports` 是同一份运行时配置解析出的当前值
+（`mixed` / `redir` / `tproxy` / `socks` / `dns` / `controller`），读不到时为 0。
 
 **白名单键（`config-write` 只能改这些）**
 

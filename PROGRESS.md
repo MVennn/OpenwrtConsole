@@ -70,3 +70,40 @@ LuCI 只保留为应急入口。
 ## 状态: 已完成
 
 ---
+
+# 2026-10-21 通用性修复批次（v0.2.0）
+
+## 背景
+- 控制台从 AX3000T 真机直接开源，审计发现多处「只在这台设备上成立」的假设：
+  设备名（`phy0-ap0`、`wan`）、端口（9999 / 7890）、双频写死、按租约当在线、
+  端口转发匹配错端口、`network route` 方法不存在等。
+- 同时发现两个阻断性旧缺陷：`modern-uci` 的 `consume_token` 读错变量，导致
+  **所有令牌动作必然报「令牌无效」**；`set-password` 依赖固件没有的 `chpasswd`。
+
+## 完成项
+- [x] CGI 通用化：`modern-data` 无线设备三级枚举；`modern-proxy` 控制口动态解析；
+  `modern-sysupgrade` 代理/curl/镜像格式/SNAPSHOT 判定；`modern-pkg` opkg 明确报错 +
+  apk 代理检测修复；`modern-shellcrash` 端口并集；`modern-read` 新增 `what=neighbors`
+- [x] 凭据链路：`consume_token` 修复；`set-password` 回退 BusyBox `passwd`；用户名白名单；
+  「系统」页重启改走一次性令牌
+- [x] 统计口径：端口转发命中流量按 `src_dport`；累计流量优先 WAN；在线状态用
+  stations + neighbors；客户端文案改为「客户端 / 其他」
+- [x] 设备假设：WAN/WAN6/LAN 按角色识别；无线页聚合多 SSID、实际信道、6 GHz 动态筛选；
+  无线配置补 1–13 / DFS / HE160+；改频段重置信道与 htmode
+- [x] 首次配置：无无线硬件不再判「未配置」；频段优先按 runtime/iwinfo 识别
+- [x] 代理与入口：主组类型优先 + 通用名称词；LuCI 入口探测后才显示；HTTPS 文案动态
+- [x] 文档与版本：README/DEPLOY/CHANGELOG/docs 全量同步，新增 `docs/release-notes/v0.2.0.md`
+
+## 自检
+- `npx vue-tsc --noEmit` ✓
+- `npm run build` ✓
+- 6 个 shell CGI `sh -n` ✓（含未改动的 `modern-exec`）
+- 真机只读接口回归（临时 ubus 会话 + `/tmp` CGI 副本）：neighbors / stations /
+  shellcrash ports / pkg stats / proxy version / sysupgrade info ✓
+- 令牌链路：签发令牌后用非法用户名调用 `set-password`，命中 400 用户名校验 ✓
+- 未执行写路径（改密 / 重启 / 恢复出厂 / 刷写）；前端未做浏览器端到端
+- `python tools/check-docs.py` ✓（23 篇）
+
+## 状态: 已完成
+
+---

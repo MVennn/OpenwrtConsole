@@ -35,11 +35,11 @@
 | 位置 | 一句话定位 |
 |---|---|
 | [release-notes/](release-notes/README.md) | 面向用户的 Release 说明，文件名 = 版本号；格式规范在它的 README |
-| [V3-CONTRACT.md](V3-CONTRACT.md)
-| [V4-CONTRACT.md](V4-CONTRACT.md) | v4 开发契约（**正本**）：消灭假按钮、草稿状态持久化、按模块清单补新功能 | | **历史文档**：v3 阶段的并行开发契约。其长期有效部分（rpcd 授权边界、写入范式）已提炼进 [WRITE-LAYER.md](WRITE-LAYER.md) |
+| [V3-CONTRACT.md](V3-CONTRACT.md) | **历史文档**：v3 阶段的并行开发契约。其长期有效部分（rpcd 授权边界、写入范式）已提炼进 [WRITE-LAYER.md](WRITE-LAYER.md) |
+| [V4-CONTRACT.md](V4-CONTRACT.md) | v4 开发契约（**正本**）：消灭假按钮、草稿状态持久化、按模块清单补新功能 |
 | [V2-CONTRACT.md](V2-CONTRACT.md) | **历史文档**：v2 阶段的并行开发契约，其「文件归属表」已失效 |
 | 仓库根 [CHANGELOG.md](../CHANGELOG.md) | 开发者记录：变更历史 + **待修缺陷清单**（含「待补」项）；**版本号本身**在这里维护，规则见 [VERSIONING.md](VERSIONING.md) |
-| 仓库根 [DEPLOY.md](../DEPLOY.md) | 部署细则（源目录副本，**待同步**：CGI 数量等处已过期） |
+| 仓库根 [DEPLOY.md](../DEPLOY.md) | 部署细则：前置条件与运行时依赖、一键 / 手动部署、CGI 清单、缓存与回退、排障 |
 | 仓库根 [DESIGN.md](../DESIGN.md) | 设计令牌与组件规范（源目录副本，**待同步**：只读/可写的旧结论已过期） |
 | 仓库根 [README.md](../README.md) | 门面：这是什么、适用环境、快速开始、功能、限制、反馈、免责声明、开源鸣谢、许可证 |
 | 仓库根 [AGENTS.md](../AGENTS.md) | 机器协议：给自动化代理看的三条硬约定 |

@@ -92,8 +92,9 @@ sid 走查询参数意味着它**可能出现在 uhttpd 的访问日志里** —
 
 - 读取点：[`deploy/modern-proxy`](../deploy/modern-proxy) ——
   从 `/etc/ShellCrash/configs/ShellCrash.cfg` 的 `secret=` 行取出，
-  **只在路由器本地**用它向 `127.0.0.1:9999` 的 mihomo API 发请求
-  （`Authorization: Bearer …`）；
+  **只在路由器本地**用它向 `127.0.0.1:<控制器端口>` 的核心 API 发请求
+  （端口取自 `/tmp/ShellCrash/config.yaml` 的 `external-controller:`，回退 9999；
+  请求头 `Authorization: Bearer …`）；
 - 该值**不出路由器**，浏览器侧只能看到 API 的**响应**（策略组、当前节点等），看不到 secret；
 - ShellCrash 没配置 secret 时，CGI 回 `503 {"error":"shellcrash not configured"}`。
 

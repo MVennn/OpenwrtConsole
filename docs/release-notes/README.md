@@ -4,7 +4,7 @@
 > 一份文件讲清「这一版用户能拿到什么」，格式规范就在本篇。
 
 ```
-docs/release-notes/0.1.0.md
+docs/release-notes/v0.2.0.md
 ```
 
 ## 为什么要单独放一份

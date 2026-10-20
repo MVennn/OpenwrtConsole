@@ -12,6 +12,24 @@
 - 路由器 root 密码
 - ShellCrash 可选；未运行时“代理”页会显示未检测到服务
 
+### 路由器运行时依赖
+
+控制台**不随包安装**这些依赖，部署前在路由器上装好：
+
+| 依赖 | 用途 | apk 固件（24.10+） | opkg 固件 |
+| --- | --- | --- | --- |
+| `rpcd-mod-luci` | 提供 `luci` / `luci-rpc` ubus 对象；概览 / 无线 / 客户端页依赖它们。随 `luci-base` 安装，**无 LuCI 的精简固件必须单独装** | `apk add rpcd-mod-luci`（或 `apk add luci-base`） | `opkg update && opkg install rpcd-mod-luci` |
+| `curl` | 代理页访问 ShellCrash 控制接口；固件页的更新检查与下载 | `apk add curl` | `opkg update && opkg install curl` |
+| `apk` | 软件包页的唯一后端（OpenWrt 24.10+）。只有 `opkg` 的固件上软件包页不可用，会返回可读错误 | 自带 | 无（软件包页不可用） |
+
+缺少 `rpcd-mod-luci` 时，概览 / 无线 / 客户端页会取不到数据；缺少 `curl` 时，代理页的所有请求
+与固件页的检查更新 / 下载会返回明确的 503 错误，而不是给出空应答。
+
+> **部署必须同时更新 `/www/cgi-bin/modern-*`。** 只更新 `dist/` 会让新前端配旧 CGI：
+> 客户端在线状态依赖 `modern-read` 新增的 `what=neighbors`，令牌动作依赖 `modern-uci` 里
+> `consume_token` 的修复 —— 两者都在 CGI 里，旧 CGI 不会自动获得。
+> 本版仍是 9 个 CGI，没有新增文件。
+
 ## 一键部署
 
 在能 SSH 到路由器的机器上，于**本仓根目录**执行：
@@ -91,12 +109,12 @@ uhttpd 不发 `Cache-Control`，浏览器会启发式缓存 `index.html`，导�
 | --- | --- | --- |
 | `modern-login` | 用 root 密码换取 1 小时的 ubus 会话 | 创建会话 |
 | `modern-data` | 无线关联终端（`iwinfo assoclist`）与系统日志 | 无 |
-| `modern-read` | dnsmasq 租约、自定义 hosts、解析器配置 | 无 |
+| `modern-read` | dnsmasq 租约、自定义 hosts、解析器配置、邻居表（`what=neighbors`） | 无 |
 | `modern-exec` | ping / nslookup / traceroute / 路由表 / 监听端口 | 只执行白名单命令 |
-| `modern-proxy` | 转发 mihomo API、测速、切换策略组节点 | 切换节点（PUT /proxies） |
+| `modern-proxy` | 转发核心控制口 API（端口取自运行时配置，回退 9999）、测速、切换策略组节点 | 切换节点（PUT /proxies） |
 | `modern-uci` | 丢弃暂存改动、重载服务、改密码、重启、恢复出厂、备份/恢复 | 需要令牌的动作会改系统 |
 | `modern-pkg` | apk 软件包列表 / 安装 / 卸载 / 更新 | 安装与卸载 |
-| `modern-sysupgrade` | 固件信息、上传固件、刷写、备份与恢复 | 刷写与恢复（需令牌） |
+| `modern-sysupgrade` | 固件信息、上传固件、刷写、备份与恢复、官方更新检查与下载 | 刷写与恢复（需令牌） |
 | `modern-shellcrash` | ShellCrash 服务控制、核心设置、覆写、订阅、日志、自愈状态 | 服务启停与配置改写 |
 
 所有 CGI 都要求 `owrt_sid` Cookie 或 `?sid=` 参数，并用 `ubus session get` 校验会话。
@@ -161,7 +179,10 @@ LuCI 主题包已删除，应急入口打开时是无样式的纯 HTML，功能�
 | 提示 `Failed to fetch dynamically imported module` | 更新后浏览器缓存了旧 `index.html`，旧 chunk 已被删除。应用会自动带 `?_reload=` 重载；若仍失败请手动 Ctrl+F5 |
 | 诊断页命令全部失败 | 路由器没有 `timeout`/`ss`，脚本已改用后台 watchdog 与 `netstat`；确认 `/bin/ping`、`/usr/bin/nslookup`、`/bin/traceroute` 存在 |
 | 代理组下拉里没有节点 | 该组名或节点名含有控制台不支持的字符（引号、反斜杠、`/`、`..`）；多数 emoji 与中文名可用 |
-| 切换节点报 `switch failed` | mihomo 未运行或 ShellCrash 未配置 secret；确认 `127.0.0.1:9999/version` 可访问 |
+| 切换节点报 `switch failed` | 核心未运行或 ShellCrash 未配置 secret；先确认 `curl -s http://127.0.0.1:<控制器端口>/version` 可访问（端口见「ShellCrash 设置」页，默认 9999） |
+| 代理页 / 固件页提示缺少 curl | 在路由器上 `apk add curl`（opkg 固件用 `opkg update && opkg install curl`） |
+| 概览 / 无线 / 客户端页没有数据 | 固件缺少 `luci` / `luci-rpc` ubus 对象，装 `rpcd-mod-luci` 或 `luci-base` |
+| 软件包页提示只支持 apk | 该固件是 OpenWrt 24.10 之前的 opkg 固件；控制台暂不支持 opkg，属已知限制 |
 | 打开 `/modern/` 空白 | 确认 `dist/index.html` 引用了 `/modern/assets/...`；重新构建（`base` 必须为 `/modern/`） |
 | CGI 报 `No such file or directory` | 文件被写成了 CRLF；用 `sed -i 's/\r$//'` 或用 `deploy/deploy.sh` 重新部署 |
 | 保存失败但配置其实已经改了 | 路由器拼的 JSON 不合法，浏览器整段解析失败。报错信息里带 `JSON.parse` 的出错位置；用 `curl ... | jsonfilter -e '@'` 验一下哪个 action 拼错了 |
@@ -175,4 +196,5 @@ LuCI 主题包已删除，应急入口打开时是无样式的纯 HTML，功能�
   只在路由器本地读取，不会返回给浏览器。
 - sid 通过查询参数传给 CGI，可能出现在 uhttpd 访问日志中；这是在本机 LAN、
   HTTPS 下的折中方案，足以满足家庭路由器场景。
-- 重启按钮有二次确认；修改网络/无线/防火墙等高风险配置仍需在 LuCI 中完成。
+- 重启按钮有二次确认并走一次性令牌；网络 / 无线 / 防火墙 / DHCP 与系统设置等配置页
+  **可以写**，走「暂存 → 提交 → 应用」三段式（详见 [docs/WRITE-LAYER.md](docs/WRITE-LAYER.md)）。

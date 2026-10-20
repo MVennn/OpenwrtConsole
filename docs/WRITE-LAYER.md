@@ -123,6 +123,18 @@ await systemOps.reloadNetwork()
 > 「令牌」列指**一次性令牌**（见 [CGI-CONTRACT.md](CGI-CONTRACT.md) §0：120 秒、单次使用、用途必须完全一致）。
 > 「确认词」列指界面上要用户**手动输入一个词**（如 `RESET`）才放行 —— 这是前端的责任，CGI 管不了。
 
+> **改密码**：CGI 优先用 `chpasswd`（stdin 读 `user:password`）；BusyBox 固件没有 `chpasswd` 时
+> **回退 `/bin/passwd`**（stdin 喂两行密码），两者都没有才回 500。用户名限 `[A-Za-z0-9._-]`
+> 且不能以 `-` 开头（会被 `passwd` 当成选项）。
+>
+> **重启有两个入口，「服务与运维」页与「系统」页都走同一条令牌路径**：
+> `requestToken('reboot')` → `runSystemOp('reboot', { token })`，不再直接调 `ubus call system reboot`。
+>
+> **令牌机制的历史缺陷（本版已修）**：`consume_token` 原来检查未定义的 `$got`，
+> 导致改密码 / 重启 / 恢复出厂 / 恢复备份**全部报「令牌无效或已过期」**。
+> 修法是检查实际参数 `$_got` 并限制令牌字符集 `[A-Za-z0-9-]`。路由器上的 `modern-uci`
+> 必须是本次部署的新版本，否则旧行为仍在。
+
 > ⚠️ **待办（安全缺口）**：ShellCrash 服务启停（`service`）是本表里**最危险的动作**，
 > 却**不要求 `confirm=yes`** —— `deploy/modern-shellcrash` 的 `action_service()` 里**没有** `_confirm` 判断，
 > 而同一文件里的 `config-write` / `override-toggle` / `sub-update` 都有。

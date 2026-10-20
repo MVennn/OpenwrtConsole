@@ -38,12 +38,17 @@
 │           service / uci）                                               │
 │  rpcd ──► UCI 配置库（/etc/config/*，按配置文件名授权）                 │
 │  CGI ──► 本地 shell 与文件：                                              │
-│          logread · iwinfo assoclist · ip route · netstat ·               │
+│          logread · iwinfo assoclist · ip route · ip neigh · netstat ·     │
 │          /tmp/dhcp.leases · /tmp/hosts/dhcp.* · /etc/resolv.conf.auto · │
 │          apk · sysupgrade · uci · /etc/init.d/* · ShellCrash 配置        │
-│  CGI ──► 127.0.0.1:9999（mihomo 控制口，secret 不出路由器）             │
+│  CGI ──► 127.0.0.1:<核心控制口>（端口取自运行时配置，默认 9999，        │
+│          secret 不出路由器）                                            │
 └──────────────────────────────────────────────────────────────────────────┘
 ```
+
+**运行时依赖**（不在本仓内，部署前需在路由器上具备）：`rpcd-mod-luci`（`luci` / `luci-rpc`
+ubus 对象）、`curl`（代理页与固件更新检查 / 下载）、`apk`（软件包页，24.10+）。
+缺少时的表现与装法见 [../DEPLOY.md](../DEPLOY.md)「路由器运行时依赖」。
 
 **读与写的分工（记住这一条就够用）：**
 
@@ -70,16 +75,16 @@
 | # | 通道 | 走什么 | 返回什么 | 能读什么 | 能写什么 | 授权边界 |
 | --- | --- | --- | --- | --- | --- | --- |
 | 1 | `/ubus`（`system` / `network.interface` / `service` / `uci`） | JSON-RPC `POST /ubus`，`params[0] = sid` | ubus 对象方法的返回值 | 板卡 / 系统信息、接口表、服务列表、UCI 配置 | 白名单 UCI 配置的 `set/add/delete/commit/changes/apply` | 会话 ACL；UCI **按配置文件名**授权，只有 `dhcp`/`firewall`/`network`/`system`/`wireless`/`dropbear`/`luci`/`opkg`/`ntp`/`timeserver` 可写；`uci.revert` **不可用** |
-| 2 | `/ubus`（`luci-rpc`） | 同上 | JSON 对象 | `getNetworkDevices`、`getWirelessDevices`、`getDHCPLeases`、`getHostHints` | 无（只读对象） | 会话 ACL |
+| 2 | `/ubus`（`luci-rpc`） | 同上 | JSON 对象 | `getNetworkDevices`、`getWirelessDevices`、`getDHCPLeases`、`getHostHints` | 无（只读对象） | 会话 ACL；对象由 `rpcd-mod-luci` 提供（随 `luci-base` 安装，精简固件需单独装） |
 | 3 | `/ubus`（`luci`） | 同上 | JSON 对象 | `getProcessList`、`getMountPoints`、`getBlockDevices`、`getConntrackList`、`getLEDs`、`getTimezones` | 无（只读对象） | 会话 ACL |
 | 4 | CGI `modern-data` | `GET ?what=stations\|logs` | `{stations:{iface:[…]}}` / `{lines:[…]}` | 无线关联终端（信号、速率）、系统日志 | 无 | sid 校验（`ubus session get`） |
-| 5 | CGI `modern-read` | `GET ?what=leases\|hosts\|resolv` | `{leases:[…]}` / `{hosts:[…]}` / `{nameservers:[…],search:[…]}` | dnsmasq 运行时状态 | 无 | sid 校验；路径是**字面常量**，请求不能自带路径 |
-| 6 | CGI `modern-exec` | `POST {tool,target}` | `{tool,target,command,output,exit_code,duration_ms,truncated}` | ping / nslookup / traceroute / 路由表 / 监听端口 | 无（只执行白名单命令） | sid 校验；工具名白名单 5 个；目标字符集 `[A-Za-z0-9._:-]`；单次 12 秒；输出 >200 KB 截断 |
-| 7 | CGI `modern-proxy` | `GET ?path=…` / `POST {group,node}` | mihomo 的原始 JSON | `/version` `/configs` `/proxies` `/connections`、单组详情、延迟探测 | **切换策略组节点**（PUT `/proxies/<组>`） | sid 校验；名字白名单（可打印字符，去掉 `"` `\` `/` `..`）；真正的授权是**向 mihomo 回读组成员表**；延迟探测 URL 只允许三个固定地址 |
-| 8 | CGI `modern-uci` | `POST {action,…}` | `{ok:true}` / `{token,expires_in}` / 服务列表原文 | 服务清单（`svc-list`） | 丢弃暂存（`uci-revert`）、提交（`uci-commit`）、应用（`uci-apply`）、重载 network/wifi/firewall、服务启停（`svc-action`）、改时区（`set-localtime`）、**改密码**、**重启**、**恢复出厂**、备份 / 恢复 | sid 校验；配置文件名与服务名双重白名单；**危险动作需一次性令牌（120 秒、单次使用）** |
-| 9 | CGI `modern-pkg` | `POST {action,…}` | 包列表 / 计数 / `{job_id,status,output}` | 已装列表、仓库列表、检索、统计 | **安装 / 卸载 / 更新索引 / 全量升级** | sid 校验；包名字符集 `[A-Za-z0-9._+-]` 且不以 `-` 开头；写动作必须 `confirm=yes`；写动作是**后台任务**，用 `status` 轮询 |
-| 10 | CGI `modern-sysupgrade` | `POST ?action=…` | 板卡 / 版本 / 文件列表 / 任务状态 | 固件信息、`/tmp` 下的固件与备份清单、更新检查、**固件校验（`verify`：大小 + 校验和对比）** | **上传固件**、**刷写固件**、备份、**恢复备份**、下载官方固件 | sid 校验；固件名只允许 `.bin` / `.tar` 且 ≤64 字符；上传 ≤40 MB；**刷写与恢复需令牌**（用途 `firmware-upgrade` / `backup-restore`） |
-| 11 | CGI `modern-shellcrash` | `POST {action,params}` | 服务状态 / 配置键值 / 覆写文件清单 / 订阅概览 / 日志 | ShellCrash 服务与核心状态、白名单配置键、覆写文件启用状态、订阅概览（不含 token）、日志、CrashCore 自愈状态、**监听端口（`ports`，5 个端口）**、**自愈历史（`heal`）**、**订阅热更新状态（`sub-update-state`）** | **服务启停与开机自启**、**写白名单配置键**、**启停覆写文件**、**订阅热更新（`sub-update`，需核心在运行）** | sid 校验；**所有路径是字面常量**；`secret` 与订阅 URL **永不下发到浏览器**；写动作需 `confirm=yes`；**服务启停是后台任务**：完成记录写在 `/tmp/ShellCrash/modern-shellcrash.last`，**完成记录 = 状态已到位**，前端等 `running` 变成期望值才回报成功 |
+| 5 | CGI `modern-read` | `GET ?what=leases\|hosts\|resolv\|neighbors` | `{leases:[…]}` / `{hosts:[…]}` / `{nameservers:[…],search:[…]}` / `{neighbors:[{ip,mac,device,state}]}` | dnsmasq 运行时状态、内核邻居表（IPv4 ARP + IPv6 NDP） | 无 | sid 校验；路径是**字面常量**，请求不能自带路径 |
+| 6 | CGI `modern-exec` | `POST {tool,target,…}` | `{tool,target,command,params,output,exit_code,duration_ms,truncated}` | ping / nslookup / traceroute / 路由表 / 监听端口 | 无（只执行白名单命令） | sid 校验；工具名白名单 5 个；目标字符集 `[A-Za-z0-9._:-]`；单次超时 ping 30 秒 / DNS 15 秒 / 路由跟踪 120 秒 / 路由表与监听端口 10 秒；输出 >200 KB 截断 |
+| 7 | CGI `modern-proxy` | `GET ?path=…` / `POST {group,node}` | 核心的原始 JSON | `/version` `/configs` `/proxies` `/connections`、单组详情、延迟探测 | **切换策略组节点**（PUT `/proxies/<组>`） | sid 校验；控制口端口取自 `/tmp/ShellCrash/config.yaml`（回退 9999）；名字白名单（可打印字符，去掉 `"` `\` `/` `..`）；真正的授权是**向核心回读组成员表**；延迟探测 URL 只允许三个固定地址；缺 `curl` → 503 |
+| 8 | CGI `modern-uci` | `POST {action,…}` | `{ok:true}` / `{token,expires_in}` / 服务列表原文 | 服务清单（`svc-list`） | 丢弃暂存（`uci-revert`）、提交（`uci-commit`）、应用（`uci-apply`）、重载 network/wifi/firewall、服务启停（`svc-action`）、改时区（`set-localtime`）、**改密码**（`chpasswd`，缺失时回退 BusyBox `passwd`）、**重启**、**恢复出厂**、备份 / 恢复 | sid 校验；配置文件名与服务名双重白名单；**危险动作需一次性令牌（120 秒、单次使用）**；用户名限 `[A-Za-z0-9._-]` 且不以 `-` 开头 |
+| 9 | CGI `modern-pkg` | `POST {action,…}` | 包列表 / 计数 / `{job_id,status,output}` | 已装列表、仓库列表、检索、统计 | **安装 / 卸载 / 更新索引 / 全量升级** | sid 校验；**只支持 apk**（24.10+），只有 opkg 的固件所有 action 返回 501；包名字符集 `[A-Za-z0-9._+-]` 且不以 `-` 开头；写动作必须 `confirm=yes`；写动作是**后台任务**，用 `status` 轮询 |
+| 10 | CGI `modern-sysupgrade` | `POST ?action=…` | 板卡 / 版本 / 文件列表 / 任务状态 | 固件信息、`/tmp` 下的固件与备份清单、更新检查、**固件校验（`verify`：大小 + 校验和对比）** | **上传固件**、**刷写固件**、备份、**恢复备份**、下载官方固件 | sid 校验；上传只允许 `.bin` / `.tar` / `.img` / `.gz` / `.itb` 且 ≤64 字符；官方镜像识别 `.bin` / `.img.gz` / `.itb`；上传 ≤40 MB；**刷写与恢复需令牌**（用途 `firmware-upgrade` / `backup-restore`）；`check-update` / `download` 需要 `curl` |
+| 11 | CGI `modern-shellcrash` | `POST {action,params}` | 服务状态 / 配置键值 / 覆写文件清单 / 订阅概览 / 日志 | ShellCrash 服务与核心状态、白名单配置键、覆写文件启用状态、订阅概览（不含 token）、日志、CrashCore 自愈状态、**监听端口（`ports`：默认五端口 + 运行时 mixed/redir/tproxy/dns/controller 的并集）**、**自愈历史（`heal`）**、**订阅热更新状态（`sub-update-state`）** | **服务启停与开机自启**、**写白名单配置键**、**启停覆写文件**、**订阅热更新（`sub-update`，需核心在运行）** | sid 校验；**所有路径是字面常量**；`secret` 与订阅 URL **永不下发到浏览器**；写动作需 `confirm=yes`；**服务启停是后台任务**：完成记录写在 `/tmp/ShellCrash/modern-shellcrash.last`，**完成记录 = 状态已到位**，前端等 `running` 变成期望值才回报成功 |
 
 > 表里列了 11 行：`/ubus` 拆成 3 行（`system`/`uci`、`luci-rpc`、`luci`），
 > 加上 8 个 CGI（`modern-login` 除外）。按「传输 + 权限模型」算，通道仍是 **10 个**。
@@ -97,13 +102,13 @@
 | 文件 | 运行时 | 职责 | 写操作 |
 | --- | --- | --- | --- |
 | `deploy/modern-login` | ucode | 用 root 密码换取 ubus 会话（`sid` + `expires`） | 创建会话 |
-| `deploy/modern-data` | ucode | 无线关联终端（`iwinfo assoclist`）与系统日志（`logread`） | 无 |
-| `deploy/modern-read` | ucode | dnsmasq 租约、自定义 hosts、解析器配置 | 无 |
+| `deploy/modern-data` | ucode | 无线关联终端（luci-rpc → `iwinfo devices` → sysfs 逐级探测）与系统日志（`logread`） | 无 |
+| `deploy/modern-read` | ucode | dnsmasq 租约、自定义 hosts、解析器配置、内核邻居表（`ip neigh` / `ip -6 neigh`） | 无 |
 | `deploy/modern-exec` | sh | ping / nslookup / traceroute / 路由表 / 监听端口 | 只执行白名单命令 |
-| `deploy/modern-proxy` | sh | 转发 mihomo API、测速、切换策略组节点 | 切换节点（PUT `/proxies`） |
+| `deploy/modern-proxy` | sh | 转发核心控制口 API（端口取自运行时配置）、测速、切换策略组节点 | 切换节点（PUT `/proxies`） |
 | `deploy/modern-uci` | sh | 丢弃暂存改动、提交、应用、重载服务、改密码、重启、恢复出厂、备份 / 恢复 | 需令牌的动作会改系统 |
-| `deploy/modern-pkg` | sh | apk 软件包列表 / 安装 / 卸载 / 索引更新 / 全量升级 | 安装与卸载 |
-| `deploy/modern-sysupgrade` | sh | 固件信息、上传固件、刷写、备份与恢复、官方更新检查与下载 | 刷写与恢复（需令牌） |
+| `deploy/modern-pkg` | sh | apk 软件包列表 / 安装 / 卸载 / 索引更新 / 全量升级（opkg 固件返回 501） | 安装与卸载 |
+| `deploy/modern-sysupgrade` | sh | 固件信息、上传固件、刷写、备份与恢复、官方更新检查与下载（官方镜像 `.bin` / `.img.gz` / `.itb`） | 刷写与恢复（需令牌） |
 | `deploy/modern-shellcrash` | sh | ShellCrash 服务控制、白名单配置键、覆写文件、订阅概览、日志、自愈状态 | 服务启停与配置改写 |
 
 **两个部署脚本不是 CGI**：`deploy/deploy.sh`（本地编排）与 `deploy/install-remote.sh`
@@ -140,13 +145,13 @@ OpenwrtConsole/
 │  ├─ api/            21 个模块：19 个功能域模块 + configPending.ts（四个配置页共享的暂存区工具）+ proxyState.ts（浏览器本地出口状态）；只做「取数 / 发请求 / 解析成类型」
 │  ├─ views/          页面组件；只做「展示与交互」，不直接 fetch
 │  ├─ components/     44 个非归档组件（按域分子目录，带前缀）；新增 cfg-pending/ 、config-sc/ 、fw-verify/ 三个子目录，proxy-* / monitor-* / DraftNotice.vue 平铺在根
-│  ├─ composables/    6 个：与视图解耦的响应式逻辑（轮询、主题、刷新、构建自愈、useDraft 草稿与未保存守卫、useMediaQuery 媒体查询）
+│  ├─ composables/    7 个：与视图解耦的响应式逻辑（轮询、主题、刷新、构建自愈、useDraft 草稿与未保存守卫、useMediaQuery 媒体查询、useLuciAvailability 入口探测）
 │  ├─ layouts/        AppLayout（侧栏 + 顶栏 + 滚动内容）
 │  ├─ plugins/        Element Plus 的显式注册与样式清单
 │  ├─ router/         路由表与路由守卫
 │  ├─ stores/         全局状态（会话）
 │  ├─ styles/         设计令牌(tokens.css) / Element Plus 覆盖 / 布局
-│  └─ utils/          纯函数工具（格式化、客户端合并、代理组解析）
+│  └─ utils/          纯函数工具（格式化、客户端合并、代理组解析、WAN 角色识别）
 ├─ deploy/            路由器端：9 个 CGI + 2 个部署脚本（不是 Node 代码）
 ├─ docs/              本目录
 ├─ public/            静态资源（favicon）
