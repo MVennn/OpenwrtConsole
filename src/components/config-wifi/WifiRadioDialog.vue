@@ -55,7 +55,7 @@
               placeholder="CN"
               @input="form.country = form.country.toUpperCase()"
             />
-            <p class="field-hint">两位大写字母，决定可用的信道与功率上限。</p>
+            <p class="field-hint">两位大写字母，决定可用的信道与功率上限；信道可用性取决于国家码与驱动。</p>
           </el-form-item>
 
           <el-form-item label="发射功率">
@@ -170,6 +170,30 @@
   })
 
   const channels = computed(() => channelsForBand(form.band || props.radio?.band))
+
+  /** Compares bands by their leading digit (`5g` and a legacy `5` are one band). */
+  function sameBand(a: string, b: string): boolean {
+    return (a.trim().charAt(0) || '') === (b.trim().charAt(0) || '')
+  }
+
+  /**
+   * A band switch invalidates the options that depend on it: the channels of
+   * one band do not exist in the other, and e.g. VHT80 is meaningless on
+   * 2.4 GHz. `reset()` loads the stored band, so ignoring a band that equals
+   * the stored one keeps the dialog from changing anything when it opens.
+   */
+  watch(
+    () => form.band,
+    (band) => {
+      if (!band || sameBand(band, props.radio?.band ?? '')) return
+      if (form.channelMode === 'fixed') {
+        form.channel = String(channelsForBand(band)[0] ?? '')
+      }
+      // Empty means "driver default" — the stored bandwidth may not exist on
+      // the new band.
+      form.htmode = ''
+    }
+  )
 
   const txpowerOptions = computed(() => {
     const options = [

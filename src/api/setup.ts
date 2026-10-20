@@ -14,6 +14,8 @@ import {
 } from '@/api/uci'
 import { requestToken, systemOps } from '@/api/systemOps'
 import { ubusCall } from '@/api/ubus'
+import { api } from '@/api/openwrt'
+import type { WirelessRadio } from '@/api/types'
 
 /**
  * First run wizard.
@@ -55,7 +57,10 @@ export interface SetupCheck {
 
 /** The result of the state detection. */
 export interface SetupStatus {
-  /** The router is usable: the LAN and the wireless are configured. */
+  /**
+   * The router is usable: the LAN is configured and, when wireless hardware
+   * exists, so is the wireless.
+   */
   configured: boolean
   /** The hostname of the `system` config. */
   hostname: string
@@ -238,7 +243,12 @@ const BAND_LABELS: Record<SetupBand, string> = {
 const FALLBACK_TIMEZONES: SetupTimezone[] = [
   { zone: 'Asia/Shanghai', tzstring: 'CST-8' },
   { zone: 'Asia/Hong_Kong', tzstring: 'HKT-8' },
+  { zone: 'Asia/Singapore', tzstring: 'SGT-8' },
   { zone: 'Asia/Tokyo', tzstring: 'JST-9' },
+  { zone: 'Europe/London', tzstring: 'GMT0BST,M3.5.0/1,M10.5.0' },
+  { zone: 'Europe/Berlin', tzstring: 'CET-1CEST,M3.5.0,M10.5.0/3' },
+  { zone: 'America/New_York', tzstring: 'EST5EDT,M3.2.0,M11.1.0' },
+  { zone: 'America/Los_Angeles', tzstring: 'PST8PDT,M3.2.0,M11.1.0' },
   { zone: 'UTC', tzstring: 'UTC0' }
 ]
 
@@ -284,12 +294,42 @@ function interfaceName(section: UciSection, key: string): string {
   return uciString(section, 'name') || uciString(section, '.name') || key
 }
 
-/** The band of a radio, guessed from `band`, `hwmode` or the position. */
-function detectBand(radio: UciSection, index: number): SetupBand {
+/** The frequency the driver reports for a radio (iwinfo), 0 when unknown. */
+function runtimeFrequency(runtime: WirelessRadio | undefined): number {
+  for (const iface of runtime?.interfaces ?? []) {
+    const value = Number(iface?.iwinfo?.frequency)
+    if (Number.isFinite(value) && value > 0) return value
+  }
+  return 0
+}
+
+/**
+ * The band of a radio, guessed from `band`, the runtime data, `hwmode` or the
+ * position.
+ *
+ * The runtime data of the driver (the band it reports or the frequency it is
+ * tuned to) describes the hardware that is really there, so it is used before
+ * the position fallback: an AX3000T style config may carry no band at all.
+ */
+function detectBand(
+  radio: UciSection,
+  index: number,
+  runtime?: WirelessRadio
+): SetupBand {
   const band = uciString(radio, 'band').toLowerCase()
   if (band.startsWith('2')) return '2g'
   if (band.startsWith('5')) return '5g'
   if (band.startsWith('6')) return '6g'
+
+  const runtimeBand = String(runtime?.config?.band ?? '').toLowerCase()
+  if (runtimeBand.startsWith('2')) return '2g'
+  if (runtimeBand.startsWith('5')) return '5g'
+  if (runtimeBand.startsWith('6')) return '6g'
+
+  const frequency = runtimeFrequency(runtime)
+  if (frequency >= 5925) return '6g'
+  if (frequency >= 3000) return '5g'
+  if (frequency > 0) return '2g'
 
   const hwmode = uciString(radio, 'hwmode').toLowerCase()
   if (hwmode.startsWith('11a') || hwmode.startsWith('11ac')) return '5g'
@@ -374,6 +414,10 @@ export async function readSetupStatus(): Promise<SetupStatus> {
   const activeIfaces = ifaces.filter(
     (iface) => !uciBool(iface, 'disabled') && uciString(iface, 'ssid').trim()
   )
+  // Routers without a radio (wired-only builds, x86, some VMs) have neither
+  // section; the missing wireless must not keep them in the wizard.
+  const hasWirelessHardware =
+    uciByType(wirelessRaw, 'wifi-device').length > 0 || ifaces.length > 0
 
   const interfaces = uciByType(networkRaw, 'interface')
   const lan = interfaces.find((section) => interfaceName(section, 'lan') === 'lan')
@@ -406,12 +450,14 @@ export async function readSetupStatus(): Promise<SetupStatus> {
     {
       key: 'wireless',
       label: '无线网络',
-      done: activeIfaces.length > 0,
-      detail: !ifaces.length
-        ? '没有 wifi-iface 段，设备不会广播 Wi-Fi'
-        : activeIfaces.length
-          ? `${activeIfaces.length} 个 SSID 正在广播（共 ${ifaces.length} 个）`
-          : `${ifaces.length} 个 SSID 均已禁用`
+      done: !hasWirelessHardware || activeIfaces.length > 0,
+      detail: !hasWirelessHardware
+        ? '未检测到无线硬件，跳过'
+        : !ifaces.length
+          ? '没有 wifi-iface 段，设备不会广播 Wi-Fi'
+          : activeIfaces.length
+            ? `${activeIfaces.length} 个 SSID 正在广播（共 ${ifaces.length} 个）`
+            : `${ifaces.length} 个 SSID 均已禁用`
     },
     {
       key: 'network',
@@ -426,7 +472,7 @@ export async function readSetupStatus(): Promise<SetupStatus> {
   ]
 
   return {
-    configured: hasLan && activeIfaces.length > 0,
+    configured: hasLan && (!hasWirelessHardware || activeIfaces.length > 0),
     hostname,
     hostnameIsDefault,
     timezone,
@@ -566,13 +612,18 @@ export async function readSetupTimezones(
 
 /** Reads the radios and their SSIDs. */
 export async function readSetupWireless(): Promise<SetupWirelessModel> {
-  const values = await uciGet('wireless')
+  const [values, runtime] = await Promise.all([
+    uciGet('wireless'),
+    // The runtime data tells which band the driver really uses. It is only a
+    // hint, so a router that does not answer must not fail the read.
+    api.wireless().catch(() => ({} as Record<string, WirelessRadio>))
+  ])
   const ifaces = uciByType(values, 'wifi-iface')
   const radios = uciByType(values, 'wifi-device')
 
   const models = radios.map((radio, index) => {
     const section = uciString(radio, '.name')
-    const band = detectBand(radio, index)
+    const band = detectBand(radio, index, runtime[section])
     const iface = findIface(ifaces, section, index)
 
     return {

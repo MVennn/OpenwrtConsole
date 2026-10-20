@@ -121,8 +121,9 @@
         </p>
 
         <div class="form-foot">
-          <a href="/cgi-bin/luci/">应急入口：LuCI</a>
-          <span>HTTPS 已启用</span>
+          <a v-if="luciAvailable" href="/cgi-bin/luci/">应急入口：LuCI</a>
+          <span v-else>LuCI 未安装</span>
+          <span>{{ isHttps ? 'HTTPS 已启用' : 'HTTP 连接（建议 HTTPS）' }}</span>
         </div>
       </div>
     </section>
@@ -135,6 +136,7 @@
   import { AlertCircle, Activity, Lock, Router as RouterIcon, ShieldCheck, User, Wifi } from 'lucide-vue-next'
   import type { InputInstance } from 'element-plus'
   import { fetchDeviceIdentity, type DeviceIdentity } from '@/api/device'
+  import { useLuciAvailability } from '@/composables/useLuciAvailability'
   import { login, useSession } from '@/stores/session'
 
   defineOptions({ name: 'LoginView' })
@@ -148,6 +150,10 @@
   const error = ref('')
   const passwordRef = ref<InputInstance>()
   const identity = ref<DeviceIdentity | null>(null)
+  /** LuCI is an optional package; the emergency link only makes sense with it. */
+  const luciAvailable = useLuciAvailability()
+  /** The page can be served over plain HTTP on a fresh image. */
+  const isHttps = window.location.protocol === 'https:'
 
   const UserIcon = User
   const LockIcon = Lock

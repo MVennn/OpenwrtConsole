@@ -19,7 +19,7 @@
         <StatCard
           label="SSID 数量"
           :value="ssidCount"
-          meta="2.4 GHz / 5 GHz"
+          :meta="bandSummary"
           :icon="Wifi"
           tone="neutral"
         />
@@ -45,7 +45,9 @@
             <div class="radio-heading">
               <span class="radio-band" :class="radio.bandClass">{{ radio.bandText }}</span>
               <div>
-                <h2 class="radio-title">{{ radio.ssid || '未命名网络' }}</h2>
+                <h2 class="radio-title">
+                  {{ radio.ssid || '未命名网络' }}{{ radio.extraSsids ? ' +' + radio.extraSsids : '' }}
+                </h2>
                 <p class="radio-sub">{{ radio.hardware || '无线射频' }}</p>
               </div>
             </div>
@@ -59,7 +61,7 @@
             <Lock :size="13" />
             {{ encryptionLabel(radio.encryption) }}
             <span class="radio-sep">·</span>
-            {{ radio.ifname }}
+            {{ radio.ifnames.join(' · ') || '—' }}
           </div>
 
           <dl class="radio-grid">
@@ -235,7 +237,7 @@
 
   defineOptions({ name: 'WirelessView' })
 
-  type Filter = 'all' | '2g' | '5g'
+  type Filter = string
 
   const wireless = ref<Record<string, WirelessRadio>>({})
   const stations = ref<Record<string, Station[]>>({})
@@ -246,19 +248,15 @@
   const refreshSignal = useRefreshSignal()
   const router = useRouter()
 
-  const filters: Array<{ value: Filter; label: string }> = [
-    { value: 'all', label: '全部' },
-    { value: '2g', label: '2.4 GHz' },
-    { value: '5g', label: '5 GHz' }
-  ]
-
   interface RadioRow {
     key: string
     band: string
     bandText: string
     bandClass: string
     ssid: string
-    ifname: string
+    extraSsids: number
+    ifnames: string[]
+    ssidCount: number
     encryption: string
     up: boolean
     channel: string
@@ -272,37 +270,69 @@
 
   const radios = computed<RadioRow[]>(() =>
     Object.entries(wireless.value).map(([key, radio]) => {
-      const iface = radio.interfaces[0]
-      const ifname = iface?.ifname || ''
-      const list = stations.value[ifname] || []
-      const stats = devices.value.find((device) => device.name === ifname)?.stats
-      const avgSignal = list.length
-        ? Math.round(list.reduce((sum, item) => sum + item.signal, 0) / list.length)
-        : null
+      const ifaces = radio.interfaces || []
+      const first = ifaces[0]
       const band = radio.config?.band || ''
+      const ifnames = ifaces.map((iface) => iface.ifname).filter(Boolean)
+      const stationList = ifnames.flatMap((ifname) => stations.value[ifname] || [])
+      const traffic = ifnames.reduce((sum, ifname) => {
+        const stats = devices.value.find((device) => device.name === ifname)?.stats
+        return sum + (stats?.rx_bytes || 0) + (stats?.tx_bytes || 0)
+      }, 0)
+      const avgSignal = stationList.length
+        ? Math.round(stationList.reduce((sum, item) => sum + item.signal, 0) / stationList.length)
+        : null
+      const liveChannel = first?.iwinfo?.channel
 
       return {
         key,
         band,
         bandText: bandLabel(band),
-        bandClass: band.startsWith('2') ? 'is-24' : 'is-5',
-        ssid: iface?.config?.ssid || '',
-        ifname,
-        encryption: iface?.config?.encryption || '',
-        up: Boolean(radio.up && !radio.disabled),
-        channel: radio.config?.channel || '',
+        bandClass: band.startsWith('2') ? 'is-24' : band.startsWith('6') ? 'is-6' : 'is-5',
+        ssid: first?.config?.ssid || '',
+        extraSsids: Math.max(0, ifaces.length - 1),
+        ifnames,
+        ssidCount: ifaces.length,
+        encryption: first?.config?.encryption || '',
+        up: Boolean(radio.up && !radio.disabled && ifaces.some((iface) => !iface.config?.disabled)),
+        channel: liveChannel ? String(liveChannel) : radio.config?.channel || '',
         htmode: radio.config?.htmode || '',
-        txpower: iface?.iwinfo?.txpower || 0,
-        clients: list.length,
+        txpower: first?.iwinfo?.txpower || 0,
+        clients: stationList.length,
         avgSignal,
-        traffic: (stats?.rx_bytes || 0) + (stats?.tx_bytes || 0),
-        hardware: iface?.iwinfo?.hardware?.name || ''
+        traffic,
+        hardware: first?.iwinfo?.hardware?.name || ''
       }
     })
   )
 
+  /** Only the bands the device actually has, e.g. `2.4 GHz / 5 GHz`. */
+  const bandSummary = computed(() => {
+    const labels = new Set<string>()
+    for (const radio of radios.value) {
+      if (radio.band) labels.add(radio.bandText)
+    }
+    return labels.size ? [...labels].sort().join(' / ') : '未发现无线频段'
+  })
+
+  const filters = computed<Array<{ value: Filter; label: string }>>(() => {
+    const options: Array<{ value: Filter; label: string }> = [{ value: 'all', label: '全部' }]
+    const bands = new Map<string, string>()
+    for (const radio of radios.value) {
+      const prefix = radio.band.charAt(0)
+      if (!prefix || bands.has(prefix)) continue
+      bands.set(prefix, radio.bandText)
+    }
+    for (const prefix of [...bands.keys()].sort()) {
+      options.push({ value: prefix, label: bands.get(prefix) || prefix })
+    }
+    return options
+  })
+
   const activeRadios = computed(() => radios.value.filter((radio) => radio.up).length)
-  const ssidCount = computed(() => radios.value.filter((radio) => radio.ssid).length)
+  const ssidCount = computed(() =>
+    radios.value.reduce((sum, radio) => sum + radio.ssidCount, 0)
+  )
   const wirelessTraffic = computed(() =>
     radios.value.reduce((sum, radio) => sum + radio.traffic, 0)
   )
@@ -325,23 +355,25 @@
   const stationRows = computed<StationRow[]>(() => {
     const rows: StationRow[] = []
     for (const radio of radios.value) {
-      const list = stations.value[radio.ifname] || []
-      for (const station of list) {
-        const lease = leases.value.find(
-          (item) => item.macaddr.toUpperCase() === station.mac.toUpperCase()
-        )
-        const hint = hints.value[station.mac.toUpperCase()]
-        rows.push({
-          mac: station.mac,
-          hostname: lease?.hostname || hint?.name || '无线设备',
-          band: radio.band,
-          bandLabel: radio.bandText,
-          signal: station.signal,
-          rxRate: station.rx?.rate || 0,
-          txRate: station.tx?.rate || 0,
-          connected: station.connected_time || 0,
-          inactive: station.inactive || 0
-        })
+      for (const ifname of radio.ifnames) {
+        const list = stations.value[ifname] || []
+        for (const station of list) {
+          const lease = leases.value.find(
+            (item) => item.macaddr.toUpperCase() === station.mac.toUpperCase()
+          )
+          const hint = hints.value[station.mac.toUpperCase()]
+          rows.push({
+            mac: station.mac,
+            hostname: lease?.hostname || hint?.name || '无线设备',
+            band: radio.band,
+            bandLabel: radio.bandText,
+            signal: station.signal,
+            rxRate: station.rx?.rate || 0,
+            txRate: station.tx?.rate || 0,
+            connected: station.connected_time || 0,
+            inactive: station.inactive || 0
+          })
+        }
       }
     }
     return rows.sort((a, b) => b.signal - a.signal)
@@ -349,8 +381,12 @@
 
   const filteredStations = computed(() => {
     if (filter.value === 'all') return stationRows.value
-    const bandPrefix = filter.value === '2g' ? '2' : '5'
-    return stationRows.value.filter((row) => row.band.startsWith(bandPrefix))
+    return stationRows.value.filter((row) => row.band.startsWith(filter.value))
+  })
+
+  // A band chip disappears when its radio is removed, so do not keep it selected.
+  watch(filters, (options) => {
+    if (!options.some((option) => option.value === filter.value)) filter.value = 'all'
   })
 
   function goWirelessConfig(): void {
@@ -417,6 +453,11 @@
   .radio-band.is-5 {
     color: var(--info-text);
     background: var(--info-soft);
+  }
+
+  .radio-band.is-6 {
+    color: var(--success-text);
+    background: var(--success-soft);
   }
 
   .radio-title {

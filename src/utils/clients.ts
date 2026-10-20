@@ -6,6 +6,11 @@ export interface ClientRow {
   hostname: string
   ip: string
   wireless: boolean
+  /**
+   * The device is associated with a radio right now. A lease alone does not
+   * prove that a wired device is online, so lease-only rows are `false`.
+   */
+  online: boolean
   band?: string
   bandLabel?: string
   signal?: number
@@ -36,7 +41,8 @@ export function buildWifiMeta(
 
 /**
  * DHCP leases are the source of identity (hostname + IP); the wireless station
- * table adds band/signal/rate. A device that appears in both is merged on MAC.
+ * table adds band/signal/rate and proves that the device is online. A device
+ * that appears in both is merged on MAC.
  */
 export function mergeClients(
   leases: DhcpLease[],
@@ -55,6 +61,7 @@ export function mergeClients(
       hostname: lease.hostname || '未知设备',
       ip: lease.ipaddr,
       wireless: false,
+      online: false,
       lease: lease.expires
     })
   }
@@ -70,6 +77,7 @@ export function mergeClients(
         hostname: existing?.hostname || hint?.name || '无线设备',
         ip: existing?.ip || hint?.ipaddrs?.[0] || '—',
         wireless: true,
+        online: true,
         band: meta?.band,
         bandLabel: bandLabel(meta?.band),
         signal: station.signal,

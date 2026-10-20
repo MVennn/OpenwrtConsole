@@ -951,7 +951,17 @@
   onMounted(() => {
     void (async () => {
       const [zones, ifaces] = await Promise.all([
-        readTimezones(['Asia/Shanghai', 'UTC']),
+        readTimezones([
+          'Asia/Shanghai',
+          'Asia/Hong_Kong',
+          'Asia/Singapore',
+          'Asia/Tokyo',
+          'Europe/London',
+          'Europe/Berlin',
+          'America/New_York',
+          'America/Los_Angeles',
+          'UTC'
+        ]),
         readNetworkInterfaces().catch(() => [] as string[])
       ])
       timezones.value = zones

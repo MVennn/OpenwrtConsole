@@ -66,18 +66,31 @@ export const HTMODE_OPTIONS: string[] = [
   'HE40',
   'HE80',
   'HE80+80',
+  'HE160',
   'HT20',
   'HT40',
   'HT40+',
   'VHT80',
+  'VHT160',
+  'EHT20',
+  'EHT40',
+  'EHT80',
+  'EHT160',
+  'EHT320',
   'NOHT'
 ]
 
-/** 2.4 GHz channels. */
-export const CHANNELS_2G: number[] = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
+/** 2.4 GHz channels (1–13; 12 and 13 need a permissive country code). */
+export const CHANNELS_2G: number[] = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]
 
-/** 5 GHz channels (the ones usable in most regulatory domains). */
-export const CHANNELS_5G: number[] = [36, 40, 44, 48, 149, 153, 157, 161, 165]
+/**
+ * 5 GHz channels (36–165). The DFS range (52–144) is only usable in some
+ * regulatory domains; the driver drops the rest for a given country code.
+ */
+export const CHANNELS_5G: number[] = [
+  36, 40, 44, 48, 52, 56, 60, 64, 100, 104, 108, 112, 116, 120, 124, 128, 132, 136, 140, 144,
+  149, 153, 157, 161, 165
+]
 
 /** 6 GHz channels. */
 export const CHANNELS_6G: number[] = [

@@ -19,14 +19,14 @@
         <StatCard
           label="无线客户端"
           :value="wirelessCount"
-          :meta="`${count5g} 台 5 GHz · ${count24g} 台 2.4 GHz`"
+          :meta="wirelessBandMeta"
           :icon="Wifi"
           tone="success"
         />
         <StatCard
-          label="有线客户端"
-          :value="wiredCount"
-          meta="通过 DHCP 租约识别"
+          label="其他客户端"
+          :value="otherCount"
+          meta="仅有 DHCP 租约，未关联无线"
           :icon="Cable"
           tone="neutral"
         />
@@ -182,7 +182,7 @@
   import { api } from '@/api/openwrt'
   import type { DhcpLease, HostHint, Station, WirelessRadio } from '@/api/types'
   import { formatAgo, formatLinkRate, formatUptime, signalLevel } from '@/utils/format'
-  import { buildWifiMeta, mergeClients, countWirelessClients } from '@/utils/clients'
+  import { buildWifiMeta, mergeClients } from '@/utils/clients'
 
   defineOptions({ name: 'ClientsView' })
 
@@ -207,14 +207,32 @@
   const clients = computed(() =>
     mergeClients(leases.value, stations.value, hints.value, wifiMeta.value)
   )
-  const wirelessCount = computed(() => countWirelessClients(stations.value))
-  const wiredCount = computed(() => Math.max(0, clients.value.length - wirelessCount.value))
-  const count5g = computed(
-    () => clients.value.filter((row) => row.wireless && row.band?.startsWith('5')).length
-  )
-  const count24g = computed(
-    () => clients.value.filter((row) => row.wireless && row.band?.startsWith('2')).length
-  )
+  const wirelessCount = computed(() => clients.value.filter((row) => row.wireless).length)
+  const otherCount = computed(() => Math.max(0, clients.value.length - wirelessCount.value))
+
+  /** Aggregates the bands the wireless rows actually report. */
+  const wirelessBandMeta = computed(() => {
+    const counts = new Map<string, number>()
+    for (const row of clients.value) {
+      if (!row.wireless) continue
+      const label = row.bandLabel && row.bandLabel !== '—' ? row.bandLabel : '未知频段'
+      counts.set(label, (counts.get(label) ?? 0) + 1)
+    }
+    if (!counts.size) return '暂无无线终端'
+
+    const order = ['2.4 GHz', '5 GHz', '6 GHz']
+    return [...counts.entries()]
+      .sort(([left], [right]) => {
+        const leftIndex = order.indexOf(left)
+        const rightIndex = order.indexOf(right)
+        if (leftIndex === -1 && rightIndex === -1) return left.localeCompare(right)
+        if (leftIndex === -1) return 1
+        if (rightIndex === -1) return -1
+        return leftIndex - rightIndex
+      })
+      .map(([label, count]) => `${count} 台 ${label}`)
+      .join(' · ')
+  })
 
   const filtered = computed(() => {
     const term = search.value.trim().toLowerCase()

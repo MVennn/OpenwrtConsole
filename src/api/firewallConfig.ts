@@ -842,18 +842,52 @@ function protoMatches(rule: string, protocol: string): boolean {
   return wanted.split(/\s+/).includes(actual)
 }
 
+/** An inclusive port range; `null` means "any port". */
+interface PortRange {
+  start: number
+  end: number
+}
+
+/**
+ * Parses the `src_dport` option of a redirect.
+ *
+ * fw3/fw4 accept a single port (`443`) as well as a range written with a dash
+ * (`1000-2000`) or a colon (`1000:2000`). An empty value means the rule does
+ * not restrict the external port. An unparsable value yields `undefined`, so
+ * the caller can report "cannot determine" instead of matching everything.
+ */
+function parseSrcDport(value: string): PortRange | null | undefined {
+  const text = value.trim()
+  if (!text) return null
+
+  const match = /^(\d+)(?:[-:](\d+))?$/.exec(text)
+  if (!match) return undefined
+
+  const first = Number.parseInt(match[1], 10)
+  const second = match[2] === undefined ? first : Number.parseInt(match[2], 10)
+  if (!Number.isFinite(first) || !Number.isFinite(second) || first <= 0 || second <= 0) {
+    return undefined
+  }
+  return { start: Math.min(first, second), end: Math.max(first, second) }
+}
+
 /**
  * The traffic that hit a port forwarding rule.
  *
  * The connection tracking table keeps the original destination of a
- * connection, so the external port of the rule is the one to match.
+ * connection, so the external port of the rule (`src_dport`) is the one to
+ * match. The internal `dest_ip` cannot be used here: in a DNAT flow the
+ * tracked destination is the address the client sent the packet to (the
+ * router's WAN address), not the host the rule forwards to. A rule without an
+ * external port restriction cannot be attributed to a tracked connection and
+ * reports zero instead of guessing.
  */
 export function redirectTraffic(
   redirect: FwRedirect,
   entries: FwConntrackEntry[]
 ): FwRedirectTraffic {
-  const port = Number(redirect.destPort)
-  if (!Number.isFinite(port) || port <= 0) {
+  const range = parseSrcDport(redirect.srcDport)
+  if (range === undefined || range === null) {
     return { connections: 0, bytes: 0, packets: 0 }
   }
 
@@ -862,7 +896,7 @@ export function redirectTraffic(
   let packets = 0
 
   for (const entry of entries) {
-    if (entry.destinationPort !== port) continue
+    if (entry.destinationPort < range.start || entry.destinationPort > range.end) continue
     if (!protoMatches(redirect.proto, entry.protocol)) continue
     connections += 1
     bytes += entry.bytes

@@ -82,7 +82,18 @@
 
         <!-- 已是最新版本 -->
         <div v-else-if="!update.upgradable" class="fw-state">
+          <!-- SNAPSHOT / 自编固件 / 非官方发行版无法与官方源比较：此时既不能
+               说「已是最新」，也不是官方源没有更新，只展示路由器给的告警。 -->
           <el-alert
+            v-if="update.warning"
+            type="warning"
+            :title="update.warning"
+            :description="`上次检测：${checkedAtText}。当前固件无法与官方稳定版比较，上面的版本信息仅供参考。`"
+            :closable="false"
+            show-icon
+          />
+          <el-alert
+            v-else
             type="success"
             :title="`已是最新版本（${update.latest_version}）`"
             :description="`上次检测：${checkedAtText}。官方源暂未提供比当前版本更新的固件。`"
@@ -153,7 +164,10 @@
               完整更新日志
             </a>
           </div>
-          <p class="fw-subtle">
+          <p v-if="update.warning" class="fw-subtle">
+            上次检查：{{ checkedAtText }}。当前固件不是官方稳定发行版或版本号无法比较，请以上面的提示为准，并在刷写前自行确认兼容性。
+          </p>
+          <p v-else class="fw-subtle">
             上次检查：{{ checkedAtText }}。官方源暂未提供比当前版本更新的固件，可在上面的链接查看官方发布说明。
           </p>
         </div>
@@ -331,7 +345,7 @@
               </li>
               <li>
                 镜像文件通常以 <span class="mono-value">-sysupgrade.bin</span> 结尾；文件名只能包含
-                字母、数字、点、下划线和连字符，且必须以 .bin 或 .tar 结尾。
+                字母、数字、点、下划线和连字符，且必须以 .bin、.tar、.img、.gz 或 .itb 结尾。
               </li>
               <li>刷写前请先生成一次配置备份，并确保供电稳定，过程中不要断电。</li>
             </ol>
@@ -342,7 +356,7 @@
               ref="fileInput"
               class="fw-file-input"
               type="file"
-              accept=".bin,.tar"
+              accept=".bin,.tar,.img,.gz,.itb"
               @change="onFileSelected"
             />
             <el-button :icon="Upload" :disabled="uploading" @click="pickFile">
@@ -745,12 +759,17 @@
   const latestMeta = computed(() => {
     if (!update.value) return '尚未检测'
     if (update.value.upgradable) return '检测到新版本'
+    // A warning means the version could not be compared (SNAPSHOT, a self
+    // built image, a non-official distribution) — "已是最新" would be wrong.
+    if (update.value.warning) return '无法与官方源比较'
     return `上次检测 ${checkedAtText.value}`
   })
 
   const latestTone = computed<'brand' | 'success' | 'warning' | 'neutral'>(() => {
-    if (!update.value) return 'neutral'
-    return update.value.upgradable ? 'warning' : 'success'
+    const current = update.value
+    if (!current) return 'neutral'
+    if (current.upgradable || current.warning) return 'warning'
+    return 'success'
   })
 
   const firmwareFile = computed<FirmwareFile | null>(() => {
@@ -1235,7 +1254,8 @@
 
     if (!isValidFirmwareName(file.name)) {
       selectedFile.value = null
-      fileError.value = '文件名只能包含字母、数字、点、下划线和连字符，且必须以 .bin 或 .tar 结尾。'
+      fileError.value =
+        '文件名只能包含字母、数字、点、下划线和连字符，且必须以 .bin、.tar、.img、.gz 或 .itb 结尾。'
       return
     }
     if (file.size > MAX_FIRMWARE_SIZE) {

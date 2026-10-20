@@ -50,7 +50,7 @@
             <strong class="hero-stat-value mono">{{ lanIp }}</strong>
           </div>
           <div class="hero-stat">
-            <span class="hero-stat-label">在线设备</span>
+            <span class="hero-stat-label">客户端</span>
             <strong class="hero-stat-value">{{ clients.length }}</strong>
           </div>
         </div>
@@ -84,9 +84,9 @@
           :icon="HardDrive"
         />
         <StatCard
-          label="在线设备"
+          label="客户端"
           :value="clients.length"
-          :meta="`${wirelessCount} 台无线 · ${wiredCount} 台有线`"
+          :meta="`${wirelessCount} 台无线 · ${otherCount} 台其他`"
           badge="实时"
           tone="brand"
           :icon="Users"
@@ -134,11 +134,11 @@
                   {{ iface.interface.toUpperCase() }}
                   <span class="iface-proto">{{ protoLabel(iface.proto) }}</span>
                 </div>
-                <div class="iface-ip mono truncate" :title="iface.interface === 'wan6' ? ipv6Of(iface) : ipv4Of(iface)">
-                  {{ iface.interface === 'wan6' ? ipv6Of(iface) : ipv4Of(iface) }}
+                <div class="iface-ip mono truncate" :title="iface.interface === wan6?.interface ? ipv6Of(iface) : ipv4Of(iface)">
+                  {{ iface.interface === wan6?.interface ? ipv6Of(iface) : ipv4Of(iface) }}
                 </div>
               </div>
-              <div v-if="iface.interface === 'wan6'" class="iface-traffic">
+              <div v-if="iface.interface === wan6?.interface" class="iface-traffic">
                 <span class="iface-flag">IPv6 已启用</span>
               </div>
               <div v-else class="iface-traffic num">
@@ -182,12 +182,12 @@
           </div>
           <EmptyState v-else title="未发现无线接口" description="路由器可能没有启用 Wi-Fi。" />
           <template #footer>
-            <span>{{ wifiRows.length }} 个射频 · {{ wirelessCount }} 台终端</span>
+            <span>{{ radioCount }} 个射频 · {{ wifiRows.length }} 个 SSID · {{ wirelessCount }} 台终端</span>
             <span>无线流量 {{ formatBytes(wirelessTraffic) }}</span>
           </template>
         </PanelCard>
 
-        <PanelCard title="最近客户端" subtitle="按信号强度排序">
+        <PanelCard title="客户端" subtitle="无线优先，按信号排序">
           <template #actions>
             <RouterLink class="link-btn" :to="{ name: 'clients' }">
               全部
@@ -210,11 +210,11 @@
           <EmptyState v-else title="暂无在线设备" description="有新设备连接后会显示在这里。" />
           <template #footer>
             <span>无线 {{ wirelessCount }} 台</span>
-            <span>有线 {{ wiredCount }} 台</span>
+            <span>其他 {{ otherCount }} 台</span>
           </template>
         </PanelCard>
 
-        <PanelCard title="代理状态" subtitle="ShellCrash / mihomo">
+        <PanelCard title="代理状态" subtitle="ShellCrash">
           <template #actions>
             <RouterLink class="link-btn" :to="{ name: 'proxy' }">
               详情
@@ -261,7 +261,7 @@
           />
           <template #footer>
             <span>延迟每分钟探测一次</span>
-            <span class="mono">API 127.0.0.1:9999</span>
+            <span class="mono">API 127.0.0.1:{{ controllerPort }}</span>
           </template>
         </PanelCard>
       </div>
@@ -359,6 +359,7 @@
     type ClientRow
   } from '@/utils/clients'
   import { pickPrimaryGroup, resolveNode, isProxyGroup } from '@/utils/proxy'
+  import { pickWanInterfaces, wanDeviceName } from '@/utils/network'
 
   defineOptions({ name: 'DashboardView' })
 
@@ -404,9 +405,11 @@
   /** The latency probe of the overview runs at most once a minute. */
   const DELAY_TTL = 60_000
 
-  const wan = computed(() => interfaces.value.find((item) => item.interface === 'wan'))
-  const wan6 = computed(() => interfaces.value.find((item) => item.interface === 'wan6'))
-  const lan = computed(() => interfaces.value.find((item) => item.interface === 'lan'))
+  /** WAN / WAN6 / LAN resolved by role, not by a hard-coded interface name. */
+  const pickedInterfaces = computed(() => pickWanInterfaces(interfaces.value))
+  const wan = computed(() => pickedInterfaces.value.wan)
+  const wan6 = computed(() => pickedInterfaces.value.wan6)
+  const lan = computed(() => pickedInterfaces.value.lan)
   const wanUp = computed(() => Boolean(wan.value?.up))
   const wanIp = computed(() => (wan.value ? ipv4Of(wan.value) : '—'))
   const lanIp = computed(() => (lan.value ? ipv4Of(lan.value) : '—'))
@@ -414,9 +417,17 @@
     () => wan.value?.route?.find((route) => route.target === '0.0.0.0')?.nexthop || '—'
   )
   const wanDns = computed(() => wan.value?.['dns-server']?.join(', ') || '—')
-  const shownInterfaces = computed(
-    () => [wan.value, wan6.value, lan.value].filter(Boolean) as NetworkInterface[]
-  )
+  const shownInterfaces = computed(() => {
+    const seen = new Set<string>()
+    return [wan.value, wan6.value, lan.value].filter((iface): iface is NetworkInterface => {
+      if (!iface || seen.has(iface.interface)) return false
+      seen.add(iface.interface)
+      return true
+    })
+  })
+  const radioCount = computed(() => Object.keys(wireless.value).length)
+  /** The controller port of the running core, 9999 is the ShellCrash default. */
+  const controllerPort = computed(() => shellCrash.status?.ports?.controller || 9999)
 
   const loads = computed(() => (info.value?.load ?? [0, 0, 0]).map((value) => value / 65536))
   const memoryUsed = computed(() => {
@@ -440,7 +451,21 @@
 
   function deviceStats(iface: NetworkInterface | undefined) {
     if (!iface) return undefined
-    return devices.value.find((device) => device.name === iface.l3_device)?.stats
+    const name = wanDeviceName(iface)
+    return devices.value.find((device) => device.name === name)?.stats
+  }
+
+  /**
+   * The netdev that carries the WAN traffic, e.g. `pppoe-wan` behind `wan`.
+   * A device without the logical WAN interface still matches the stock names.
+   */
+  function findWanDevice(list: NetworkDevice[]): NetworkDevice | undefined {
+    const name = wanDeviceName(wan.value)
+    return (
+      (name ? list.find((device) => device.name === name) : undefined) ??
+      list.find((device) => device.name === 'wan') ??
+      list.find((device) => device.name === 'pppoe-wan')
+    )
   }
 
   const wifiMeta = computed(() => buildWifiMeta(wireless.value))
@@ -448,7 +473,7 @@
     mergeClients(leases.value, stations.value, hints.value, wifiMeta.value)
   )
   const wirelessCount = computed(() => countWirelessClients(stations.value))
-  const wiredCount = computed(() => Math.max(0, clients.value.length - wirelessCount.value))
+  const otherCount = computed(() => Math.max(0, clients.value.length - wirelessCount.value))
 
   const recentClients = computed(() =>
     [...clients.value]
@@ -480,7 +505,7 @@
         channel: radio.config?.channel || '—',
         htmode: radio.config?.htmode || '',
         clients: stations.value[iface.ifname]?.length || 0,
-        up: radio.up && !radio.disabled
+        up: radio.up && !radio.disabled && !iface.config?.disabled
       }))
     )
   )
@@ -557,7 +582,7 @@
       seedTimer = undefined
       try {
         const list = await api.networkDevices()
-        const device = list.find((item) => item.name === 'wan')
+        const device = findWanDevice(list)
         if (device?.stats) pushTraffic(device.stats.rx_bytes, device.stats.tx_bytes)
       } catch {
         // The regular polling tick will retry.
@@ -646,7 +671,7 @@
     leases.value = nextLeases
     hints.value = nextHints
 
-    const wanDevice = nextDevices.find((device) => device.name === 'wan')
+    const wanDevice = findWanDevice(nextDevices)
     if (wanDevice?.stats) {
       pushTraffic(wanDevice.stats.rx_bytes, wanDevice.stats.tx_bytes)
     }

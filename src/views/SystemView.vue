@@ -165,7 +165,7 @@
   import { usePolling } from '@/composables/usePolling'
   import { useRefreshSignal } from '@/composables/useRefresh'
   import { api } from '@/api/openwrt'
-  import { ubusCall } from '@/api/ubus'
+  import { rebootRouter } from '@/api/ops'
   import type { BoardInfo, SystemInfo } from '@/api/types'
   import { formatBytes, formatClock, formatPercent, formatUptime } from '@/utils/format'
 
@@ -291,7 +291,7 @@
 
     rebooting.value = true
     try {
-      await ubusCall('system', 'reboot', {})
+      await rebootRouter()
       ElMessage.success('重启指令已发送，请等待路由器恢复')
     } catch (err) {
       ElMessage.error(err instanceof Error ? err.message : '重启失败')

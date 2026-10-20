@@ -230,7 +230,7 @@ const ERROR_TEXT: Record<string, string> = {
 
 /** The CGI rejects every other file name, so the page checks it up front. */
 export function isValidFirmwareName(name: string): boolean {
-  return FIRMWARE_NAME_PATTERN.test(name) && /\.(bin|tar)$/i.test(name)
+  return FIRMWARE_NAME_PATTERN.test(name) && /\.(bin|tar|img|gz|itb)$/i.test(name)
 }
 
 /**

@@ -332,17 +332,29 @@ export async function readRawConfigs(): Promise<SysRawConfigs> {
   return { dhcp, system }
 }
 
+/** A neighbor table entry (`ip neigh show`) read from the read-only CGI. */
+export interface SysNeighbor {
+  ip: string
+  mac: string
+  device: string
+  state: string
+}
+
 /**
  * The devices that are online right now.
  *
  * The DHCP leases carry the address ↔ MAC mapping, the host hints the names
- * of the devices and the station list tells which of them use Wi-Fi.
+ * of the devices. A lease alone does not prove that a device is online: a
+ * wireless device must be associated with a radio, a wired one must have a
+ * neighbor table entry that is not FAILED. Leases that appear in neither set
+ * are left out, so the online state of a static lease is accurate.
  */
 export async function readOnlineDevices(): Promise<SysOnlineDevice[]> {
-  const [leases, hints, stations] = await Promise.all([
+  const [leases, hints, stations, neighbors] = await Promise.all([
     api.dhcpLeases().catch(() => []),
     api.hostHints().catch(() => ({}) as Record<string, unknown>),
-    api.stations().catch(() => ({}) as Record<string, unknown>)
+    api.stations().catch(() => ({}) as Record<string, unknown>),
+    readNeighbors().catch(() => [] as SysNeighbor[])
   ])
 
   const stationMacs = new Set<string>()
@@ -359,6 +371,16 @@ export async function readOnlineDevices(): Promise<SysOnlineDevice[]> {
     }
   }
 
+  const neighborMacs = new Set<string>()
+  const neighborIps = new Set<string>()
+  for (const neighbor of neighbors) {
+    if (String(neighbor.state ?? '').trim().toUpperCase() === 'FAILED') continue
+    const mac = String(neighbor.mac ?? '').toLowerCase()
+    if (mac) neighborMacs.add(mac)
+    const ip = String(neighbor.ip ?? '').trim()
+    if (ip) neighborIps.add(ip)
+  }
+
   const nameByIp = new Map<string, string>()
   for (const [key, hint] of Object.entries(hints ?? {})) {
     const raw = hint as { ipaddrs?: string[]; name?: string }
@@ -369,15 +391,44 @@ export async function readOnlineDevices(): Promise<SysOnlineDevice[]> {
   }
 
   const devices: SysOnlineDevice[] = []
+  const seenMacs = new Set<string>()
+  const seenIps = new Set<string>()
+
   for (const lease of leases ?? []) {
     const mac = String(lease.macaddr ?? '').toLowerCase()
+    const ip = lease.ipaddr ?? ''
+    const wireless = stationMacs.has(mac)
+    const wired = neighborMacs.has(mac) || neighborIps.has(ip)
+    if (!wireless && !wired) continue
+
     devices.push({
-      ip: lease.ipaddr ?? '',
+      ip,
       mac,
-      hostname: lease.hostname || nameByIp.get(lease.ipaddr ?? '') || '',
+      hostname: lease.hostname || nameByIp.get(ip) || '',
+      wireless,
+      signal: stationSignal.get(mac) ?? 0
+    })
+    if (mac) seenMacs.add(mac)
+    if (ip) seenIps.add(ip)
+  }
+
+  // A device with a static address outside the DHCP pool never gets a lease;
+  // its neighbor entry is the only proof that it is online.
+  for (const neighbor of neighbors) {
+    if (String(neighbor.state ?? '').trim().toUpperCase() === 'FAILED') continue
+    const mac = String(neighbor.mac ?? '').toLowerCase()
+    const ip = String(neighbor.ip ?? '').trim()
+    if (!mac || !ip) continue
+    if (seenMacs.has(mac) || seenIps.has(ip)) continue
+    devices.push({
+      ip,
+      mac,
+      hostname: nameByIp.get(ip) || '',
       wireless: stationMacs.has(mac),
       signal: stationSignal.get(mac) ?? 0
     })
+    seenMacs.add(mac)
+    seenIps.add(ip)
   }
 
   return devices
@@ -410,6 +461,19 @@ export function matchLeaseOnline(
 export async function readLeases(): Promise<SysLease[]> {
   const data = await cgiGet<{ leases?: SysLease[] }>('/cgi-bin/modern-read?what=leases')
   return data?.leases ?? []
+}
+
+/**
+ * Live neighbor table entries (ARP for IPv4, NDP for IPv6).
+ *
+ * A neighbor entry proves that the address was seen on the link recently, so
+ * the entry set is the wired counterpart of the wireless station list.
+ */
+export async function readNeighbors(): Promise<SysNeighbor[]> {
+  const data = await cgiGet<{ neighbors?: SysNeighbor[] }>(
+    '/cgi-bin/modern-read?what=neighbors'
+  )
+  return data?.neighbors ?? []
 }
 
 /** Runtime IPv4 addresses of the network interfaces. */

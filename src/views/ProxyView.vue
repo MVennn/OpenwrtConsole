@@ -1,6 +1,6 @@
 <template>
   <div class="page">
-    <PageHeader title="代理" description="ShellCrash / mihomo 运行状态、代理组与活动连接">
+    <PageHeader title="代理" description="ShellCrash 核心运行状态、代理组与活动连接">
       <el-button :icon="RefreshCw" :loading="refreshing" @click="refresh">刷新</el-button>
     </PageHeader>
 
@@ -20,11 +20,11 @@
                 <span class="proxy-version mono">{{ version }}</span>
               </div>
               <p class="proxy-sub">
-                mihomo 核心
+                ShellCrash 核心
                 <span class="proxy-sep">·</span>
                 {{ modeText }}
                 <span class="proxy-sep">·</span>
-                API 127.0.0.1:9999
+                API 127.0.0.1:{{ controllerPort }}
               </p>
             </div>
           </div>
@@ -153,7 +153,7 @@
               :now="now"
             />
 
-            <PanelCard title="运行配置" subtitle="来自 mihomo /configs">
+            <PanelCard title="运行配置" subtitle="来自核心 /configs">
               <dl class="kv-grid config-kv">
                 <div class="kv">
                   <dt>代理模式</dt>
@@ -256,7 +256,7 @@
         <EmptyState
           :icon="ShieldOff"
           title="未检测到 ShellCrash"
-          description="服务未运行，或 mihomo API（127.0.0.1:9999）不可达。请先在路由器上启动 ShellCrash 后刷新。"
+          :description="`服务未运行，或核心 API（127.0.0.1:${controllerPort}）不可达。请先在路由器上启动 ShellCrash 后刷新。`"
         >
           <RouterLink class="link-btn" :to="{ name: 'config-shellcrash' }">
             打开 ShellCrash 设置
@@ -309,6 +309,7 @@
     type ProxyDelayResult
   } from '@/api/proxyActions'
   import { markProxySwitched, rememberProxyExit } from '@/api/proxyState'
+  import { fetchShellCrashStatus } from '@/api/shellcrashConfig'
   import type {
     ShellCrashConfigs,
     ShellCrashConnection,
@@ -321,6 +322,8 @@
 
   const available = ref(false)
   const version = ref('')
+  /** The controller port of the running core; 9999 is the ShellCrash default. */
+  const controllerPort = ref(9999)
   const configs = ref<ShellCrashConfigs>()
   const proxies = ref<Record<string, ShellCrashProxy>>({})
   const connections = ref<ShellCrashConnection[]>([])
@@ -355,6 +358,10 @@
 
   let clock: number | undefined
   let probing = false
+  /** The controller port was read once; no need to ask the router again. */
+  let controllerLoaded = false
+  /** A status request is in flight; do not stack them on slow routers. */
+  let controllerLoading = false
 
   const groups = computed(() =>
     Object.values(proxies.value)
@@ -510,6 +517,27 @@
     }
   }
 
+  /**
+   * Reads the controller port from ShellCrash.
+   *
+   * The core does not have to listen on the ShellCrash default 9999, so the
+   * page asks once and keeps 9999 as the fallback when the status is not
+   * available.
+   */
+  async function loadControllerPort(): Promise<void> {
+    if (controllerLoaded || controllerLoading) return
+    controllerLoading = true
+    try {
+      const status = await fetchShellCrashStatus()
+      controllerPort.value = status.ports?.controller || 9999
+      controllerLoaded = true
+    } catch {
+      // Keep the default and retry with the next poll.
+    } finally {
+      controllerLoading = false
+    }
+  }
+
   async function onPick(group: ShellCrashProxy, node: string): Promise<void> {
     if (!node || node === group.now) {
       picked.value[group.name] = group.now || ''
@@ -588,6 +616,8 @@
   }
 
   const { loaded, error, refreshing, refresh } = usePolling(async () => {
+    // Runs even when the proxy API is down: the empty state needs the port.
+    void loadControllerPort()
     try {
       const [versionData, connectionData, proxyData, configData] = await Promise.all([
         api.shellcrash.version(),

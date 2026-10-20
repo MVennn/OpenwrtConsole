@@ -527,8 +527,11 @@ export async function fetchDeviceStatuses(
  * Reads the kernel routing table (`network route`).
  *
  * The answer shape differs between netifd builds, so every known wrapper is
- * accepted. `available` tells the caller whether the router answered at all —
- * an empty table must not be read as "no route is active".
+ * accepted. When the router does not answer `network route` at all, the routes
+ * of the interface dump (`network.interface dump`) are used instead — they
+ * carry the same target/prefix pairs, so the "is this route active" column
+ * still works on those builds. `available` tells the caller whether the router
+ * answered at all — an empty table must not be read as "no route is active".
  */
 export async function fetchActiveRoutes(): Promise<{
   available: boolean
@@ -538,10 +541,12 @@ export async function fetchActiveRoutes(): Promise<{
   try {
     payload = await ubusCall<unknown>('network', 'route', {})
   } catch {
-    return { available: false, routes: [] }
+    return fetchRoutesFromInterfaces()
   }
 
   const list = pickRouteList(payload)
+  if (!list) return fetchRoutesFromInterfaces()
+
   const routes: NetActiveRoute[] = []
   for (const item of list) {
     if (!item || typeof item !== 'object') continue
@@ -561,15 +566,49 @@ export async function fetchActiveRoutes(): Promise<{
 }
 
 /** Finds the active route list inside the answer of `network route`. */
-function pickRouteList(payload: unknown): unknown[] {
+function pickRouteList(payload: unknown): unknown[] | null {
   if (Array.isArray(payload)) return payload
-  if (!payload || typeof payload !== 'object') return []
+  if (!payload || typeof payload !== 'object') return null
   const record = payload as Record<string, unknown>
   for (const key of ['routes', 'result', 'route']) {
     const value = record[key]
     if (Array.isArray(value)) return value
   }
-  return []
+  return null
+}
+
+/**
+ * Builds the active routes from the per-interface dump, the fallback for
+ * builds that do not answer `network route`. The dump lists the routes that
+ * belong to an interface as `target` plus a prefix length (`mask`); an empty
+ * target is skipped because it carries no network to match against.
+ */
+async function fetchRoutesFromInterfaces(): Promise<{
+  available: boolean
+  routes: NetActiveRoute[]
+}> {
+  const interfaces = await api.interfaces().catch(() => [])
+  if (!interfaces.length) return { available: false, routes: [] }
+
+  const routes: NetActiveRoute[] = []
+  for (const iface of interfaces) {
+    for (const item of iface.route ?? []) {
+      const target = String(item.target ?? '').trim()
+      if (!target) continue
+      const mask = Number(item.mask)
+      routes.push({
+        target:
+          target.includes('/') || !Number.isFinite(mask) || mask < 0
+            ? target
+            : `${target}/${mask}`,
+        nexthop: String(item.nexthop ?? ''),
+        iface: iface.interface || iface.l3_device || iface.device || '',
+        metric: Number(item.metric ?? 0),
+        valid: item.valid === undefined ? true : Boolean(item.valid)
+      })
+    }
+  }
+  return { available: true, routes }
 }
 
 /**

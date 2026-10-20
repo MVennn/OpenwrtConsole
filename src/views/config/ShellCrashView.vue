@@ -54,7 +54,7 @@
           :tone="status.running ? 'success' : 'danger'"
         />
         <StatCard
-          label="mihomo 版本"
+          label="核心版本"
           :value="status.core_version"
           :meta="`ShellCrash ${status.shellcrash_version}`"
           :icon="Cpu"

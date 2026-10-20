@@ -173,12 +173,36 @@ export function cpuEstimate(load: number): number {
   return Math.min(100, Math.round(load * 100))
 }
 
-/** Cumulative traffic over all interfaces since boot, loopback excluded. */
-export function totalTraffic(devices: NetworkDevice[]): {
+/** Cumulative traffic counters, with the scope they were read from. */
+export interface TotalTraffic {
   rx: number
   tx: number
   total: number
-} {
+  /** `wan` = WAN device only, `all` = every interface (may double count). */
+  scope: 'wan' | 'all'
+}
+
+/**
+ * Cumulative traffic since boot.
+ *
+ * Bridge, VLAN and physical devices all carry the same packets, so summing
+ * every interface double counts the traffic. The WAN device is therefore
+ * preferred: first the stock `wan` netdev, then an L3 device whose name
+ * contains `wan` (`pppoe-wan`, `br-wan`, …). A router without one (a pure
+ * access point) falls back to the sum of all non-loopback devices and marks
+ * the result as such so the page can label it.
+ */
+export function totalTraffic(devices: NetworkDevice[]): TotalTraffic {
+  const wan =
+    devices.find((device) => device.name === 'wan') ??
+    devices.find((device) => device.name !== 'lo' && device.name.includes('wan'))
+
+  if (wan) {
+    const rx = wan.stats?.rx_bytes ?? 0
+    const tx = wan.stats?.tx_bytes ?? 0
+    return { rx, tx, total: rx + tx, scope: 'wan' }
+  }
+
   let rx = 0
   let tx = 0
   for (const device of devices) {
@@ -186,7 +210,7 @@ export function totalTraffic(devices: NetworkDevice[]): {
     rx += device.stats?.rx_bytes ?? 0
     tx += device.stats?.tx_bytes ?? 0
   }
-  return { rx, tx, total: rx + tx }
+  return { rx, tx, total: rx + tx, scope: 'all' }
 }
 
 /**

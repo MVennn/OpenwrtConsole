@@ -37,11 +37,13 @@
           <span>管理连接</span>
         </div>
         <p class="router-address mono">{{ host }}</p>
-        <a class="router-link" :href="luciUrl">
+        <a v-if="luciAvailable" class="router-link" :href="luciUrl">
           应急入口：LuCI
           <ExternalLink :size="12" />
         </a>
-        <p class="router-hint">仅在控制台不可用时使用</p>
+        <p class="router-hint">
+          {{ luciAvailable ? '仅在控制台不可用时使用' : 'LuCI 未安装' }}
+        </p>
       </div>
       <button
         class="collapse-btn desktop-only"
@@ -58,6 +60,7 @@
 <script setup lang="ts">
   import { computed } from 'vue'
   import { RouterLink } from 'vue-router'
+  import { useLuciAvailability } from '@/composables/useLuciAvailability'
   import { useMediaQuery } from '@/composables/useMediaQuery'
   import {
     Activity,
@@ -99,6 +102,8 @@
 
   const host = window.location.host
   const luciUrl = `${window.location.protocol}//${host}/cgi-bin/luci/`
+  /** Not every image carries LuCI; the emergency entry is only offered when it does. */
+  const luciAvailable = useLuciAvailability()
 
   const groups = [
     {

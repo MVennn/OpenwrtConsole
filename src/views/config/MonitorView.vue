@@ -41,9 +41,9 @@
           :icon="MemoryStick"
         />
         <StatCard
-          label="在线客户端"
+          label="客户端"
           :value="clients.length"
-          :meta="`${wirelessCount} 台无线 · ${wiredCount} 台有线`"
+          :meta="`无线 ${wirelessCount} · 其他 ${otherCount}`"
           badge="实时"
           tone="brand"
           :icon="Users"
@@ -51,7 +51,7 @@
         <StatCard
           label="累计流量"
           :value="formatBytes(traffic.total)"
-          :meta="`下行 ${formatBytes(traffic.rx)} · 上行 ${formatBytes(traffic.tx)}`"
+          :meta="trafficMeta"
           badge="自启动"
           tone="neutral"
           :icon="ArrowDownUp"
@@ -302,7 +302,7 @@
 
         <template #footer>
           <span>无线 {{ wirelessCount }} 台</span>
-          <span>有线 {{ wiredCount }} 台</span>
+          <span>其他 {{ otherCount }} 台</span>
           <span>有线设备没有逐机计数器，收发显示为 —</span>
         </template>
       </PanelCard>
@@ -429,10 +429,16 @@
     memory.value.percent >= 90 ? 'danger' : memory.value.percent >= 75 ? 'warning' : 'brand'
   )
   const traffic = computed(() => totalTraffic(devices.value))
+  const trafficMeta = computed(() => {
+    const counters = `下行 ${formatBytes(traffic.value.rx)} · 上行 ${formatBytes(traffic.value.tx)}`
+    return traffic.value.scope === 'wan'
+      ? `WAN 累计 · ${counters}`
+      : `全部接口合计（可能重复计数） · ${counters}`
+  })
 
   const clients = computed(() => clientStats.value)
   const wirelessCount = computed(() => clients.value.filter((row) => row.wireless).length)
-  const wiredCount = computed(() => clients.value.length - wirelessCount.value)
+  const otherCount = computed(() => clients.value.length - wirelessCount.value)
 
   const selectedClient = computed(
     () => clients.value.find((row) => row.mac.toUpperCase() === selectedMac.value.toUpperCase()) ?? null

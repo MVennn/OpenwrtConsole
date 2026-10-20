@@ -28,7 +28,7 @@
         </li>
       </ul>
       <p v-else class="summary-empty">
-        mihomo 未上报进程信息，核心需要读取进程表才能统计。
+        核心未上报进程信息，需要读取进程表才能统计。
       </p>
     </section>
   </div>

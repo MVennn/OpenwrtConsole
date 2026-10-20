@@ -26,13 +26,13 @@
 
           <div class="iface-address">
             <span class="iface-address-label">
-              {{ item.data?.interface === 'wan6' ? 'IPv6 地址' : 'IPv4 地址' }}
+              {{ item.ipv6 ? 'IPv6 地址' : 'IPv4 地址' }}
             </span>
-            <strong class="iface-address-value mono" :title="item.data?.interface === 'wan6' ? ipv6Of(item.data) : ipv4Of(item.data)">
-              {{ item.data?.interface === 'wan6' ? ipv6Of(item.data) : ipv4Of(item.data) }}
+            <strong class="iface-address-value mono" :title="item.ipv6 ? ipv6Of(item.data) : ipv4Of(item.data)">
+              {{ item.ipv6 ? ipv6Of(item.data) : ipv4Of(item.data) }}
             </strong>
             <span
-              v-if="item.data?.interface === 'wan6' && ipv6PrefixOf(item.data)"
+              v-if="item.ipv6 && ipv6PrefixOf(item.data)"
               class="iface-address-note"
             >
               下发前缀 {{ ipv6PrefixOf(item.data) }}
@@ -50,7 +50,7 @@
             </div>
             <div class="kv">
               <dt>设备</dt>
-              <dd class="mono">{{ item.data?.l3_device || '—' }}</dd>
+              <dd class="mono">{{ wanDeviceName(item.data) || '—' }}</dd>
             </div>
             <div class="kv">
               <dt>已运行</dt>
@@ -84,7 +84,7 @@
             </el-table-column>
             <el-table-column label="设备" min-width="110">
               <template #default="{ row }">
-                <span class="mono table-mono">{{ row.l3_device }}</span>
+                <span class="mono table-mono">{{ wanDeviceName(row) || '—' }}</span>
               </template>
             </el-table-column>
             <el-table-column label="IPv4" min-width="140">
@@ -168,8 +168,8 @@
           <el-table-column label="错误 / 丢包" min-width="120" align="right">
             <template #default="{ row }">
               <span class="num">
-                {{ row.stats?.rx_errors + row.stats?.tx_errors }} /
-                {{ row.stats?.rx_dropped + row.stats?.tx_dropped }}
+                {{ (row.stats?.rx_errors ?? 0) + (row.stats?.tx_errors ?? 0) }} /
+                {{ (row.stats?.rx_dropped ?? 0) + (row.stats?.tx_dropped ?? 0) }}
               </span>
             </template>
           </el-table-column>
@@ -223,6 +223,7 @@
   import { api } from '@/api/openwrt'
   import type { NetworkDevice, NetworkInterface } from '@/api/types'
   import { formatBytes, formatUptime, ipv4Of, ipv6Of, protoLabel } from '@/utils/format'
+  import { pickWanInterfaces, wanDeviceName } from '@/utils/network'
 
   defineOptions({ name: 'NetworkView' })
 
@@ -231,28 +232,30 @@
   const refreshSignal = useRefreshSignal()
   const router = useRouter()
 
+  /** WAN / WAN6 / LAN resolved by role, not by a hard-coded interface name. */
+  const pickedInterfaces = computed(() => pickWanInterfaces(interfaces.value))
+
   const summaries = computed(() => [
-    { key: 'wan', label: 'WAN 广域网', data: findIface('wan') },
-    { key: 'wan6', label: 'IPv6 广域网', data: findIface('wan6') },
-    { key: 'lan', label: 'LAN 局域网', data: findIface('lan') }
+    { key: 'wan', label: 'WAN 广域网', data: pickedInterfaces.value.wan, ipv6: false },
+    { key: 'wan6', label: 'IPv6 广域网', data: pickedInterfaces.value.wan6, ipv6: true },
+    { key: 'lan', label: 'LAN 局域网', data: pickedInterfaces.value.lan, ipv6: false }
   ])
 
   const interfaceRows = computed(() =>
     [...interfaces.value]
       .filter((item) => item.interface !== 'loopback')
-      .sort((a, b) => order(a.interface) - order(b.interface))
+      .sort((a, b) => order(a) - order(b))
   )
 
   const deviceRows = computed(() =>
     [...devices.value].sort((a, b) => a.name.localeCompare(b.name))
   )
 
-  function findIface(name: string): NetworkInterface | undefined {
-    return interfaces.value.find((item) => item.interface === name)
-  }
-
-  function order(name: string): number {
-    return { wan: 0, wan6: 1, lan: 2 }[name] ?? 9
+  function order(iface: NetworkInterface): number {
+    if (iface === pickedInterfaces.value.wan) return 0
+    if (iface === pickedInterfaces.value.wan6) return 1
+    if (iface === pickedInterfaces.value.lan) return 2
+    return 9
   }
 
   function gatewayOf(iface: NetworkInterface | undefined): string {
@@ -272,12 +275,13 @@
 
   function deviceStats(iface: NetworkInterface | undefined) {
     if (!iface) return undefined
-    return devices.value.find((device) => device.name === iface.l3_device)?.stats
+    const name = wanDeviceName(iface)
+    return devices.value.find((device) => device.name === name)?.stats
   }
 
   function deviceType(device: NetworkDevice): { label: string; tone: 'primary' | 'success' | 'info' | 'warning' } {
     if (device.wireless) return { label: '无线', tone: 'success' }
-    if (/^(br-|lo$|wg|tun|veth|docker)/.test(device.name)) {
+    if (/^(br-|lo$|wg|tun|veth|docker|ifb|bond|ppp|gre|sit|6rd|ip6tnl)/.test(device.name)) {
       return { label: '虚拟', tone: 'info' }
     }
     return { label: '有线', tone: 'primary' }
