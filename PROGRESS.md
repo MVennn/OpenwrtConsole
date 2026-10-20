@@ -93,6 +93,8 @@ LuCI 只保留为应急入口。
 - [x] 首次配置：无无线硬件不再判「未配置」；频段优先按 runtime/iwinfo 识别
 - [x] 代理与入口：主组类型优先 + 通用名称词；LuCI 入口探测后才显示；HTTPS 文案动态
 - [x] 文档与版本：README/DEPLOY/CHANGELOG/docs 全量同步，新增 `docs/release-notes/v0.2.0.md`
+- [x] 部署回归：已部署到 `root@10.0.0.1`，`/modern/` 与 9 个 CGI 哈希一致；
+  发现并修正 LuCI 未登录时 `HEAD /cgi-bin/luci/` 返回 403 被误判为「未安装」的问题
 
 ## 自检
 - `npx vue-tsc --noEmit` ✓
@@ -103,6 +105,10 @@ LuCI 只保留为应急入口。
 - 令牌链路：签发令牌后用非法用户名调用 `set-password`，命中 400 用户名校验 ✓
 - 未执行写路径（改密 / 重启 / 恢复出厂 / 刷写）；前端未做浏览器端到端
 - `python tools/check-docs.py` ✓（23 篇）
+- 部署后回归：`https://10.0.0.1/modern/` 200；入口 JS/CSS 200；
+  `modern-read?what=neighbors`、`modern-data?what=stations`、`modern-proxy?path=/version`
+  与 `modern-uci` 令牌流程均通过 uhttpd 实测；回滚备份在
+  `/root/modern-backup-20261021-030330.tgz`
 
 ## 状态: 已完成
 
