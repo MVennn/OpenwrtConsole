@@ -88,7 +88,7 @@ docs/ 分四类（索引见 [README.md](README.md)）：
 | 新增 / 删除 / 改名一个 CGI | [ARCHITECTURE.md](ARCHITECTURE.md) 的 CGI 清单、[CGI-CONTRACT.md](CGI-CONTRACT.md) 对应小节、[../DEPLOY.md](../DEPLOY.md) 的 CGI 表（同步窗口） |
 | 改一个 CGI 的请求 / 响应形状或错误码 | [CGI-CONTRACT.md](CGI-CONTRACT.md) 对应小节 |
 | 改 UCI 授权白名单 | [WRITE-LAYER.md](WRITE-LAYER.md) §1 |
-| 新增 / 删除一个危险动作或令牌用途 | [WRITE-LAYER.md](WRITE-LAYER.md) §4、[CGI-CONTRACT.md](CGI-CONTRACT.md) 对应小节 |
+| 新增 / 删除一个危险动作或令牌用途 | [WRITE-LAYER.md](WRITE-LAYER.md) §3 的令牌表、[CGI-CONTRACT.md](CGI-CONTRACT.md) 对应小节 |
 | 新增 / 删除一个数据通道 | [ARCHITECTURE.md](ARCHITECTURE.md) 的通道表、根 [../README.md](../README.md) 的「数据来源」表 |
 | 新增 / 删除 / 改名一个视图 | [ARCHITECTURE.md](ARCHITECTURE.md) §4 的目录结构、根 [../README.md](../README.md) 的「功能」表 |
 | 新增 / 删除一个 Element Plus 组件 | [../DESIGN.md](../DESIGN.md) 与 `src/plugins/element.ts`（样式清单）、[TROUBLESHOOTING.md](TROUBLESHOOTING.md) 的「元素样式丢失」节 |

@@ -62,10 +62,15 @@ shell 拼 JSON 时最容易踩的两个坑：
 - **变量插进 JSON 字符串前要先转义**。用 `modern-pkg` 的 `esc_json`、
   `modern-shellcrash` 的 `jstr`，不要裸插。
 
-为此 9 个 CGI 的 `ok()` / `fail()` 统一走 `send_json()`：应答先写进临时文件，
-再用 `jsonfilter -i <file> -e '@'` 验一遍（非法 JSON 时 jsonfilter 非 0 退出），
+为此 **6 个 shell CGI**（`modern-exec` / `modern-proxy` / `modern-uci` / `modern-pkg` /
+`modern-sysupgrade` / `modern-shellcrash`）的 `ok()` / `fail()` 统一走 `send_json()`：
+应答先写进临时文件，再用 `jsonfilter -i <file> -e '@'` 验一遍（非法 JSON 时 jsonfilter 非 0 退出），
 不合法就换成 `{"ok":false,"error":"路由器生成了无效的响应，请查看系统日志"}`，
 不会再让浏览器报一句没头没脑的「无法解析」。
+
+另 **3 个 ucode CGI**（`modern-login` / `modern-data` / `modern-read`）用 ucode 的
+`printf("%J", payload)` 序列化 —— **结构上必然是合法 JSON**，
+**不需要也不适合**套 shell 的那套自检（它们体内没有 `jsonfilter` 可用）。
 
 **改完 CGI 必测**（`jsonfilter` 会拒绝非法 JSON）：
 

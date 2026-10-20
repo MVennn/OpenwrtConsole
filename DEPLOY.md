@@ -102,8 +102,9 @@ uhttpd 不发 `Cache-Control`，浏览器会启发式缓存 `index.html`，导�
 所有 CGI 都要求 `owrt_sid` Cookie 或 `?sid=` 参数，并用 `ubus session get` 校验会话。
 
 **每个 CGI 的每个应答都必须是合法 JSON**（`svc-list` 这类直接透传上游 JSON 的除外）。
-`ok()` / `fail()` 统一走 `send_json()`，发送前用 `jsonfilter` 自检，
-不合法就换成可读的错误而不是让浏览器报「无法解析」。
+6 个 shell CGI 的 `ok()` / `fail()` 统一走 `send_json()`，发送前用 `jsonfilter` 自检，
+不合法就换成可读的错误而不是让浏览器报「无法解析」；另 3 个 ucode CGI 用 `printf("%J", …)`
+序列化，结构上必然是合法 JSON。
 完整约定与自检命令见 [docs/CGI-CONTRACT.md](docs/CGI-CONTRACT.md) §0「应答自检」。
 
 ## ShellCrash 相关注意

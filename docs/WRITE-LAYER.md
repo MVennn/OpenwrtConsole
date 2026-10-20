@@ -43,14 +43,15 @@ UCI 对象也能用 —— 但**能写哪几个配置文件是按文件名授权
 > 这条白名单同时是 `modern-uci` 的 `valid_config()` 判定：
 > CGI 侧再校验一遍，两层都过才放行。
 
-## 2. 写入范式：读现状 → 暂存 → 提交 → 应用
+## 2. 写入范式：读现状 → 本地草稿 → 暂存 → 提交 → 应用
 
-**所有配置修改都必须按这四步走**，不许跳步：
+**所有配置修改都必须按这五步走**，不许跳步 —— v4 之后范式跨**两个存储层**：
+**路由器侧的 UCI 暂存区**（`/tmp/.uci/<config>`）+ **浏览器侧的 localStorage 草稿**。
 
 ```ts
 // ① 读现状（uci.get）—— 界面上的默认值必须来自设备的真实配置，不是硬编码
-// ② 用户编辑（界面暂存，不写设备）
-// ③ 暂存（uci.set / uci.add / uci.delete）—— 写进 UCI 的未提交区
+// ② 用户编辑（先落 localStorage 草稿，不写设备）
+// ③ 暂存到 UCI 暂存区（uci.set / uci.add / uci.delete）—— 写进路由器的未提交区
 // ④ 提交（uci.commit）—— 落盘
 // ⑤ 应用（重载服务）—— 让改动真正生效
 await uciSet('network', 'lan', { ipaddr: '10.0.0.1/24' })
@@ -63,30 +64,38 @@ await systemOps.reloadNetwork()
 | 步骤 | 要求 |
 | --- | --- |
 | ① 读现状 | 表单初值必须来自 `uci.get` 的返回，**不许用前端写死的默认值** |
-| ② 用户编辑 | 提交前界面上必须能看到「将生效的改动」；出错要能回滚 |
-| ③ 暂存 | 高风险操作（改 IP、断网、改防火墙策略）必须先给**明确的影响提示**并要求确认 |
+| ② 用户编辑（本地草稿） | 编辑先落 `localStorage`（`src/composables/useDraft.ts`，键前缀 `owrt-draft:*`），刷新不丢；页面上用 `src/components/DraftNotice.vue` 提示草稿状态（「有未保存的修改」+「放弃修改」），用 `src/components/cfg-pending/ConfigPendingPanel.vue` 逐条渲染「旧值 → 新值」；出错要能回滚 |
+| ③ 暂存 | 高风险操作（改 IP、断网、改防火墙策略）必须先给**明确的影响提示**并要求确认；暂存记录（旧值、改动明细）统一由 `src/api/configPending.ts` 维护 |
 | ④ 提交 | `uci.commit` 之后配置已落盘，但**还没生效** —— 必须继续第 5 步 |
 | ⑤ 应用 | 重载服务会**断网**（`net-reload`）或**踢掉无线**（`wifi-reload`），界面上要提示 |
 
-### 「放弃修改」怎么办
+> **四个可写配置页（网络 / 无线 / 防火墙 / DHCP 与系统设置）共用同一套共享件**：
+> `src/api/configPending.ts` + `src/components/cfg-pending/ConfigPendingPanel.vue` +
+> `src/components/DraftNotice.vue`。**不许各页自己另起一套** ——
+> 另起一套就意味着「旧值」与「放弃修改」的语义各页不同，用户会踩到不一致。
 
-用 `systemOps.revertConfig(config)` —— 走 CGI `modern-uci` 的 `uci-revert`，
-因为 rpcd 会话没有 `uci.revert` 权限。
+### 「放弃修改」是**两层**，两边都要做
 
-### `uciApply` 是个坑：它零调用
+| 层 | 做什么 | 代码 |
+| --- | --- | --- |
+| 浏览器侧本地草稿 | 删掉 `localStorage` 里的草稿 | `resetDraft(draft)`（`src/api/configPending.ts`）→ `useDraft.clear()` |
+| 路由器侧 UCI 暂存区 | 回滚 `/tmp/.uci/<config>` 里的未提交改动 | `systemOps.revertConfig(config)` → CGI `modern-uci` 的 `uci-revert` |
 
-`src/api/uci.ts` 里导出过 `uciApply()`（对应 rpcd 的 `uci.apply`）。
-**全仓只有定义处，零调用点** —— 实际走的是 `systemOps.applyChanges()`，
-它打的是 CGI `modern-uci` 的 `uci-apply`（`uci apply`）。
+**只回滚一边会留下两边不一致**：
 
-`docs/V3-CONTRACT.md` 的「写入范式」示例里写的是 `await systemOps.reloadNetwork()   // 或 uciApply()`，
-这句与实现不符。
+- 只清草稿 → 路由器暂存区里的改动还在，刷新后「待生效改动」又冒出来；
+- 只回滚暂存区 → 浏览器里的草稿还在，页面会拿旧草稿再暂存一遍。
 
-- **现状**：文档（历史）与实现（`reloadNetwork`）一致，只有那个「或 `uciApply()`」的括注是多余的。
-- **处置建议**：删掉 `src/api/uci.ts` 里的 `uciApply` 导出（死代码），
-  或反过来把 `applyChanges` 改成真调 `uciApply` —— **两条路选一条，别都留着**。
-- 在选之前，本篇与 [CGI-CONTRACT.md](CGI-CONTRACT.md) 一律以
-  **「`uci-apply` 走 CGI `modern-uci`」** 为准。
+第二层必须走 root CGI —— rpcd 会话**没有** `uci.revert` 权限。
+
+### 应用走 `uci-apply`
+
+**历史**：早期 `src/api/uci.ts` 里导出过一个零调用的 `uciApply()`（对应 rpcd 的 `uci.apply`），
+是死代码。**这段死代码已删** —— `src/api/uci.ts` 现在只导出
+`uciGet` / `uciGetSection` / `uciSet` / `uciDelete` / `uciAdd` / `uciCommit` / `uciChanges`。
+
+**应用一律走 `systemOps.applyChanges()` → CGI `modern-uci` 的 `uci-apply`（`uci apply`）。**
+本篇与 [CGI-CONTRACT.md](CGI-CONTRACT.md) 都以这条为准。
 
 ## 3. 哪些动作必须走 root CGI
 
@@ -105,12 +114,20 @@ await systemOps.reloadNetwork()
 | 卸载软件包 | root CGI | `modern-pkg` `remove` | —（`confirm=yes`） | ✅ |
 | 更新仓库索引 / 全量升级 | root CGI | `modern-pkg` `update` / `upgrade` | —（`confirm=yes`） | ✅ |
 | 切换代理策略组节点 | root CGI | `modern-proxy` `POST` | —（组内成员校验） | ✅ |
-| ShellCrash 服务启停 | root CGI | `modern-shellcrash` `service` | —（`confirm=yes`） | — |
+| ShellCrash 服务启停 | root CGI | `modern-shellcrash` `service` | —（不要求 confirm） | — |
 | ShellCrash 配置键写入 | root CGI | `modern-shellcrash` `config-write` | —（`confirm=yes`） | — |
 | ShellCrash 覆写文件启停 | root CGI | `modern-shellcrash` `override-toggle` | —（`confirm=yes`） | — |
+| ShellCrash 订阅热更新 | root CGI | `modern-shellcrash` `sub-update` | —（`confirm=yes`） | — |
+| ShellCrash 订阅热更新状态 | root CGI | `modern-shellcrash` `sub-update-state` | — | — |
 
 > 「令牌」列指**一次性令牌**（见 [CGI-CONTRACT.md](CGI-CONTRACT.md) §0：120 秒、单次使用、用途必须完全一致）。
 > 「确认词」列指界面上要用户**手动输入一个词**（如 `RESET`）才放行 —— 这是前端的责任，CGI 管不了。
+
+> ⚠️ **待办（安全缺口）**：ShellCrash 服务启停（`service`）是本表里**最危险的动作**，
+> 却**不要求 `confirm=yes`** —— `deploy/modern-shellcrash` 的 `action_service()` 里**没有** `_confirm` 判断，
+> 而同一文件里的 `config-write` / `override-toggle` / `sub-update` 都有。
+> 也就是「停核心 / 重启核心」比「改一个配置键」更容易触发 —— **最危险的动作反而没有确认保护**，
+> 是本表当前最明显的安全缺口，待补。
 
 ### 令牌与确认词的先后顺序
 
@@ -141,8 +158,11 @@ await systemOps.reloadNetwork()
 
 | 需要什么 | 用哪个 |
 | --- | --- |
-| 读 / 写 UCI 配置 | `src/api/uci.ts`（`uciGet` / `uciSet` / `uciDelete` / `uciAdd` / `uciCommit` / `uciChanges`） |
+| 读 / 写 UCI 配置 | `src/api/uci.ts`（`uciGet` / `uciGetSection` / `uciSet` / `uciDelete` / `uciAdd` / `uciCommit` / `uciChanges`） |
+| 暂存区工具（旧值 → 新值、改动明细、草稿清理） | `src/api/configPending.ts`（`stageEdits` / `buildPendingEntries` / `applyEdits` / `resetDraft`） |
 | 特权系统动作 + 令牌 | `src/api/systemOps.ts`（`runSystemOp` / `requestToken` / `systemOps.*`） |
+| 代理出口的本地状态（切节点时间、已持续时长） | `src/api/proxyState.ts` |
+| 设备身份（登录页显示真实机型） | `src/api/device.ts` |
 | 各功能域的读写封装 | `src/api/<域名>.ts`（`networkConfig` / `wirelessConfig` / `firewallConfig` / `systemSettings` / `packages` / `firmware` / `shellcrashConfig` / `proxyActions` / `setup` / `ops` / `monitor` / `diagnostics` / `dns`） |
 
 **统一入口**（详见 [ARCHITECTURE.md](ARCHITECTURE.md) §5）：

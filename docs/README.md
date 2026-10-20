@@ -18,7 +18,7 @@
 
 | 文档 | 一句话定位 |
 |---|---|
-| [WRITE-LAYER.md](WRITE-LAYER.md) | 写入层：rpcd 的 UCI 授权白名单、写入范式（读现状 → 暂存 → 提交 → 应用）、必须走 root CGI 且需要令牌 + 确认词的七类动作 |
+| [WRITE-LAYER.md](WRITE-LAYER.md) | 写入层：rpcd 的 UCI 授权白名单、写入范式（读现状 → 本地草稿 → 暂存 → 提交 → 应用）、必须走 root CGI 且需要令牌 + 确认词的七类动作 |
 
 ## 三、流程与规范
 

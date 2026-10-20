@@ -367,7 +367,8 @@ curl -sk -X POST -H 'Content-Type: application/json'   -d '{"action":"config-wri
 | 变量没转义就插进 JSON 字符串 | 用 `modern-pkg` 的 `esc_json` / `modern-shellcrash` 的 `jstr` |
 | 上游返回的不是 JSON（老的 `uci-changes` 返回 UCI diff 原文） | 这种 action 已经删掉；新加 action 必须保证应答是 JSON |
 
-> 现在的 9 个 CGI 都走 `send_json()`，非法 JSON 会被路由器自己拦下并换成
+> 现在 6 个 shell CGI（`modern-exec` / `modern-proxy` / `modern-uci` / `modern-pkg` /
+> `modern-sysupgrade` / `modern-shellcrash`）都走 `send_json()`，非法 JSON 会被路由器自己拦下并换成
 > `{"ok":false,"error":"路由器生成了无效的响应，请查看系统日志"}`，
 > 不会再出现「保存失败但配置已改」这种情况。
 

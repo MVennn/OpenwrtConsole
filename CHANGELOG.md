@@ -54,8 +54,9 @@
   逐节写路径、方法、请求字段、响应字段、错误码、一次性令牌机制（120 秒、单次使用）。
   全部形状**读 `deploy/modern-*` 源码得出**，没有编造字段。
 - 调整 文档 —— 新写 [docs/WRITE-LAYER.md](docs/WRITE-LAYER.md)：从 [docs/V3-CONTRACT.md](docs/V3-CONTRACT.md)
-  提炼 rpcd 的 UCI 授权白名单、写入范式（读现状 → 暂存 → 提交 → 应用）、
-  必须走 root CGI 且需要令牌 + 确认词的七类动作，并登记 `uciApply` 零调用这件事。
+  提炼 rpcd 的 UCI 授权白名单、写入范式（读现状 → 本地草稿 → 暂存 → 提交 → 应用）、
+  必须走 root CGI 且需要令牌 + 确认词的七类动作，并登记 `uciApply` 这段死代码的历史
+  （**本次同步已把它删掉**，应用一律走 `systemOps.applyChanges()` → CGI `modern-uci` 的 `uci-apply`）。
 - 调整 文档 —— 新写 [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md)：按「现象 → 排查步骤 → 原因/解法」
   固定三块结构，标题即检索词（页面白屏 / 登录后立刻掉线 / 路由报 401 / 代理页看不到策略组 /
   诊断命令超时 / 部署后资源 404 / CGI 没生效 / 元素样式丢失 / 会话过期）。
@@ -70,7 +71,8 @@
 - 调整 文档 —— 新写 [NOTICE](NOTICE)：第三方组件声明（Vue / Vite / TypeScript / Element Plus /
   ECharts / Lucide / art-design-pro / OpenWrt / LuCI），逐项写名称、来源、许可证、为何使用。
 - 调整 源码 —— 把上游 OpenWrt 运维仓的 `frontend/`（源目录）的 **v3→v6 代码同步进本仓**：
-  共 **116 个文件**（`src/` + `deploy/`）更新到源目录的当前状态，含 v3 写入层的收口、
+  本仓 `src/` + `deploy/` 现共 **118 个文件**，本次同步实际改动 **59 个**
+  （**44 改 + 15 新增**），全部更新到源目录的当前状态，含 v3 写入层的收口、
   v4 的四个配置页（暂存 → 提交 → 应用）与共享组件（`src/api/configPending.ts`、
   `src/composables/useDraft.ts`、`src/components/cfg-pending/`）、v5 的 ShellCrash 保存链路修复、
   v6 的服务动作状态跟踪。
@@ -84,7 +86,7 @@
 ### 修复
 
 > 本段收录的是**已逐行核对源码确认存在**的缺陷。带「**待修**」标记的是本版未动代码的；
-> 不带标记的是**本版已修复**的（改动很小、影响面明确，且已在本地用 `sh -n` 与循环展开验证）。
+> 不带标记的是**本版已修复**的（每条都写清改法与验证依据）。
 
 - 修复 部署脚本的字面 `\n` —— `deploy/deploy.sh` 的 for 循环里
   `modern-uci \n         modern-pkg modern-sysupgrade modern-shellcrash` 中的 `\n` 是
@@ -97,61 +99,68 @@
   **已修**：改成真换行 + 续行反斜杠；`sh -n` 通过，循环实测正确展开为 9 个 CGI。
   仍需真机验证：跑一次 `deploy.sh`，确认 9 个 CGI 全部出现在 `/www/cgi-bin/`
   且末尾两行 echo 有输出。
-- 修复 DEPLOY.md 的 CGI 数量（**待修**） —— `DEPLOY.md` 第 3 行写「把**三个** CGI 放到 `/www/cgi-bin/`」，
-  实际磁盘上有 **9 个** `deploy/modern-*`（`login` / `data` / `read` / `exec` / `proxy` / `uci` /
-  `pkg` / `sysupgrade` / `shellcrash`）。同一文件里的 CGI 清单表已经是 9 行（正确），
-  只有开头那句与「脚本会……」那段的描述是旧的。
-  缺什么证据：纯文档修正，改完比对手工部署片段里的循环列表（已是 9 个）即可，无需真机。
-- 修复 会话过期时间的 fallback（**待修**） —— `src/stores/session.ts` 的
+- 修复 会话过期时间的 fallback —— `src/stores/session.ts` 原来写的是
   `const expires = data.expires || 300`：服务端不返回 `expires` 时，前端按 **300 秒（5 分钟）**算过期，
   而 `deploy/modern-login` 实际用 `timeout: 3600` 申请的是 **3600 秒（1 小时）**。
   两者不一致：最坏情况下**用户还在用，页面却提前把会话判死**（回到登录页）。
-  缺什么证据：需要一台真机复现「服务端不返回 expires」这条路径 —— 当前 `modern-login`
-  在 `ubus` 返回 `expires` 时会带上该值，fallback 分支只在 `session.login` 异常返回时才走到，
-  需要构造该场景才能确认线上是否真的踩到。
-- 修复 重复建模与死代码（**待修**） —— 以下五处是同一类问题（同一份数据被建模了两次以上）：
+  **已修**：`src/stores/session.ts` 现在是 `const expires = data.expires || 3600`，
+  与 `deploy/modern-login` 的 `timeout: 3600` 对齐。
+  验证：逐行核对两处常量（`src/stores/session.ts` 的 fallback 与 `deploy/modern-login`
+  的 `timeout`）均为 **3600**。
+- 修复 重复建模与死代码（**已修：归档 + 删死代码**） —— 原条目列了 5 处同一类问题
+  （同一份数据被建模了两次以上），其中 **3 处已随本次同步落地**：
+
+  | 对象 | 处置 | 证据 |
+  | --- | --- | --- |
+  | `src/api/firewall.ts`（只读解析器）vs `src/api/firewallConfig.ts`（可写解析器） | 只读那份**已归档**为 `src/api/_archive/firewall.readonly.ts` | 全仓已无任何 `from '@/api/firewall'` 的引用 |
+  | `src/components/firewall/FirewallZoneCard.vue` vs `src/components/config-fw/FwZoneCard.vue` | 前者**已归档**为 `src/components/_archive/FirewallZoneCard.vue` | 只被同样归档的 `src/views/_archive/FirewallView.vue` 引用 |
+  | `src/api/uci.ts` 的 `uciApply` | **死代码已删** | `src/api/uci.ts` 现在只导出 `uciGet` / `uciGetSection` / `uciSet` / `uciDelete` / `uciAdd` / `uciCommit` / `uciChanges` |
+
+  `UciSection` 类型因此从**三份**收敛到**两份**（`src/api/uci.ts` 与 `src/api/dns.ts`，
+  第三份在归档文件里）—— **仍未合并**，见下面「待修」的 DHCP 那条。
+- 修复 孤儿只读路由 —— `name: 'firewall'` 的路由**已从 `src/router/index.ts` 删除**，
+  只读视图移到 `src/views/_archive/FirewallView.vue`（`src/components/_archive/FirewallZoneCard.vue`
+  随它一起归档），路由与侧栏里只剩可写的 `config-firewall`。
+  验证：`src/router/index.ts` 里已搜不到 `name: 'firewall'`，只剩
+  `path: 'config/firewall'` / `name: 'config-firewall'`。
+- 修复 未使用的 `sass` 依赖 —— `package.json` 的 `devDependencies` 里**已没有 `sass`**；
+  `src/` 下仍然 **0 个** `.scss` 文件，`vite.config.ts` 的注释明说
+  「no sass toolchain」（Element Plus 走预编译的 theme-chunk css，不走 sass）。
+  它原本是 `unplugin-vue-components` 的传递依赖被顺手写进来的，已随本次同步移除。
+- 修复 视图缺 `defineOptions` —— 规则要求视图导出
+  `defineOptions({ name: 'XxxView' })`（写在一份一次性的开发契约里，没进长期规范，所以无人遵守）。
+  **已补齐**：20 个视图文件（含归档的 `src/views/_archive/FirewallView.vue`）**全部**导出了
+  `defineOptions({ name: 'XxxView' })`，`name` 与文件名逐个一致。
+  验证：逐文件 `grep defineOptions`，**0 个缺失**。
+  > 口径更正：早前的分析报告写的是「11 个缺」，按当前源码逐文件核对是 **10 个**；
+  > `config/ShellCrashView.vue` 在报告出具后补上了 `defineOptions`。
+- 修复 重复建模：DHCP 被解析了两次（**待修**） —— 同一份数据被建模了两次以上；
+  原先列的 5 处里，**只剩这一条仍成立**：
 
   | 对象 | 现状 | 证据 |
   | --- | --- | --- |
-  | `src/api/firewall.ts` vs `src/api/firewallConfig.ts` | 两套平行解析器读同一份 `/etc/config/firewall`（`parseFirewallConfig` vs `parseFirewallModel`） | 前者是只读模型，后者是可写模型 |
-  | `src/components/firewall/FirewallZoneCard.vue` vs `src/components/config-fw/FwZoneCard.vue` | 两个近乎逐行同构的组件，`<style scoped>` 高度重合 | 类名集合只差 2 项 |
-  | `src/api/dns.ts` vs `src/api/systemSettings.ts` | 两套 DHCP 解析（`getDhcpSettings` vs `parseDnsmasq`/`parsePools`/`parseLeases`），读同一份 `uci.get dhcp` | 池与租约各解析一次 |
-  | `UciSection` 类型 | **三份**定义：`src/api/uci.ts`、`src/api/dns.ts`、`src/api/firewall.ts` | 三处各写各的 |
-  | `src/api/uci.ts` 的 `uciApply` | **零调用**的死代码 | 全仓只在定义处命中；`docs/V3-CONTRACT.md` 却把它写进「写入范式」 |
+  | `src/api/dns.ts` vs `src/api/systemSettings.ts` | 两套 DHCP 解析（`getDhcpSettings` vs `parseDnsmasq`/`parsePools`/`parseLeases`），读同一份 `uci.get dhcp` | 池与租约各解析一次；`getDhcpSettings` 仍被 `src/views/dns/DnsView.vue` 调用 |
 
-  另外 `src/api/firewall.ts` 里的 `luciZoneUrl` / `luciFirewallUrl` 也是零调用的残留。
-  缺什么证据：合并要逐页核对渲染结果（尤其防火墙页的规则表格），需要真机截图比对。
-- 修复 孤儿只读路由（**待修**） —— `src/views/firewall/FirewallView.vue` 的路由
-  （`path: 'firewall'` / `name: 'firewall'`）在 `src/router/index.ts` 里注册了，
-  但 `src/components/AppSidebar.vue` **只注册了 `config-firewall`**，
-  全仓找不到任何指向 `name: 'firewall'` 的链接 → 只能手敲 `#/firewall` 访问。
-  它与 `src/views/config/FirewallConfigView.vue`（可写，1215 行）职责重叠。
-  缺什么证据：决定「归档」还是「并入可写页」需要产品口径，代码层面无从判断。
-- 修复 未使用的 `sass` 依赖（**待修**） —— `package.json` 的 `devDependencies` 里有
-  `"sass": "^1.83.0"`，但 `src/` 下 **0 个** `.scss` 文件，`vite.config.ts` 的注释明说
-  「no sass toolchain」（Element Plus 走预编译的 theme-chunk css，不走 sass）。
-  它是 `unplugin-vue-components` 的传递依赖被顺手写进来的。
-  缺什么证据：删掉后跑一次 `npm install && npm run build`，确认产物字节数不变。
-- 修复 视图缺 `defineOptions`（**待修**） —— 规则要求视图导出
-  `defineOptions({ name: 'XxxView' })`（写在一份一次性的开发契约里，没进长期规范，所以无人遵守）。
-  实测 20 个视图文件中 **10 个有、10 个没有**（缺：`ClientsView` / `DashboardView` / `LoginView` /
-  `NetworkView` / `ProxyView` / `SystemView` / `WirelessView` / `config-MonitorView` /
-  `config-WirelessConfigView` / `setup-SetupWizardView`）。
-  > 口径更正：早前的分析报告写的是「11 个缺」，按当前源码逐文件核对是 **10 个**；
-  > `config/ShellCrashView.vue` 在报告出具后补上了 `defineOptions`。
-  缺什么证据：无功能风险，但会改变组件名（影响 `keep-alive` 与调试器里的组件树），改完要在浏览器里过一遍。
-
+  另有残留：`UciSection` 类型仍有**两份**（`src/api/uci.ts` / `src/api/dns.ts`），随归档从三份收敛到两份，仍待合并。
+  缺什么证据：合并要逐页核对渲染结果（DNS 页的地址池 / 租约展示），需要真机截图比对。
 - 修复 ShellCrash 保存失败但配置其实已改（**破坏性变更：应答形状变了**） ——
   `deploy/modern-shellcrash` 的 `config-write` 把改动项拼成
   `"changed":["ipv6_support":"ON"]`：数组里放没有花括号的键值对，**这不是合法 JSON**，
   浏览器 `JSON.parse` 整段失败 → 前端拿到 `null` → 报
   「Cannot read properties of null (reading 'message')」，而路由器侧其实已经写成功并返回了 200。
   **已修**：`changed` 改成字符串数组 `["ipv6_support=ON"]`（与前端 `changed?: string[]` 一致），
-  9 个 CGI 的 `ok()` / `fail()` 统一走 `send_json()`：应答先落临时文件，
-  再用 `jsonfilter -i <file> -e '@'` 自检，不合法就换成可读的错误而不是让浏览器报「无法解析」。
+  **6 个 shell CGI**（`modern-exec` / `modern-proxy` / `modern-uci` / `modern-pkg` /
+  `modern-sysupgrade` / `modern-shellcrash`）的 `ok()` / `fail()` 统一走 `send_json()`：
+  应答先落临时文件，再用 `jsonfilter -i <file> -e '@'` 自检，
+  不合法就换成可读的错误而不是让浏览器报「无法解析」。
+  **另 3 个 ucode CGI**（`modern-login` / `modern-data` / `modern-read`）用 ucode 的
+  `printf("%J", payload)` 序列化 —— **结构上必然是合法 JSON**，
+  不需要也不适合套 shell 的那套自检。
   前端另外保留了 `JSON.parse` 的报错位置与出错字符码，以后再出问题能直接定位。
   验证：浏览器内完整走通「改值 → 保存 → 确认 → 成功提示 → 草稿清空」；
-  15 个 CGI 动作逐个 curl + `jsonfilter` 校验全部合法。
+  全部 CGI action 逐个 curl + `jsonfilter` 校验全部合法
+  （action 型 CGI 共 4 个、合计 **46 个 action**：`modern-uci` 15 · `modern-pkg` 9 ·
+  `modern-sysupgrade` 9 · `modern-shellcrash` 13；`modern-data` / `modern-read` 走 `what=` 参数，不计 action）。
 - 修复 重启 ShellCrash 后状态不更新 —— 两处叠加：① `deploy/modern-shellcrash` 的后台 runner
   在 `start.sh start` 返回时就写完成记录，而 start.sh 是把核心拉起来就返回的，核心这时还没起来；
   ② 前端拿到完成记录就停止轮询，那个每秒跳的计时器只更新计数、不拉状态。
@@ -169,11 +178,11 @@
 
 ### 待补
 
-- **本仓自身的许可证尚未定稿** —— 仓库内没有 `LICENSE` 文件。
-  待定：许可证名称与版本；定完需新增 `LICENSE`、在 [README.md](README.md) 的「许可证」段写清、
-  并让 GitLab 项目元信息与 [NOTICE](NOTICE) 一致。
-- **`DEPLOY.md` / `PROGRESS.md` / `DESIGN.md` 仍是源目录副本** —— 三者都有已确认的过期内容
-  （CGI 数量、页面/CGI 计数、「防火墙与 DNS 页只读」的旧结论）。逐条见
+- **只有 `DESIGN.md` / `docs/V2-CONTRACT.md` / `docs/V3-CONTRACT.md` 仍是源目录副本** ——
+  `DEPLOY.md` 与 `PROGRESS.md` **已在本仓重写**（`DEPLOY.md` 改成环境变量占位符与
+  「本仓根目录」的部署路径；`PROGRESS.md` 补齐 v4 / v5 / v6 三批），**不再是副本**。
+  剩下的 `DESIGN.md` 仍有已确认的过期结论（「防火墙与 DNS 页保持只读，修改仍交给 LuCI」
+  —— 防火墙现已**可写**，只有 DNS 状态页仍只读），逐条见
   [README.md](README.md) 的「仓库现状说明」表格。**本版刻意不改**：它们是源目录的副本，
   改了就与源目录产生无谓偏差，等同步窗口一起处理。
 - **发版前要把版本号推到 `0.2.0`** —— 按 [docs/VERSIONING.md](docs/VERSIONING.md) §1–§2：
@@ -181,9 +190,6 @@
   （`modern-shellcrash` 的 `config-write` 应答形状、`modern-uci` 少了 `uci-changes` 动作），
   必须走次版本并在 CHANGELOG 里显式标注。待办：写
   `docs/release-notes/v0.2.0.md`、更新 VERSIONING.md §4 的「当前版本」。
-- **`DEPLOY.md` / `PROGRESS.md` / `DESIGN.md` 仍是源目录副本** —— 本次同步已把
-  `DEPLOY.md` 的「应答格式约定」写进 [docs/CGI-CONTRACT.md](docs/CGI-CONTRACT.md)，
-  但根 `DEPLOY.md` 与 `PROGRESS.md` 仍需按本仓的文档规则重写（它们描述的是源目录的形态）。
 - **`docs/V2-CONTRACT.md` / `docs/V3-CONTRACT.md` 是一次性开发契约** ——
   其中的「文件归属表」已失效。V3 里长期有效的部分（rpcd 授权边界 + 写入范式）
   已提炼进 [docs/WRITE-LAYER.md](docs/WRITE-LAYER.md)，归档动作待办。

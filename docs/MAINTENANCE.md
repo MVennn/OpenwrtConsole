@@ -49,13 +49,11 @@ ROUTER_HOST=root@<路由器IP> ./deploy/deploy.sh
 2. 把 `deploy/install-remote.sh` 传到路由器并执行（解包 + 世代保留 + 原子换目录）；
 3. 逐个把 9 个 `deploy/modern-*` 传到 `/www/cgi-bin/`（**同目录临时文件 + rename**）。
 
-> ⚠️ **当前 `deploy/deploy.sh` 有一个会让它中途静默退出的缺陷**：
-> for 循环里有一个**字面 `\n`**（不是换行符），第 7 次迭代的输入重定向指向不存在的
-> `deploy/n` → 重定向失败 → `set -eu` 下脚本直接退出 →
-> **`modern-pkg` / `modern-sysupgrade` / `modern-shellcrash` 三个 CGI 永不部署**，
-> 且末尾那两行 `echo` 不打印。现象与绕行办法见
-> [TROUBLESHOOTING.md](TROUBLESHOOTING.md#6-部署后资源-404) 与根
-> [../CHANGELOG.md](../CHANGELOG.md)。
+> ✅ **`deploy/deploy.sh` 的字面 `\n` 缺陷已修** —— for 循环已改成真换行 + 续行反斜杠，
+> `sh -n` 通过，循环实测展开为 **9 个 CGI**（`modern-login` / `modern-data` / `modern-proxy` /
+> `modern-read` / `modern-exec` / `modern-uci` / `modern-pkg` / `modern-sysupgrade` /
+> `modern-shellcrash`）。**但首次修复后仍需一次真机部署验证**：跑一遍 `deploy.sh`，
+> 确认 9 个 CGI 全部出现在 `/www/cgi-bin/` 且末尾两行 `echo` 有输出。
 
 ### 1.3 手动部署（脚本不可用时）
 
@@ -155,9 +153,20 @@ ssh root@<路由器IP> 'cat > /www/cgi-bin/.modern-uci.new && chmod +x /www/cgi-
 
 - 文件名统一 `XxxView.vue`（放在 `src/views/` 或 `src/views/<域>/`）。
 - **必须**导出 `defineOptions({ name: 'XxxView' })`。
-  > 实测 20 个视图里 10 个有、10 个没有。缺口清单见根 [../CHANGELOG.md](../CHANGELOG.md)。
+  > **已补齐**：20 个视图文件（含归档的 `_archive/FirewallView.vue`）**全部**导出了
+  > `defineOptions({ name: 'XxxView' })`，`name` 与文件名逐个一致。
 - 一个视图只做「展示与交互」，**不直接 `fetch`** —— 取数一律走 `src/api/`。
-- 每页一个主动作；配置页的主动作是「保存并应用」。
+- 配置页的主动作是**「暂存 → 提交 → 应用」三段式**，不是一次性「保存并应用」：
+  1. **暂存** —— 编辑先落浏览器侧草稿（`localStorage`），再暂存进 UCI 暂存区；
+     界面上要能看到「旧值 → 新值」的待生效改动清单；
+  2. **提交** —— `uci.commit` 落盘（此刻配置已改，但**还没生效**）；
+  3. **应用** —— 重载对应服务，让改动真正生效。
+  配套的「放弃修改」是**两层**（清本地草稿 + 回滚 UCI 暂存区），只做一层会两边不一致 ——
+  详见 [WRITE-LAYER.md](WRITE-LAYER.md) §2。
+- **四个可写配置页（网络 / 无线 / 防火墙 / DHCP 与系统设置）必须共用**同一套共享件：
+  `src/api/configPending.ts`（暂存区工具）+ `src/components/cfg-pending/ConfigPendingPanel.vue`
+  （渲染「旧值 → 新值」）+ `src/components/DraftNotice.vue`（草稿状态提示）。
+  **不许各页自己另起一套** —— 各页自搞一套会让「旧值」与「放弃修改」的语义各页不同。
 
 ### 4.2 API 模块
 
@@ -183,18 +192,19 @@ ssh root@<路由器IP> 'cat > /www/cgi-bin/.modern-uci.new && chmod +x /www/cgi-
 
 - 改 CGI 前先读 [CGI-CONTRACT.md](CGI-CONTRACT.md) 对应小节；改完同步更新它。
 - **文件路径一律用字面常量**，永远不接受调用方传来的路径。
-- 危险动作要令牌 + 确认；新增令牌用途要同步 [WRITE-LAYER.md](WRITE-LAYER.md) §4。
+- 危险动作要令牌 + 确认；新增令牌用途要同步 [WRITE-LAYER.md](WRITE-LAYER.md) §3 的令牌表与 [SECRETS.md](SECRETS.md) §3。
 - **LF 换行**；更新用「同目录临时文件 + rename」。
 
 ## 5. 文档与代码的同步责任
 
-**改了代码没改文档 = 没改完。** 触发矩阵见 [DOC-RULES.md](DOC-RULES.md) §5，最常踩的四条：
+**改了代码没改文档 = 没改完。** 触发矩阵见 [DOC-RULES.md](DOC-RULES.md) §5，最常踩的五条：
 
 | 你改了什么 | 必须同时改 |
 | --- | --- |
 | 加 / 删 / 改一个 CGI | [CGI-CONTRACT.md](CGI-CONTRACT.md) · [ARCHITECTURE.md](ARCHITECTURE.md) 的 CGI 清单 |
 | 加 / 删 / 改一个数据通道 | [ARCHITECTURE.md](ARCHITECTURE.md) 的通道表 · 根 [../README.md](../README.md) 的「数据来源」表 |
 | 加 / 删一个视图 | 根 [../README.md](../README.md) 的「功能」表 · [ARCHITECTURE.md](ARCHITECTURE.md) §4 |
+| 改「暂存 → 提交 → 应用」范式（`src/api/configPending.ts` / `src/composables/useDraft.ts` / `src/components/cfg-pending/` / `src/components/DraftNotice.vue`） | [WRITE-LAYER.md](WRITE-LAYER.md) §2（写入范式与「放弃修改」的两层）· [CGI-CONTRACT.md](CGI-CONTRACT.md) 的对应 action（`uci-revert` / `uci-commit` / `uci-apply` / `net-reload` / `wifi-reload` / `firewall-reload`） |
 | 改构建 / 部署 | 本篇 · 根 [../DEPLOY.md](../DEPLOY.md)（同步窗口） |
 
 **计数类内容必须重新数**，不许抄上一版：视图数、CGI 数、通道数、
@@ -204,8 +214,10 @@ ssh root@<路由器IP> 'cat > /www/cgi-bin/.modern-uci.new && chmod +x /www/cgi-
 
 本仓是上游 OpenWrt 运维仓的 `frontend/` 目录的**快照**，两边不自动同步。
 - 本仓的改动**不会**回流源目录；源目录的改动**不会**回流本仓。
-- 根 `DEPLOY.md` / `PROGRESS.md` / `DESIGN.md` / `docs/V2-CONTRACT.md` / `docs/V3-CONTRACT.md`
-  仍是源目录副本 —— 它们有过期内容，但**刻意不在本仓修**（改了反而与源目录产生无谓偏差）。
+- 根 `DEPLOY.md` 与 `PROGRESS.md` **已在本仓重写**（DEPLOY.md 改成环境变量占位符与
+  「本仓根目录」的部署路径；PROGRESS.md 补齐 v4 / v5 / v6 三批），**不再是源目录副本**。
+- 仍是源目录副本的只有 `DESIGN.md` / `docs/V2-CONTRACT.md` / `docs/V3-CONTRACT.md` ——
+  它们有过期内容，但**刻意不在本仓修**（改了反而与源目录产生无谓偏差）。
   已登记的过期点见根 [../README.md](../README.md) 的「仓库现状说明」表格。
 - 需要同步时：**以源目录为准**做一次定向 diff，把真正需要的内容并过来。
 
@@ -215,7 +227,8 @@ ssh root@<路由器IP> 'cat > /www/cgi-bin/.modern-uci.new && chmod +x /www/cgi-
 
 - [ ] `npx vue-tsc --noEmit` 无新增报错
 - [ ] `npm run build` 通过，`dist/index.html` 的引用带 `/modern/` 前缀
-- [ ] 部署到路由器（**修好 `deploy.sh` 之前**，手动传 CGI 别信脚本的静默退出）
+- [ ] 部署到路由器（`deploy.sh` 的字面 `\n` 缺陷已修，**首次修复后仍要真机跑一次**，
+      确认 9 个 CGI 全部到位、末尾两行 `echo` 有输出）
 - [ ] 9 个 CGI 都在 `/www/cgi-bin/`、都有 `x` 位、都是 LF
 - [ ] 浏览器里走一遍：登录 → 概览 → 无线 → 诊断 → 代理 → 软件包 → 固件
 - [ ] 新加的 Element Plus 组件样式已进 `src/plugins/element.ts`

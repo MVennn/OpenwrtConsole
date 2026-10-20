@@ -15,6 +15,10 @@
 - 文档里出现的一切凭据引用都是**机制**（会话怎么换、令牌怎么签发、secret 怎么读），
   **不是值**。
 
+> ⚠️ **但「仓库不存凭据」≠「运行时不落盘凭据」** —— v4 引入的配置草稿会把
+> **表单值（含 WiFi 密码）写进浏览器 localStorage**。仓库这一侧仍然干净，
+> 浏览器那一侧是**新增的凭据落盘路径**，见 §2 与 §8。
+
 要理解为什么可以这样，看两条链路：**会话链路**（§2）与**危险动作链路**（§3）。
 
 ---
@@ -31,13 +35,32 @@
 | 会话时长 | **默认 1 小时**（3600 秒）；前端另存了 `owrt-sid-exp` 做本地过期判断 |
 | sid 怎么带 | **走查询参数** `?sid=`（CGI 也接受 `owrt_sid` Cookie，历史兼容）；前端由 `src/api/ubus.ts` 统一拼 |
 | sid 存在哪 | 浏览器 **`localStorage`**（键名 `owrt-sid`；早期版本用过 `sessionStorage`，已迁移） |
-| 口令存哪 | **哪都不存** —— 前端不写 `localStorage`，退出登录即销毁服务端会话 |
+| **登录口令**存哪 | **哪都不存** —— 前端不写 `localStorage`，退出登录即销毁服务端会话 |
+| **配置草稿**存哪 | ⚠️ **存 `localStorage`** —— 见下一段 |
 
 > 换句话说：**sid 是「已经登录」的临时票据，口令才是真正的凭据** ——
 > 而口令从进浏览器到离开请求体，只存在于那一次 POST 里。
 
 sid 走查询参数意味着它**可能出现在 uhttpd 的访问日志里** ——
 这是本机 LAN + HTTPS 场景下的折中，详见根 [../DEPLOY.md](../DEPLOY.md) 的「安全说明」。
+
+### ⚠️ 配置草稿：新的凭据落盘路径（含 WiFi 密码）
+
+**「口令哪都不存」只对登录口令成立。** v4 之后另一条路径会把凭据写进浏览器存储：
+
+| 环节 | 事实 | 出处 |
+| --- | --- | --- |
+| 草稿怎么落盘 | `useDraft()` 用 `JSON.stringify` 把表单值写进 `localStorage`，键前缀 **`owrt-draft:*`** | [`src/composables/useDraft.ts`](../src/composables/useDraft.ts) |
+| 哪个草稿最敏感 | **`owrt-draft:wifi-config`** —— 无线配置页的草稿，存的是**暂存值** | [`src/views/config/WirelessConfigView.vue`](../src/views/config/WirelessConfigView.vue) |
+| 密码怎么进去的 | `stageWirelessConfig()` 把选项值**原样**塞进暂存记录（`value: String(value)`），**包括 UCI 选项 `key`（WiFi 密码）** | [`src/api/wirelessConfig.ts`](../src/api/wirelessConfig.ts) |
+| 密码从哪来 | SSID 对话框把输入框的值原样塞进 `values.key` | [`src/components/config-wifi/WifiSsidDialog.vue`](../src/components/config-wifi/WifiSsidDialog.vue) |
+
+**结论：浏览器里的 `owrt-draft:wifi-config` 里可能有明文 PSK ——
+浏览器存储被拿到（XSS、扩展、备份、共享机器）就等于 PSK 泄露。**
+
+草稿的生命周期：保存成功或用户点「放弃修改」时被清掉（`resetDraft` → `useDraft.clear()`），
+但在那之前它**一直躺在 `localStorage` 里**（刷新页面也不丢 —— 这正是草稿存在的理由）。
+**它不是仓库里的东西，但它是必须交代的凭据路径。**
 
 ---
 
@@ -106,7 +129,8 @@ sid 走查询参数意味着它**可能出现在 uhttpd 的访问日志里** —
 | （无） | — | 控制台**不读**任何环境变量取凭据 —— 凭据只在登录请求体里；secret 在路由器本地读；令牌由 CGI 现场签发 |
 
 > `.gitignore` 已排除 `.env` / `.env.*`（本地环境文件，**可能含路由器口令**），
-> 以及 `askpass.sh` / `*.ppk` / `id_rsa*`（SSH 免密材料）。
+> 以及 `askpass.sh` / `*.ppk` / `id_rsa*`（SSH 免密材料）——
+> **但排除规则只对未跟踪文件生效**，已跟踪的 vendored 文件除外（见 §7 的已知例外）。
 > 本仓的部署脚本用的是 SSH 免密或 `SSH_ASKPASS`，
 > **口令由部署者在本机准备，不进仓库**。
 
@@ -125,20 +149,42 @@ git status --ignored --short | grep -E '^!!' | head -20
 git diff --cached | grep -nE 'password["'"']?\s*[:=]|secret=|Bearer |PrivateKey'
 ```
 
+> **第 1 条命令在当前仓库会输出 3 行命中** —— 这是**已知例外**，不是泄漏：
+>
+> ```text
+> third-party/art-design-pro/.env
+> third-party/art-design-pro/.env.development
+> third-party/art-design-pro/.env.production
+> ```
+>
+> 这三个是 **vendored 上游 art-design-pro 自带的模板文件**（已随仓分发的上游内容，
+> 必须逐字节保留），值是上游占位符 —— 其中 `.env` 里含 `VITE_LOCK_ENCRYPT_KEY`
+> 这个上游自带的占位密钥，**不是本仓的凭据**。
+> `.gitignore` 的 `.env` / `.env.*` 规则**管不到它们**：规则只对**未跟踪**文件生效，
+> 而这三个文件**已被 git 跟踪**（`!third-party/**` 放行）。
+
 **逐条确认清单**：
 
-- [ ] 仓库里**没有** `.env` / `.env.*`；
+- [ ] 仓库里**没有** `.env` / `.env.*` ——
+      **已知例外**：`third-party/art-design-pro/` 下 3 个 vendored 上游模板
+      （`.env` / `.env.development` / `.env.production`），值是上游占位符；
 - [ ] `askpass.sh` / `*.ppk` / `id_rsa*` 不在库里（`.gitignore` 已排除）；
 - [ ] `router-*.json` / `*.har` 不在库里 —— 那是路由器上抓下来的运行时快照，**可能含会话 sid**；
 - [ ] `src/` 与 `deploy/` 里**没有**明文口令 / secret / token
       （应只有「登录请求体」「读 `secret=` 行」「签发令牌」这几处**机制**）；
 - [ ] `dist/` 不在库里（`.gitignore` 已排除）—— 产物里也不含凭据，但不入库更干净；
 - [ ] 文档里没有真实口令 / secret / 订阅 token。
+- [ ] **配置草稿这条路径要说清楚**：`src/composables/useDraft.ts` 会把**暂存值**
+      （**含 WiFi PSK**）写进浏览器 `localStorage`（键前缀 `owrt-draft:*`）——
+      这是**持久化**、**不是仓库**，但它是**要交代的凭据路径**，见 §2。
 
 > **本仓当前的实情（2026-10-20）**：本仓**不存任何凭据**；
 > 会话走 `modern-login` 换 sid（默认 1 小时），危险动作走 120 秒单次令牌 + 确认词，
 > mihomo secret 只在路由器本地读。`.gitignore` 已排除 `.env*`、SSH 私钥、
-> 运行时快照与 `dist/`。
+> 运行时快照与 `dist/` —— **但 `.env*` 的排除规则只对未跟踪文件生效**，
+> 已跟踪的文件（`third-party/art-design-pro/` 下那 3 个上游模板）它管不到。
+> 浏览器侧另有一条**持久化**路径：`useDraft.ts` 把含 WiFi PSK 的暂存值写进
+> `localStorage`（`owrt-draft:*`）—— 见 §2。
 > 但**部署机上的 SSH 免密材料与 `.env` 仍然有效** ——
 > **上传到公开远端前仍须确认它们没被带进去**。
 
@@ -155,6 +201,13 @@ git diff --cached | grep -nE 'password["'"']?\s*[:=]|secret=|Bearer |PrivateKey'
 4. **sid 不进 URL 之外的持久化** —— 前端只放 `localStorage`，退出登录即销毁服务端会话。
 5. **令牌不重试** —— 一次性令牌用过即焚，失败重新申请。
 6. **日志里不要打印凭据** —— `Authorization` 头、订阅 URL 的 token 段，打印前先打码。
+7. **草稿里不要落凭据** —— `useDraft` 会把表单值原样写进 `localStorage`，
+   而 `stageWirelessConfig()` 这类暂存函数会把选项值**原样**塞进去
+   （**包括 WiFi 选项 `key` = PSK**）。**往草稿里放凭据 = 把凭据落盘**：
+   - 要么改暂存函数，让**口令类选项不入草稿、不入暂存记录**（只记「已设置」）；
+   - 要么在文档与代码注释里明确写出「草稿含明文 PSK」这一风险，并给出清理方式
+     （保存成功 / 放弃修改时清草稿，见 `resetDraft`）。
+   **不许因为「草稿只在本地」就当作没有风险。**
 
 ---
 

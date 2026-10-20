@@ -247,7 +247,7 @@ ROUTER_HOST=root@<路由器IP> ./deploy/deploy.sh
   | --- | --- |
   | `src/` + `deploy/` | **已同步**：`src/` + `deploy/` 共 **118 个文件**（源目录 117 + 本仓自有的 `src/api/device.ts`），本次同步实际改动 **59 个文件**（**44 改 + 15 新增**），含 v3 写入层收口、v4 四个配置页、v5 ShellCrash 保存链路修复、v6 服务动作状态跟踪。本仓自己的 **5 处更新**保留：`src/api/device.ts`（新）、`src/views/LoginView.vue`（真实机型）、`vite.config.ts`（`ROUTER_URL` 环境变量）、`src/api/firmware.ts`（脱敏注释）、`src/views/config/FirmwareView.vue`（注释脱敏） |
   | `README.md`、`DEPLOY.md`、`docs/` 全套 | **本仓重写版**，不再是源目录副本 |
-  | `PROGRESS.md`、`DESIGN.md`、`docs/V2-CONTRACT.md`、`docs/V3-CONTRACT.md` | 仍是源目录副本，待重写（见下表） |
+  | `DESIGN.md`、`docs/V2-CONTRACT.md`、`docs/V3-CONTRACT.md` | 仍是源目录副本，待重写（见下表） |
 
   同步后 `vue-tsc --noEmit` 零报错、`vite build` 通过。
 
@@ -257,7 +257,7 @@ ROUTER_HOST=root@<路由器IP> ./deploy/deploy.sh
 
   | 文件 | 现状 | 待办 |
   | --- | --- | --- |
-  | `PROGRESS.md` | 源目录副本 | 阶段清单停在 v3，需补 v4/v5/v6 三批 |
+  | ~~`PROGRESS.md`~~ | **已重写** | 阶段清单已补 v4/v5/v6 三批 |
   | `DESIGN.md` | 源目录副本 | 「防火墙与 DNS 页保持只读，修改仍交给 LuCI」已**过期** —— 防火墙（连同网络 / 无线 / DHCP 与系统设置）现已**可写**；**只有 DNS 状态页仍只读**，地址池与静态租约的修改入口在「DHCP 与系统设置」页 |
   | `docs/V2-CONTRACT.md` | 源目录副本 | 一次性的并行开发契约，其中「文件归属表」已失效 |
   | `docs/V3-CONTRACT.md` | 源目录副本 | 同上；其中**长期有效**的 rpcd 授权边界与写入范式已提炼进 [docs/WRITE-LAYER.md](docs/WRITE-LAYER.md) |

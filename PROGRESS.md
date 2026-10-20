@@ -39,7 +39,7 @@ LuCI 只保留为应急入口。
 - 路由器上没有 `timeout` / `ss` / `od` / `file`，脚本要用替代实现
 - CGI 必须 LF 换行、必须原子替换（临时文件 + rename）
 - **每个 CGI 的应答都必须是合法 JSON**：数组里不能放没有花括号的键值对
-  （`["key":"value"]` 非法，要写 `["key=value"]`）；`ok()`/`fail()` 统一走 `send_json()`，
+  （`["key":"value"]` 非法，要写 `["key=value"]`）；6 个 shell CGI 的 `ok()`/`fail()` 走 `send_json()`，
   发送前用 `jsonfilter` 自检 —— 详见 [docs/CGI-CONTRACT.md](docs/CGI-CONTRACT.md) §0
 - **服务动作的「完成」以状态为准**：`start.sh` 是把核心拉起来就返回的，
   完成记录必须在核心真的起来之后才写
