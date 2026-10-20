@@ -221,7 +221,7 @@
 - **症状**：没装 LuCI 的固件上，LuCI 入口点了是 404；登录页固定显示「HTTPS 已启用」。
 - **根因**：入口无条件渲染；HTTPS 文案写死。
 - **改法**：新增 `src/composables/useLuciAvailability.ts`，对 `/cgi-bin/luci/` 做一次 HEAD 探测
-  （2 秒超时，404 视为未安装，200/3xx/405 视为可用）；未安装时隐藏链接并显示「LuCI 未安装」；
+  （2 秒超时，**只有 404 视为未安装**；200/302/403/405 都说明路径存在——LuCI 未登录时返回 403，HEAD 可能返回 405）；未安装时隐藏链接并显示「LuCI 未安装」；
   HTTPS 提示按 `window.location.protocol` 显示。
 - **验证**：`vue-tsc` / `build` 通过；未做浏览器端到端。
 

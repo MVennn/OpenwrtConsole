@@ -606,6 +606,6 @@ ssh root@<路由器IP> 'ubus call system board'
 | 原因 | 解法 |
 | --- | --- |
 | 固件没装 LuCI | 装 `luci-base`（或对应 LuCI 包）后刷新页面 |
-| LuCI 已装，但 HEAD 请求返回 403 等错误 | 入口探测只把 `<400` 与 `405` 当作「可用」，其它状态都按未安装处理；确认 uhttpd 没有拦截 `/cgi-bin/luci/` |
+| LuCI 已装，但入口仍显示「未安装」 | 入口探测只把 **404** 当作未安装；200/302/403/405 都算已安装（LuCI 未登录时返回 403）。若仍隐藏，检查请求是否被代理或 uhttpd 改写成了 404 |
 | 探测超时 | 探测上限 2 秒，路由器极慢时会判为未安装；刷新页面会重新探测 |
 | HTTPS 提示不对 | 登录页按 `window.location.protocol` 显示：HTTPS 显示「HTTPS 已启用」，HTTP 显示「HTTP 连接（建议 HTTPS）」 |

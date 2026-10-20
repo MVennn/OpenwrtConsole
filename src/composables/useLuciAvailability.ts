@@ -29,9 +29,11 @@ async function probeLuci(): Promise<boolean> {
       cache: 'no-store',
       signal: controller.signal
     })
-    // 200/302 mean LuCI is there; 405 means the path exists but the CGI
-    // refuses HEAD. Only a 404 (or another client/server error) means missing.
-    return response.status < 400 || response.status === 405
+    // LuCI answers 200 on an open session, 302 when it redirects to the login
+    // page and 403 when a login is required. A HEAD request may also be
+    // refused with 405. All of them prove the path exists; only 404 means the
+    // package is not installed.
+    return response.status !== 404
   } catch {
     return false
   } finally {
