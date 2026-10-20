@@ -1,26 +1,35 @@
 <template>
   <div class="setup-page">
     <header class="setup-bar">
-      <div class="setup-brand">
-        <span class="setup-mark">
-          <RouterIcon :size="18" :stroke-width="2" />
-        </span>
-        <div class="setup-brand-text">
-          <strong>OpenWrt Console</strong>
-          <span>首次配置向导</span>
-        </div>
-      </div>
+      <div class="setup-bar-inner">
+        <div class="setup-bar-start">
+          <el-button class="setup-back" plain :icon="ArrowLeft" @click="backToConsole">
+            返回控制台
+          </el-button>
 
-      <div class="setup-bar-actions">
-        <span v-if="boardModel" class="setup-model truncate">{{ boardModel }}</span>
-        <el-button text :icon="RotateCcw" :disabled="applying" @click="restart">
-          重新运行向导
-        </el-button>
+          <div class="setup-brand">
+            <span class="setup-mark">
+              <RouterIcon :size="18" :stroke-width="2" />
+            </span>
+            <div class="setup-brand-text">
+              <strong>OpenWrt Console</strong>
+              <span>首次配置向导</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="setup-bar-actions">
+          <span v-if="boardModel" class="setup-model truncate">{{ boardModel }}</span>
+          <el-button text :icon="RotateCcw" :disabled="applying" @click="restart">
+            重新运行向导
+          </el-button>
+          <el-button text @click="skipWizard">跳过向导</el-button>
+        </div>
       </div>
     </header>
 
     <main class="setup-main">
-      <SetupStatusSummary :status="status" @skip="skipWizard" />
+      <SetupStatusSummary :status="status" />
 
       <el-alert
         v-if="loadError"
@@ -397,6 +406,7 @@
   import { useRouter } from 'vue-router'
   import { ElMessage, ElMessageBox } from 'element-plus'
   import {
+    ArrowLeft,
     ArrowRight,
     Check,
     CheckCircle2,
@@ -929,6 +939,15 @@
     void router.push({ name: 'dashboard' })
   }
 
+  /**
+   * Leaves the wizard for the console. The wizard stages its changes in the
+   * UCI staging area, so a pending change is not lost — it stays visible on
+   * the configuration pages. Leaving is therefore safe and needs no prompt.
+   */
+  function backToConsole(): void {
+    void router.push({ name: 'dashboard' })
+  }
+
   onMounted(async () => {
     await load()
     api
@@ -943,6 +962,12 @@
 </script>
 
 <style scoped>
+  /* Element Plus 给相邻按钮留了 12px 左边距，和外层 flex 的 gap 叠加后
+     同一行的按钮会被拉到 20px 间距；这里把间距统一交回给 gap 控制。 */
+  .el-button + .el-button {
+    margin-left: 0;
+  }
+
   .setup-page {
     display: flex;
     flex-direction: column;
@@ -953,13 +978,32 @@
   /* ------------------------------------------------------------ 顶部条 */
 
   .setup-bar {
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+  }
+
+  /* The bar shares the width of the content column below it, so the brand
+     and the content stay on one vertical axis. */
+  .setup-bar-inner {
     display: flex;
     align-items: center;
     justify-content: space-between;
-    gap: var(--space-4);
-    padding: 12px 24px;
-    background: var(--surface);
-    border-bottom: 1px solid var(--border);
+    gap: var(--space-3);
+    width: 100%;
+    max-width: 880px;
+    margin: 0 auto;
+    padding: 10px 24px;
+  }
+
+  .setup-bar-start {
+    display: flex;
+    align-items: center;
+    gap: var(--space-3);
+    min-width: 0;
+  }
+
+  .setup-back {
+    flex-shrink: 0;
   }
 
   .setup-brand {
@@ -1002,14 +1046,18 @@
   .setup-bar-actions {
     display: flex;
     align-items: center;
-    gap: var(--space-3);
+    gap: var(--space-2);
+    flex-shrink: 0;
     min-width: 0;
   }
 
   .setup-model {
     max-width: 220px;
+    overflow: hidden;
     color: var(--text-muted);
     font-size: 12px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
   /* -------------------------------------------------------------- 主体 */
@@ -1274,12 +1322,25 @@
   /* ------------------------------------------------------------ 移动端 */
 
   @media (max-width: 640px) {
-    .setup-bar {
-      padding: 10px 16px;
+    .setup-bar-inner {
+      gap: var(--space-2);
+      padding: 8px 12px;
     }
 
+    /* Below 640px the brand text and the model name no longer fit next to the
+       back button, so both are dropped instead of letting the bar overflow. */
+    .setup-brand-text,
     .setup-model {
       display: none;
+    }
+
+    .setup-back {
+      padding: 8px 10px;
+      font-size: var(--text-sm);
+    }
+
+    .setup-bar-actions {
+      gap: 2px;
     }
 
     .setup-main {

@@ -17,6 +17,7 @@ import {
 import { ubusCall } from '@/api/ubus'
 import { systemOps } from '@/api/systemOps'
 import { api } from '@/api/openwrt'
+import { optionText, type StagedEdit } from '@/api/configPending'
 
 /**
  * Writable network configuration (`/etc/config/network`).
@@ -120,6 +121,37 @@ export interface NetRuntimeState {
   up: boolean
   l3Device: string
   address: string
+  /** Physical carrier of the device, `null` when the router does not say. */
+  carrier: boolean | null
+  /** Link speed in Mbps, `null` for devices without a physical link. */
+  speed: number | null
+}
+
+/** The status of a network device (`network.device status`). */
+export interface NetDeviceStatus {
+  name: string
+  /** The device is present and its carrier is up. */
+  up: boolean
+  /** Physical carrier, `null` when the router does not say. */
+  carrier: boolean | null
+  /** Negotiated link speed in Mbps, `null` when there is none. */
+  speed: number | null
+  /** Device type (`ethernet`, `bridge`, `wlan`, …). */
+  type: string
+}
+
+/** One entry of the kernel routing table (`network route`). */
+export interface NetActiveRoute {
+  /** The target network in CIDR notation, e.g. `0.0.0.0/0`. */
+  target: string
+  /** The next hop of the route. */
+  nexthop: string
+  /** The interface the route is bound to. */
+  iface: string
+  /** The metric of the route. */
+  metric: number
+  /** The route is valid. */
+  valid: boolean
 }
 
 /** Everything the network configuration page needs. */
@@ -387,26 +419,58 @@ async function readWirelessSegments(): Promise<NetWirelessIface[]> {
 
 /**
  * Reads the network configuration plus the runtime state.
+ *
+ * `values` may carry the effective configuration (the committed one plus the
+ * staged edits), so the page can show what will be applied.
+ *
  * Read-only: nothing is written to the router.
  */
-export async function fetchNetworkModel(): Promise<NetworkModel> {
-  const [values, wireless, runtime, devices, hints] = await Promise.all([
-    uciGet(NET_CONFIG),
+export async function fetchNetworkModel(
+  values?: Record<string, UciSection>
+): Promise<NetworkModel> {
+  const [rawValues, wireless, runtime, devices, hints] = await Promise.all([
+    values ? Promise.resolve(values) : uciGet(NET_CONFIG),
     readWirelessSegments(),
     api.interfaces().catch(() => []),
     api.networkDevices().catch(() => []),
     api.hostHints().catch(() => ({} as Record<string, unknown>))
   ])
 
-  const parsed = parseNetworkModel(values)
+  const parsed = parseNetworkModel(rawValues)
+
+  // The device status carries the physical link state and the negotiated
+  // speed, which the interface dump does not report. A bridge has no speed
+  // of its own — the ports of the bridge do.
+  const wanted = new Set<string>()
+  for (const iface of parsed.interfaces) {
+    if (iface.device) wanted.add(iface.device)
+  }
+  for (const device of devices) {
+    if (device.master && wanted.has(device.master)) wanted.add(device.name)
+  }
+  const statuses = await fetchDeviceStatuses([...wanted])
 
   const runtimeMap: Record<string, NetRuntimeState> = {}
   for (const item of runtime) {
     const address = item['ipv4-address']?.[0]
+    const device = item.l3_device || item.device || ''
+    const status = statuses[device]
+
+    let speed = status?.speed ?? null
+    if (!speed && device) {
+      const ports = devices
+        .filter((entry) => entry.master === device)
+        .map((entry) => statuses[entry.name]?.speed)
+        .filter((value): value is number => typeof value === 'number' && value > 0)
+      if (ports.length) speed = Math.max(...ports)
+    }
+
     runtimeMap[item.interface] = {
       up: Boolean(item.up),
       l3Device: item.l3_device || '',
-      address: address ? `${address.address}/${address.mask}` : ''
+      address: address ? `${address.address}/${address.mask}` : '',
+      carrier: status?.carrier ?? null,
+      speed
     }
   }
 
@@ -421,6 +485,122 @@ export async function fetchNetworkModel(): Promise<NetworkModel> {
     devices: [...deviceNames].sort((a, b) => a.localeCompare(b)),
     hostCount: Object.keys(hints ?? {}).length
   }
+}
+
+/**
+ * Reads the status of the given network devices.
+ *
+ * `network.device status` only answers for a single device on most builds, so
+ * the devices are queried one by one. A device that does not answer is simply
+ * missing from the result.
+ */
+export async function fetchDeviceStatuses(
+  names: string[]
+): Promise<Record<string, NetDeviceStatus>> {
+  const result: Record<string, NetDeviceStatus> = {}
+  const unique = [...new Set(names.filter(Boolean))]
+
+  for (const name of unique) {
+    let raw: Record<string, unknown> | undefined
+    try {
+      raw = await ubusCall<Record<string, unknown>>('network.device', 'status', { name })
+    } catch {
+      continue
+    }
+    if (!raw || typeof raw !== 'object') continue
+
+    const carrier = typeof raw.carrier === 'boolean' ? raw.carrier : null
+    const speed = typeof raw.speed === 'number' && raw.speed > 0 ? raw.speed : null
+    result[name] = {
+      name,
+      up: carrier ?? Boolean(raw.up),
+      carrier,
+      speed,
+      type: String(raw.type ?? '')
+    }
+  }
+
+  return result
+}
+
+/**
+ * Reads the kernel routing table (`network route`).
+ *
+ * The answer shape differs between netifd builds, so every known wrapper is
+ * accepted. `available` tells the caller whether the router answered at all —
+ * an empty table must not be read as "no route is active".
+ */
+export async function fetchActiveRoutes(): Promise<{
+  available: boolean
+  routes: NetActiveRoute[]
+}> {
+  let payload: unknown
+  try {
+    payload = await ubusCall<unknown>('network', 'route', {})
+  } catch {
+    return { available: false, routes: [] }
+  }
+
+  const list = pickRouteList(payload)
+  const routes: NetActiveRoute[] = []
+  for (const item of list) {
+    if (!item || typeof item !== 'object') continue
+    const row = item as Record<string, unknown>
+    const target = String(row.target ?? '')
+    if (!target) continue
+    const mask = Number(row.mask ?? 0)
+    routes.push({
+      target: mask > 0 ? `${target}/${32 - mask}` : target,
+      nexthop: String(row.nexthop ?? row.gateway ?? ''),
+      iface: String(row.interface ?? row.ifname ?? ''),
+      metric: Number(row.metric ?? 0),
+      valid: row.valid === undefined ? true : Boolean(row.valid)
+    })
+  }
+  return { available: true, routes }
+}
+
+/** Finds the active route list inside the answer of `network route`. */
+function pickRouteList(payload: unknown): unknown[] {
+  if (Array.isArray(payload)) return payload
+  if (!payload || typeof payload !== 'object') return []
+  const record = payload as Record<string, unknown>
+  for (const key of ['routes', 'result', 'route']) {
+    const value = record[key]
+    if (Array.isArray(value)) return value
+  }
+  return []
+}
+
+/**
+ * The target of a route in CIDR notation, e.g. `192.168.1.0/24`.
+ */
+export function routeCidr(route: NetRoute): string {
+  if (route.isDefault) return '0.0.0.0/0'
+  if (route.target && route.netmask) {
+    const prefix = maskToPrefix(route.netmask)
+    return prefix === null ? route.target : `${route.target}/${prefix}`
+  }
+  return route.target || ''
+}
+
+/**
+ * Finds the kernel route that belongs to a configured static route.
+ * Returns `null` when the route is not part of the routing table.
+ */
+export function matchActiveRoute(
+  route: NetRoute,
+  active: NetActiveRoute[]
+): NetActiveRoute | null {
+  const cidr = routeCidr(route)
+  if (!cidr) return null
+  return (
+    active.find(
+      (item) =>
+        item.target === cidr &&
+        (!route.gateway || !item.nexthop || item.nexthop === route.gateway)
+    ) ?? active.find((item) => item.target === cidr) ?? null
+  )
 }
 
 /** The staged (not yet committed) changes of the network config. */
@@ -459,10 +639,26 @@ async function applyOptions(
   section: string,
   values: Record<string, string | undefined>,
   remove: string[] = []
-): Promise<void> {
+): Promise<StagedEdit[]> {
+  const edits: StagedEdit[] = []
   const payload = compact(values)
-  if (Object.keys(payload).length) await uciSet(NET_CONFIG, section, payload)
-  for (const option of remove) await removeOption(section, option)
+  const current = await uciGetSection(NET_CONFIG, section).catch(() => undefined)
+
+  if (Object.keys(payload).length) {
+    await uciSet(NET_CONFIG, section, payload)
+    for (const [key, value] of Object.entries(payload)) {
+      edits.push({ op: 'set', section, option: key, value: String(value), before: '' })
+    }
+  }
+
+  for (const option of remove) {
+    // Only a real option is worth a "deleted" entry in the change list.
+    const existed = optionText(current, option) !== ''
+    await removeOption(section, option)
+    if (existed) edits.push({ op: 'delete', section, option, before: '' })
+  }
+
+  return edits
 }
 
 /**
@@ -474,14 +670,15 @@ async function applyOptions(
  * the same ubus transport with an array payload. The result is verified and
  * falls back to a space separated option when the router refuses the array.
  *
- * Returns a warning when the fallback was used.
+ * Returns the staged edits and an optional warning.
  */
 async function writeListOption(
   section: string,
   option: string,
   values: string[]
-): Promise<string | undefined> {
+): Promise<{ edits: StagedEdit[]; warning?: string }> {
   const list = values.map((item) => item.trim()).filter(Boolean)
+  const edits: StagedEdit[] = []
 
   // Start from a clean list so removed entries really disappear.
   const current = await uciGetSection(NET_CONFIG, section)
@@ -494,7 +691,12 @@ async function writeListOption(
           .split(/[\s,]+/)
           .filter(Boolean)
   if (previousList.length) await uciDelete(NET_CONFIG, section, option)
-  if (!list.length) return undefined
+  if (!list.length) {
+    if (previousList.length) {
+      edits.push({ op: 'delete', section, option, before: previousList.join(' ') })
+    }
+    return { edits }
+  }
 
   try {
     await ubusCall('uci', 'set', {
@@ -509,7 +711,8 @@ async function writeListOption(
       raw.length === list.length &&
       raw.every((item, index) => String(item) === list[index])
     ) {
-      return undefined
+      edits.push({ op: 'set', section, option, value: list.join(' '), before: '' })
+      return { edits }
     }
     // rpcd stored a scalar (or appended) — fall back to the plain option.
     await uciDelete(NET_CONFIG, section, option)
@@ -518,7 +721,11 @@ async function writeListOption(
   }
 
   await uciSet(NET_CONFIG, section, { [option]: list.join(' ') })
-  return `路由器拒绝了列表写法，${option} 已按空格分隔保存`
+  edits.push({ op: 'set', section, option, value: list.join(' '), before: '' })
+  return {
+    edits,
+    warning: `路由器拒绝了列表写法，${option} 已按空格分隔保存`
+  }
 }
 
 /** Writes the addresses of an interface (one scalar or a UCI list). */
@@ -527,31 +734,49 @@ async function writeAddresses(
   addresses: string[],
   usesCidr: boolean,
   netmask: string
-): Promise<void> {
+): Promise<StagedEdit[]> {
   const list = addresses.map((item) => item.trim()).filter(Boolean)
+  const edits: StagedEdit[] = []
+  const current = await uciGetSection(NET_CONFIG, section).catch(() => undefined)
+  const hadAddress = optionText(current, 'ipaddr') !== ''
+  const hadNetmask = optionText(current, 'netmask') !== ''
 
   await removeOption(section, 'ipaddr')
   await removeOption(section, 'netmask')
-  if (!list.length) return
+
+  if (!list.length) {
+    if (hadAddress) edits.push({ op: 'delete', section, option: 'ipaddr', before: '' })
+    if (hadNetmask) edits.push({ op: 'delete', section, option: 'netmask', before: '' })
+    return edits
+  }
 
   if (list.length === 1) {
     await uciSet(NET_CONFIG, section, { ipaddr: list[0] })
+    edits.push({ op: 'set', section, option: 'ipaddr', value: list[0], before: '' })
   } else {
-    await writeListOption(section, 'ipaddr', list)
+    const written = await writeListOption(section, 'ipaddr', list)
+    edits.push(...written.edits)
   }
 
-  if (!usesCidr && netmask) await uciSet(NET_CONFIG, section, { netmask })
+  if (!usesCidr && netmask) {
+    await uciSet(NET_CONFIG, section, { netmask })
+    edits.push({ op: 'set', section, option: 'netmask', value: netmask, before: '' })
+  } else if (hadNetmask) {
+    edits.push({ op: 'delete', section, option: 'netmask', before: '' })
+  }
+
+  return edits
 }
 
 /**
  * Stages the changes of an interface section. Nothing is committed here — the
  * page decides when the configuration is applied.
  *
- * Returns the UCI section name and an optional warning.
+ * Returns the UCI section name, the staged edits and an optional warning.
  */
 export async function stageInterface(
   draft: NetInterfaceDraft
-): Promise<{ id: string; warning?: string }> {
+): Promise<{ id: string; edits: StagedEdit[]; warning?: string }> {
   const isNew = !draft.id
   const section = draft.id ?? ''
 
@@ -596,28 +821,43 @@ export async function stageInterface(
   }
 
   let target = section
+  const edits: StagedEdit[] = []
+
   if (isNew) {
     target = await uciAdd(NET_CONFIG, 'interface', compact(values), draft.name?.trim())
+    edits.push({ op: 'add', section: target, type: 'interface', before: '' })
   } else {
-    await applyOptions(section, values, remove)
+    edits.push(...(await applyOptions(section, values, remove)))
   }
 
   if (draft.protocol === 'static') {
-    await writeAddresses(target, addresses, draft.usesCidr, netmask)
+    edits.push(...(await writeAddresses(target, addresses, draft.usesCidr, netmask)))
   }
 
-  const warning = await writeListOption(target, 'dns', draft.dns)
-  return warning ? { id: target, warning } : { id: target }
+  const dns = await writeListOption(target, 'dns', draft.dns)
+  edits.push(...dns.edits)
+
+  return dns.warning
+    ? { id: target, edits, warning: dns.warning }
+    : { id: target, edits }
 }
 
 /** Stages the deletion of an interface section. */
-export async function stageInterfaceRemoval(id: string): Promise<void> {
+export async function stageInterfaceRemoval(id: string): Promise<{ id: string; edits: StagedEdit[] }> {
   await uciDelete(NET_CONFIG, id)
+  return { id, edits: [{ op: 'delete', section: id, before: '' }] }
 }
 
 /** Enables or disables an interface (staged). */
-export async function stageInterfaceEnabled(id: string, enabled: boolean): Promise<void> {
+export async function stageInterfaceEnabled(
+  id: string,
+  enabled: boolean
+): Promise<{ id: string; edits: StagedEdit[] }> {
   await uciSet(NET_CONFIG, id, { disabled: enabled ? '0' : '1' })
+  return {
+    id,
+    edits: [{ op: 'set', section: id, option: 'disabled', value: enabled ? '0' : '1', before: '' }]
+  }
 }
 
 /**
@@ -640,8 +880,10 @@ async function nextRouteName(): Promise<string> {
   return `route_${index}`
 }
 
-/** Stages a static route. Returns the UCI section name. */
-export async function stageRoute(draft: NetRouteDraft): Promise<string> {
+/** Stages a static route. Returns the UCI section name and the staged edits. */
+export async function stageRoute(
+  draft: NetRouteDraft
+): Promise<{ id: string; edits: StagedEdit[] }> {
   const values: Record<string, string | undefined> = {
     target: draft.target,
     netmask: draft.netmask,
@@ -651,15 +893,22 @@ export async function stageRoute(draft: NetRouteDraft): Promise<string> {
   }
 
   if (draft.id) {
-    await applyOptions(draft.id, values, draft.metric === null ? ['metric'] : [])
-    return draft.id
+    const edits = await applyOptions(draft.id, values, draft.metric === null ? ['metric'] : [])
+    return { id: draft.id, edits }
   }
-  return uciAdd(NET_CONFIG, 'route', compact(values), await nextRouteName())
+
+  const id = await uciAdd(NET_CONFIG, 'route', compact(values), await nextRouteName())
+  const edits: StagedEdit[] = [{ op: 'add', section: id, type: 'route', before: '' }]
+  for (const [key, value] of Object.entries(compact(values))) {
+    edits.push({ op: 'set', section: id, option: key, value: String(value), before: '' })
+  }
+  return { id, edits }
 }
 
 /** Stages the deletion of a static route. */
-export async function stageRouteRemoval(id: string): Promise<void> {
+export async function stageRouteRemoval(id: string): Promise<{ id: string; edits: StagedEdit[] }> {
   await uciDelete(NET_CONFIG, id)
+  return { id, edits: [{ op: 'delete', section: id, before: '' }] }
 }
 
 /* ------------------------------------------------------------------ *

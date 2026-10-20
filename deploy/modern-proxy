@@ -29,11 +29,28 @@ deny() {
 	exit 0
 }
 
+# Sends the body of a reply. The body is validated before it leaves the
+# router: a malformed answer only shows up in the browser as "cannot parse"
+# and hides the real cause, so a body that does not survive jsonfilter is
+# replaced by a readable error.
+send_json() {
+	__sj_body="$1"
+	__sj_out="/tmp/.modern-resp.$$"
+	printf '%s' "$__sj_body" > "$__sj_out" 2>/dev/null
+	if command -v jsonfilter >/dev/null 2>&1; then
+		if ! jsonfilter -i "$__sj_out" -e '@' >/dev/null 2>&1; then
+			printf '%s' '{"ok":false,"error":"路由器生成了无效的响应，请查看系统日志"}' > "$__sj_out"
+		fi
+	fi
+	cat "$__sj_out"
+	rm -f "$__sj_out" 2>/dev/null
+}
+
 fail() {
 	printf 'Status: %s\r\n' "$1"
 	printf 'Content-Type: application/json; charset=utf-8\r\n'
 	printf 'Cache-Control: no-store\r\n\r\n'
-	printf '%s' "$2"
+	send_json "$2"
 	exit 0
 }
 

@@ -14,6 +14,7 @@ import {
 } from '@/api/uci'
 import { requestToken, systemOps } from '@/api/systemOps'
 import { cgiGet, ubusCall } from '@/api/ubus'
+import { api } from '@/api/openwrt'
 
 /**
  * DHCP, hostname and the basic system settings.
@@ -124,6 +125,87 @@ export interface SysChange {
 
 /** Which part of the configuration a save touches. */
 export type SysSaveScope = 'system' | 'dns' | 'pool' | 'all'
+
+/* ------------------------------------------------------------------ *
+ * Online devices
+ * ------------------------------------------------------------------ */
+
+/** A device that is currently online. */
+export interface SysOnlineDevice {
+  ip: string
+  mac: string
+  hostname: string
+  /** The device is connected over Wi-Fi. */
+  wireless: boolean
+  /** Signal strength in dBm, 0 for a wired device. */
+  signal: number
+}
+
+/** The online state of a static lease. */
+export interface SysLeaseState {
+  /** The address of the lease is in use right now. */
+  online: boolean
+  /** The device that uses the address. */
+  device: SysOnlineDevice | null
+}
+
+/** The raw UCI values of the two config files this page edits. */
+export interface SysRawConfigs {
+  dhcp: Record<string, UciSection>
+  system: Record<string, UciSection>
+}
+
+/**
+ * The part of the configuration the page edits.
+ *
+ * The static leases are not part of it: they are written to the router right
+ * away, so there is nothing to keep in a draft.
+ */
+export interface SysDraft {
+  identity: SysIdentity
+  dnsmasq: SysDnsmasq
+  pools: SysDhcpPool[]
+}
+
+/** An empty draft, used as the initial value of the draft store. */
+export function emptyDraft(): SysDraft {
+  return {
+    identity: {
+      section: 'system',
+      hostname: '',
+      timezone: '',
+      logSize: 64,
+      ttylogin: true,
+      ntpServers: []
+    },
+    dnsmasq: {
+      section: 'dnsmasq',
+      servers: [],
+      cachesize: 0,
+      noresolv: false,
+      localservice: false
+    },
+    pools: []
+  }
+}
+
+/** Copies the editable part of a snapshot into a draft. */
+export function draftFromSnapshot(snapshot: SysSnapshot): SysDraft {
+  return {
+    identity: { ...snapshot.identity, ntpServers: [...snapshot.identity.ntpServers] },
+    dnsmasq: { ...snapshot.dnsmasq, servers: [...snapshot.dnsmasq.servers] },
+    pools: snapshot.pools.map((pool) => ({ ...pool }))
+  }
+}
+
+/** Deep copy of a draft. */
+export function cloneDraft(draft: SysDraft): SysDraft {
+  return {
+    identity: { ...draft.identity, ntpServers: [...draft.identity.ntpServers] },
+    dnsmasq: { ...draft.dnsmasq, servers: [...draft.dnsmasq.servers] },
+    pools: draft.pools.map((pool) => ({ ...pool }))
+  }
+}
 
 /* ------------------------------------------------------------------ *
  * Helpers
@@ -237,6 +319,91 @@ export async function readSnapshot(): Promise<SysSnapshot> {
     leases: parseLeases(dhcp),
     identity: parseIdentity(system)
   }
+}
+
+/**
+ * Reads the raw UCI values of the two config files.
+ *
+ * They are the base for the "old value → new value" list of the changes the
+ * router reports for the staging area.
+ */
+export async function readRawConfigs(): Promise<SysRawConfigs> {
+  const [dhcp, system] = await Promise.all([uciGet('dhcp'), uciGet('system')])
+  return { dhcp, system }
+}
+
+/**
+ * The devices that are online right now.
+ *
+ * The DHCP leases carry the address ↔ MAC mapping, the host hints the names
+ * of the devices and the station list tells which of them use Wi-Fi.
+ */
+export async function readOnlineDevices(): Promise<SysOnlineDevice[]> {
+  const [leases, hints, stations] = await Promise.all([
+    api.dhcpLeases().catch(() => []),
+    api.hostHints().catch(() => ({}) as Record<string, unknown>),
+    api.stations().catch(() => ({}) as Record<string, unknown>)
+  ])
+
+  const stationMacs = new Set<string>()
+  const stationSignal = new Map<string, number>()
+  for (const list of Object.values(stations ?? {})) {
+    if (!Array.isArray(list)) continue
+    for (const item of list) {
+      const raw = item as Record<string, unknown>
+      const mac = String(raw?.mac ?? '').toLowerCase()
+      if (!mac) continue
+      stationMacs.add(mac)
+      const signal = Number(raw?.signal ?? 0)
+      stationSignal.set(mac, Number.isFinite(signal) ? signal : 0)
+    }
+  }
+
+  const nameByIp = new Map<string, string>()
+  for (const [key, hint] of Object.entries(hints ?? {})) {
+    const raw = hint as { ipaddrs?: string[]; name?: string }
+    const name = raw?.name?.trim()
+    if (!name) continue
+    for (const ip of raw?.ipaddrs ?? []) nameByIp.set(ip, name)
+    nameByIp.set(key, name)
+  }
+
+  const devices: SysOnlineDevice[] = []
+  for (const lease of leases ?? []) {
+    const mac = String(lease.macaddr ?? '').toLowerCase()
+    devices.push({
+      ip: lease.ipaddr ?? '',
+      mac,
+      hostname: lease.hostname || nameByIp.get(lease.ipaddr ?? '') || '',
+      wireless: stationMacs.has(mac),
+      signal: stationSignal.get(mac) ?? 0
+    })
+  }
+
+  return devices
+}
+
+/**
+ * Looks for the device that uses the address of a static lease.
+ *
+ * The address is the primary key, the MAC address is the fallback — a device
+ * can have a different address than the one that was reserved for it.
+ */
+export function matchLeaseOnline(
+  lease: SysStaticLease,
+  devices: SysOnlineDevice[]
+): SysLeaseState {
+  const ip = lease.ip.trim()
+  const mac = lease.mac.trim().toLowerCase()
+  if (!ip && !mac) return { online: false, device: null }
+
+  const byIp = devices.find((device) => device.ip === ip)
+  if (byIp) return { online: true, device: byIp }
+
+  const byMac = devices.find((device) => device.mac && device.mac.toLowerCase() === mac)
+  if (byMac) return { online: true, device: byMac }
+
+  return { online: false, device: null }
 }
 
 /** Live DHCP leases from /tmp/dhcp.leases. */
@@ -779,14 +946,40 @@ export interface SysPasswordStrength {
   label: string
   tone: 'danger' | 'warning' | 'success'
   hint: string
+  /** Concrete advice on how to improve the password. */
+  suggestions: string[]
 }
+
+/** Passwords that are used by nearly everybody — they are never a good idea. */
+const WEAK_PASSWORDS = [
+  'admin',
+  'root',
+  'password',
+  'passwd',
+  '123456',
+  '12345678',
+  '123456789',
+  'qwerty',
+  'abc123',
+  'letmein',
+  'openwrt',
+  'default',
+  'guest'
+]
 
 /** Rates a password and explains what is missing. */
 export function scorePassword(password: string): SysPasswordStrength {
   if (!password) {
-    return { score: 0, label: '未设置', tone: 'danger', hint: '留空表示不修改密码' }
+    return {
+      score: 0,
+      label: '未设置',
+      tone: 'danger',
+      hint: '留空表示不修改密码',
+      suggestions: []
+    }
   }
 
+  const lower = password.toLowerCase()
   let points = 0
   if (password.length >= 8) points += 1
   if (password.length >= 12) points += 1
@@ -794,22 +987,55 @@ export function scorePassword(password: string): SysPasswordStrength {
   if (/\d/.test(password)) points += 1
   if (/[^\w\s]/.test(password)) points += 1
 
-  const hints: string[] = []
-  if (password.length < 8) hints.push('至少 8 位')
-  if (!(/[a-z]/.test(password) && /[A-Z]/.test(password))) hints.push('包含大小写字母')
-  if (!/\d/.test(password)) hints.push('包含数字')
-  if (!/[^\w\s]/.test(password)) hints.push('包含符号')
+  const suggestions: string[] = []
+  if (password.length < 8) suggestions.push('长度至少 8 位')
+  else if (password.length < 12) suggestions.push('加长到 12 位以上，可抵抗暴力破解')
+  if (!/[a-z]/.test(password)) suggestions.push('加入小写字母')
+  if (!/[A-Z]/.test(password)) suggestions.push('加入大写字母')
+  if (!/\d/.test(password)) suggestions.push('加入数字')
+  if (!/[^\w\s]/.test(password)) suggestions.push('加入符号（例如 ! @ # $）')
+
+  if (WEAK_PASSWORDS.some((weak) => lower === weak || lower.includes(`${weak}123`))) {
+    suggestions.push('避免使用常见弱口令（admin / 123456 / password 等）')
+  }
+  if (/(.)\1{3,}/.test(password)) {
+    suggestions.push('避免连续重复同一个字符')
+  }
+  if (/(0123|1234|2345|3456|4567|5678|6789|abcd|bcde|cdef)/.test(lower)) {
+    suggestions.push('避免使用连续的数字或字母')
+  }
+  if (/^\d+$/.test(password)) {
+    suggestions.push('不要只使用数字')
+  }
 
   // The score is normalized to 0 … 3 so the UI can draw it directly.
   const score = points <= 1 ? 0 : points <= 3 ? 1 : points <= 4 ? 2 : 3
 
   if (score === 0) {
-    return { score, label: '强度弱', tone: 'danger', hint: `建议：${hints.join('、')}` }
+    return {
+      score,
+      label: '强度弱',
+      tone: 'danger',
+      hint: suggestions.length ? `建议：${suggestions[0]}` : '这个密码太弱了',
+      suggestions
+    }
   }
   if (score <= 2) {
-    return { score, label: '强度中', tone: 'warning', hint: `可再加强：${hints.join('、')}` }
+    return {
+      score,
+      label: '强度中',
+      tone: 'warning',
+      hint: suggestions.length ? `可再加强：${suggestions[0]}` : '还能再强一些',
+      suggestions
+    }
   }
-  return { score, label: '强度高', tone: 'success', hint: '密码强度足够' }
+  return {
+    score,
+    label: '强度高',
+    tone: 'success',
+    hint: '密码强度足够',
+    suggestions
+  }
 }
 
 /* ------------------------------------------------------------------ *

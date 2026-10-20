@@ -4,13 +4,16 @@
 
 标题就是检索词：遇到问题先在浏览器里搜现象里的关键词，搜到哪节看哪节。
 
+> 本篇的示例命令里，`<路由器IP>` 需要换成你自己设备的地址
+> （多数路由器的 LAN 地址是 `10.0.0.1`，那是默认网关的通行默认值，不是硬编码依赖）。
+
 ---
 
 ## 1. 页面白屏
 
 ### 现象
 
-打开 <https://10.0.0.1/modern/> 是一片空白，控制台台标也看不到。
+打开 <https://<路由器IP>/modern/> 是一片空白，控制台台标也看不到。
 开发者工具里常见 `Failed to fetch dynamically imported module` 或一片空白控制台。
 
 ### 排查步骤
@@ -21,7 +24,7 @@
 3. 在路由器上确认静态文件在位：
 
    ```bash
-   ssh root@10.0.0.1 'ls -la /www/modern | head; ls /www/modern/assets | head'
+   ssh root@<路由器IP> 'ls -la /www/modern | head; ls /www/modern/assets | head'
    ```
 
 4. 打开 `/www/modern/index.html`，看它引用的入口 chunk 名，与 `/www/modern/assets/` 里实际的文件名**是否一致**。
@@ -50,7 +53,7 @@
 3. 直接用这个 sid 查会话，看服务端认不认：
 
    ```bash
-   ssh root@10.0.0.1 "ubus call session get '{\"ubus_rpc_session\":\"<粘贴 sid>\"}'"
+   ssh root@<路由器IP> "ubus call session get '{\"ubus_rpc_session\":\"<粘贴 sid>\"}'"
    ```
 
    期望看到 `"username"`；看到 `Access denied` 或 `Session not found` 就是服务端会话没了。
@@ -83,7 +86,7 @@
 4. 在路由器上确认会话还活着：
 
    ```bash
-   ssh root@10.0.0.1 "ubus call session get '{\"ubus_rpc_session\":\"<sid>\"}'"
+   ssh root@<路由器IP> "ubus call session get '{\"ubus_rpc_session\":\"<sid>\"}'"
    ```
 
 ### 原因 / 解法
@@ -108,7 +111,7 @@
 1. 先确认 mihomo 在跑、端口通：
 
    ```bash
-   ssh root@10.0.0.1 'curl -s -m 5 http://127.0.0.1:9999/version'
+   ssh root@<路由器IP> 'curl -s -m 5 http://127.0.0.1:9999/version'
    ```
 
    连不上 → mihomo 没跑（不是控制台的问题）。
@@ -116,7 +119,7 @@
 2. 确认 `secret` 存在（**只查在不在，别把值贴到聊天/工单里**）：
 
    ```bash
-   ssh root@10.0.0.1 "grep -c '^secret=' /etc/ShellCrash/configs/ShellCrash.cfg"
+   ssh root@<路由器IP> "grep -c '^secret=' /etc/ShellCrash/configs/ShellCrash.cfg"
    ```
 
    输出 0 → CGI 会回 `503 {"error":"shellcrash not configured"}`。
@@ -124,7 +127,7 @@
 3. 直接问 CGI（把 sid 换成你自己的）：
 
    ```bash
-   curl -sk "https://10.0.0.1/cgi-bin/modern-proxy?path=/proxies&sid=<sid>"
+   curl -sk "https://<路由器IP>/cgi-bin/modern-proxy?path=/proxies&sid=<sid>"
    ```
 
 4. 看返回里 `proxies` 的键 —— 是策略组名。
@@ -133,7 +136,7 @@
 
 | 原因 | 解法 |
 | --- | --- |
-| mihomo 没运行 | 去 ShellCrash 起服务。注意这台机器的 init 脚本处于「保守模式」（`start_old=ON`），`service_status` 显示 `inactive` 属正常，真实状态看 `running` |
+| mihomo 没运行 | 去 ShellCrash 起服务。注意实测设备上的 init 脚本处于「保守模式」（`start_old=ON`），`service_status` 显示 `inactive` 属正常，真实状态看 `running` |
 | `secret` 没配 | 在 ShellCrash 里设置 secret |
 | **控制台把策略组名硬编码成了中文正则** | `src/utils/proxy.ts` 用硬编码中文正则匹配组名（如「节点选择」「手动切换」「GLOBAL」）。**组名改了、正则没跟上，页面就显示不出出口。** 这是本仓已登记的耦合点 —— 见 [../AGENTS.md](../AGENTS.md) 第 2 条：策略组与规则的真源在 `ShellcrashRules` 仓 |
 | 组名含控制台不支持的字符 | 引号、反斜杠、`/`、`..` 会被 CGI 拒（`invalid name`）；多数 emoji 与中文名可用 |
@@ -155,19 +158,19 @@
 2. 在路由器上确认工具在位：
 
    ```bash
-   ssh root@10.0.0.1 'for c in ping nslookup traceroute ip netstat; do printf "%s: " "$c"; command -v "$c" || echo MISSING; done'
+   ssh root@<路由器IP> 'for c in ping nslookup traceroute ip netstat; do printf "%s: " "$c"; command -v "$c" || echo MISSING; done'
    ```
 
 3. 手动跑一次，看真实耗时：
 
    ```bash
-   ssh root@10.0.0.1 'time ping -c 3 -W 3 example.com'
+   ssh root@<路由器IP> 'time ping -c 3 -W 3 example.com'
    ```
 
 4. 看目标是否可达：
 
    ```bash
-   ssh root@10.0.0.1 'ping -c 3 -W 3 <你的目标>'
+   ssh root@<路由器IP> 'ping -c 3 -W 3 <你的目标>'
    ```
 
 ### 原因 / 解法
@@ -193,15 +196,15 @@
 1. **先看部署脚本的输出**。`deploy/deploy.sh` 成功时会打印两行：
 
    ```
-   deployed to root@10.0.0.1:/www/modern (CGI helpers in /www/cgi-bin)
-   open https://10.0.0.1/modern/
+   deployed to root@<路由器IP>:/www/modern (CGI helpers in /www/cgi-bin)
+   open https://<路由器IP>/modern/
    ```
 
    **没有这两行 = 脚本中途退出了** —— 这不是「部分成功」，是**静默中止**。
 2. 逐个核对 CGI 是否真的到位：
 
    ```bash
-   ssh root@10.0.0.1 'ls -la /www/cgi-bin/modern-*'
+   ssh root@<路由器IP> 'ls -la /www/cgi-bin/modern-*'
    ```
 
    期望 **9 个**：`modern-login` `modern-data` `modern-read` `modern-exec` `modern-proxy`
@@ -209,7 +212,7 @@
 3. 核对静态资源：
 
    ```bash
-   ssh root@10.0.0.1 'cat /www/modern/assets.manifest | head -20; ls /www/modern/assets | wc -l'
+   ssh root@<路由器IP> 'cat /www/modern/assets.manifest | head -20; ls /www/modern/assets | wc -l'
    ```
 
 ### 原因 / 解法
@@ -235,7 +238,7 @@
 1. **确认文件真的传上去了**：
 
    ```bash
-   ssh root@10.0.0.1 'md5sum /www/cgi-bin/modern-uci' ; md5sum deploy/modern-uci
+   ssh root@<路由器IP> 'md5sum /www/cgi-bin/modern-uci' ; md5sum deploy/modern-uci
    ```
 
    两边对不上 → 没传上去，或传的是旧版本。
@@ -243,7 +246,7 @@
 2. **确认权限**：
 
    ```bash
-   ssh root@10.0.0.1 'ls -l /www/cgi-bin/modern-*'
+   ssh root@<路由器IP> 'ls -l /www/cgi-bin/modern-*'
    ```
 
    必须有 `x` 位。
@@ -251,8 +254,8 @@
 3. **确认换行符**：
 
    ```bash
-   ssh root@10.0.0.1 'file /www/cgi-bin/modern-uci'   # 或
-   ssh root@10.0.0.1 'head -1 /www/cgi-bin/modern-uci | od -c | head -2'
+   ssh root@<路由器IP> 'file /www/cgi-bin/modern-uci'   # 或
+   ssh root@<路由器IP> 'head -1 /www/cgi-bin/modern-uci | od -c | head -2'
    ```
 
    看到 `\r` → **CRLF**，shebang 会报 `No such file or directory`。
@@ -331,3 +334,64 @@ import 'element-plus/es/components/table/style/css'   // 例：新增 el-table �
 | 路由器重启 | ubus 会话在 rpcd 重启后全部失效。重新登录 |
 | `validateSession()` 把**临时网络抖动**当成了会话失效 | 不会：它只在 `SessionExpiredError`（ubus `-32002`）时清会话，普通网络错误保留会话 |
 | 多标签页同时操作，一个标签页登出把另一个也带走了 | 登出会销毁服务端会话（`session.destroy`），所有标签页一起失效。重新登录 |
+
+---
+
+## 10. 保存失败，但配置其实已经改了
+
+### 现象
+
+点「保存」后报 `保存配置失败：Cannot read properties of null (reading 'message')`
+或 `路由器返回的内容无法解析`，**可路由器上的配置其实已经变了**，刷新一下就看到了。
+
+### 排查步骤
+
+1. 打开 F12 → Network，找到那条 `config-write` 请求，看 **Response**。
+2. 把 body 丢给 `JSON.parse`（F12 控制台里直接粘）——
+   如果报 `Expected ',' or ']' after array element in JSON at position 36` 这类，
+   就是**路由器拼出来的 JSON 不合法**，不是网络问题。
+3. 或者在路由器上直接验：
+
+```bash
+sid=$(ubus call session login '{"username":"root","password":"…","timeout":60}' | jsonfilter -e @.ubus_rpc_session)
+curl -sk -X POST -H 'Content-Type: application/json'   -d '{"action":"config-write","params":{"confirm":"yes","ipv6_support":"ON"}}'   "https://127.0.0.1/cgi-bin/modern-shellcrash?sid=$sid" | jsonfilter -e '@'
+```
+
+`jsonfilter` 报错 = body 不是合法 JSON。
+
+### 原因 / 解法
+
+| 原因 | 解法 |
+| --- | --- |
+| **CGI 拼的 JSON 不合法**：把 `"key":"value"` 直接塞进 `[]`（`["ipv6_support":"ON"]`）——这不是合法 JSON，浏览器整段解析失败 | 改成字符串数组 `["ipv6_support=ON"]` 或对象数组 `[{"ipv6_support":"ON"}]`。写完跑一遍 `send_json` 自检（见 [CGI-CONTRACT.md](CGI-CONTRACT.md) §0「应答自检」）|
+| 变量没转义就插进 JSON 字符串 | 用 `modern-pkg` 的 `esc_json` / `modern-shellcrash` 的 `jstr` |
+| 上游返回的不是 JSON（老的 `uci-changes` 返回 UCI diff 原文） | 这种 action 已经删掉；新加 action 必须保证应答是 JSON |
+
+> 现在的 9 个 CGI 都走 `send_json()`，非法 JSON 会被路由器自己拦下并换成
+> `{"ok":false,"error":"路由器生成了无效的响应，请查看系统日志"}`，
+> 不会再出现「保存失败但配置已改」这种情况。
+
+---
+
+## 11. 重启 ShellCrash 后状态不更新
+
+### 现象
+
+点「重启」后状态区显示「核心进程未运行」，**手动刷新一下**才变成「运行中」。
+
+### 排查步骤
+
+1. 看状态区的 PID 有没有变。变了说明核心确实重启过，是**页面没跟上**，
+   不是路由器的问题。
+2. 路由器上看完成记录：`cat /tmp/ShellCrash/modern-shellcrash.last`
+   → `<action> <rc> <时间戳>`。`rc` 非 0 表示状态没到位。
+3. `pidof CrashCore` 看核心在不在、`netstat -lntp | grep CrashCore` 看端口在不在听。
+
+### 原因 / 解法
+
+| 原因 | 解法 |
+| --- | --- |
+| **路由器在 `start.sh` 返回时就写了完成记录**，而 start.sh 是把核心拉起来就返回的，核心这时还没起来 | runner 在写完成记录前先等 `pidof CrashCore` 出现（≤60 秒）/ 消失（≤30 秒），等不到写非 0 退出码 |
+| **前端拿到完成记录就停止轮询**，之后再也不拉状态；那个每秒跳的计时器只更新计数 | 前端拿到完成记录后继续等 `running` 变成期望值（启动/重启等 true，停止等 false），任务进行中每 3 秒拉一次状态；核心起得慢时后台继续跟踪 |
+| 核心真的没起来 | 看 `ps | grep CrashCore` 与 `/etc/ShellCrash/logs/`；ShellCrash 的 init 脚本是「保守模式」（`start_old=ON`），核心由 `start.sh` 拉起、不在 procd 下，所以 `service_status` 一直显示 `inactive` 属正常 |
+

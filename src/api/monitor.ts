@@ -45,6 +45,34 @@ export const MONITOR_RANGES: MonitorRangeOption[] = [
   { key: '15m', label: '15 分钟', ms: 15 * 60_000 }
 ]
 
+/** The metrics the resource curve can show. */
+export type MonitorMetric = 'cpu' | 'memory' | 'network'
+
+export interface MonitorMetricOption {
+  key: MonitorMetric
+  label: string
+  /** Shown in the legend; it names the source of the value. */
+  hint: string
+}
+
+export const MONITOR_METRICS: MonitorMetricOption[] = [
+  {
+    key: 'cpu',
+    label: 'CPU',
+    hint: 'CPU 由 1 分钟负载折算，路由器未开放真实占用计数'
+  },
+  {
+    key: 'memory',
+    label: '内存',
+    hint: '内存占用来自 ubus system info'
+  },
+  {
+    key: 'network',
+    label: '网络速率',
+    hint: '网络速率为 WAN 接口速率，无 WAN 时取全部接口合计'
+  }
+]
+
 /** One point of the resource curve. */
 export interface ResourceSample {
   time: number
@@ -54,6 +82,10 @@ export interface ResourceSample {
   memory: number
   /** CPU utilisation estimate in percent (derived from the load average). */
   cpu: number
+  /** Downlink rate of the external interface, in bytes per second. */
+  netRx: number
+  /** Uplink rate of the external interface, in bytes per second. */
+  netTx: number
 }
 
 /** One point of a rate curve, in bytes per second. */
@@ -155,6 +187,26 @@ export function totalTraffic(devices: NetworkDevice[]): {
     tx += device.stats?.tx_bytes ?? 0
   }
   return { rx, tx, total: rx + tx }
+}
+
+/**
+ * The rate of the external traffic.
+ *
+ * The WAN interface carries the traffic of the internet, so it is preferred.
+ * A router without a WAN interface (a pure access point) falls back to the
+ * sum of all interfaces, which is what the page shows in that case.
+ */
+export function externalRate(rows: InterfaceStat[]): { rx: number; tx: number } {
+  const wan = rows.find((row) => row.name === 'wan')
+  if (wan) return { rx: wan.rxRate, tx: wan.txRate }
+
+  let rx = 0
+  let tx = 0
+  for (const row of rows) {
+    rx += row.rxRate
+    tx += row.txRate
+  }
+  return { rx, tx }
 }
 
 /** Difference of two cumulative counters, converted to bytes per second. */

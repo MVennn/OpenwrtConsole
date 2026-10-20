@@ -31,9 +31,11 @@
         </ul>
 
         <div class="brand-foot">
-          <span>Xiaomi AX3000T</span>
-          <span class="brand-foot-sep" />
-          <span>OpenWrt 25.12</span>
+          <span>{{ brandFoot.model }}</span>
+          <template v-if="brandFoot.note">
+            <span class="brand-foot-sep" />
+            <span>{{ brandFoot.note }}</span>
+          </template>
         </div>
       </div>
 
@@ -128,10 +130,11 @@
 </template>
 
 <script setup lang="ts">
-  import { onMounted, ref } from 'vue'
+  import { computed, onMounted, ref } from 'vue'
   import { useRoute, useRouter } from 'vue-router'
   import { AlertCircle, Activity, Lock, Router as RouterIcon, ShieldCheck, User, Wifi } from 'lucide-vue-next'
   import type { InputInstance } from 'element-plus'
+  import { fetchDeviceIdentity, type DeviceIdentity } from '@/api/device'
   import { login, useSession } from '@/stores/session'
 
   defineOptions({ name: 'LoginView' })
@@ -144,13 +147,35 @@
   const password = ref('')
   const error = ref('')
   const passwordRef = ref<InputInstance>()
+  const identity = ref<DeviceIdentity | null>(null)
 
   const UserIcon = User
   const LockIcon = Lock
 
-  onMounted(() => {
+  /**
+   * The footer of the brand panel. The model of the router is only known
+   * when the router lets an anonymous visitor read `system.board` — most
+   * devices do not, so the generic wording is the normal case and the
+   * model shows up on the dashboard after the login.
+   */
+  const brandFoot = computed(() => {
+    if (identity.value) {
+      return { model: identity.value.model, note: identity.value.os }
+    }
+    return { model: 'OpenWrt 设备', note: '登录后可见设备信息' }
+  })
+
+  onMounted(async () => {
     if (username.value && !password.value) {
       passwordRef.value?.focus()
+    }
+    // A nice-to-have: the call is refused on most routers and then the
+    // generic wording stays. It must never delay or break the login page.
+    try {
+      const found = await fetchDeviceIdentity()
+      if (found) identity.value = found
+    } catch {
+      // Keep the generic wording.
     }
   })
 

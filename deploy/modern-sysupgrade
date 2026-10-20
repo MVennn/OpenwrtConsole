@@ -13,6 +13,7 @@
 #   info           – board / release information plus the firmware files in /tmp
 #   upload         – the raw request body is the firmware image
 #   upgrade        – sysupgrade /tmp/openwrt-firmware.bin          (token)
+#   verify         – size and sha256 of the image that is in /tmp
 #   backup         – sysupgrade -b /tmp/openwrt-backup.tar.gz
 #   restore        – sysupgrade -r <path>                          (token)
 #   list-backups   – the configuration backups that live in /tmp
@@ -71,6 +72,23 @@ WAIT_CHECK=18
 WAIT_DOWNLOAD=4
 MAX_NOTES=8
 
+# Sends the body of a reply. The body is validated before it leaves the
+# router: a malformed answer only shows up in the browser as "cannot parse"
+# and hides the real cause, so a body that does not survive jsonfilter is
+# replaced by a readable error.
+send_json() {
+	__sj_body="$1"
+	__sj_out="/tmp/.modern-resp.$$"
+	printf '%s' "$__sj_body" > "$__sj_out" 2>/dev/null
+	if command -v jsonfilter >/dev/null 2>&1; then
+		if ! jsonfilter -i "$__sj_out" -e '@' >/dev/null 2>&1; then
+			printf '%s' '{"ok":false,"error":"路由器生成了无效的响应，请查看系统日志"}' > "$__sj_out"
+		fi
+	fi
+	cat "$__sj_out"
+	rm -f "$__sj_out" 2>/dev/null
+}
+
 deny() {
 	emit "401 Unauthorized" '{"error":"unauthorized"}'
 	exit 0
@@ -96,8 +114,9 @@ emit() {
 	fi
 	printf 'Status: %s\r\n' "$_status"
 	printf 'Content-Type: application/json; charset=utf-8\r\n'
-	printf 'Cache-Control: no-store\r\n\r\n'
-	printf '%s' "$_payload"
+	printf 'Cache-Control: no-store\r\n'
+	printf 'X-Content-Type-Options: nosniff\r\n\r\n'
+	send_json "$_payload"
 }
 
 # Escapes the characters that would break a JSON string.
@@ -723,7 +742,7 @@ case "$action" in
 
 	upgrade)
 		[ -f "$FIRMWARE_PATH" ] || fail "400 Bad Request" '{"error":"请先上传固件文件"}'
-		size="$(wc -c < "$FIRMWARE_PATH" 2>/dev/null | tr -d ' ')"
+		size="$(wc -c < "$FIRMWARE_PATH" 2>/dev/null)"
 		[ -n "$size" ] || size=0
 		[ "$size" -gt 0 ] || fail "400 Bad Request" '{"error":"固件文件为空"}'
 		consume_token "firmware-upgrade" "$token" ||
@@ -733,6 +752,22 @@ case "$action" in
 		( sleep 1; sysupgrade "$FIRMWARE_PATH" ) >/dev/null 2>&1 &
 		ok '{"ok":true,"started":true}'
 		;;
+
+	verify)
+		# The size and the checksum of the image that is on the router, so
+		# that the console can compare them with the official ones before
+		# the flash.
+		if [ -f "$FIRMWARE_PATH" ]; then
+			vsize="$(wc -c < "$FIRMWARE_PATH" 2>/dev/null | tr -d ' ')"
+			case "$vsize" in ''|*[!0-9]*) vsize=0 ;; esac
+			vsha="$(sha256sum "$FIRMWARE_PATH" 2>/dev/null | cut -d' ' -f1)"
+			case "$vsha" in *[!0-9a-f]*) vsha="" ;; esac
+			ok "{\"ok\":true,\"exists\":true,\"path\":\"$FIRMWARE_PATH\",\"size\":$vsize,\"sha256\":\"$vsha\"}"
+		else
+			ok "{\"ok\":true,\"exists\":false,\"path\":\"$FIRMWARE_PATH\",\"size\":0,\"sha256\":\"\"}"
+		fi
+		;;
+
 
 	backup)
 		backup_target="$target_path"

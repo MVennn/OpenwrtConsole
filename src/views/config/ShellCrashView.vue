@@ -1,27 +1,47 @@
 <template>
   <div class="page">
-    <PageHeader title="ShellCrash 设置" description="服务控制、核心设置、覆写文件、订阅与运行日志">
+    <PageHeader title="ShellCrash 设置" description="服务控制、核心设置、端口占用、覆写文件、订阅与自愈记录">
       <el-button :icon="RefreshCw" :loading="refreshing" @click="refresh">刷新</el-button>
+      <el-button
+        v-if="pendingCount"
+        type="primary"
+        :icon="Save"
+        :loading="saving"
+        :disabled="busy"
+        @click="saveConfig"
+      >
+        保存（{{ pendingCount }}）
+      </el-button>
     </PageHeader>
 
-    <el-alert v-if="error" type="error" :title="error.message" :closable="false" show-icon />
+    <el-alert v-if="error" type="error" :title="error?.message || '操作失败'" :closable="false" show-icon />
 
+    <!-- 长任务进度：重启服务、订阅热更新 -->
+    <div v-if="task" class="task-banner">
+      <div class="task-head">
+        <span class="task-title">{{ task.title }}</span>
+        <span class="task-hint">{{ task.hint }}</span>
+      </div>
+      <div class="task-track">
+        <span class="task-fill" :style="{ width: `${task.percent}%` }" />
+      </div>
+      <span class="task-elapsed mono num">已等待 {{ task.elapsed }} 秒</span>
+    </div>
+
+    <!-- 改动已经落盘，但需要重启才生效 -->
     <el-alert
-      v-if="notice"
+      v-if="restartNeeded && !task"
       type="warning"
-      :title="notice"
-      :closable="!restartPending"
+      title="改动已经写进配置文件，重启 ShellCrash 后才会生效"
+      :closable="false"
       show-icon
-      @close="notice = ''"
     >
-      <template v-if="restartPending" #default>
-        <div class="alert-row">
-          <span class="alert-hint">核心需要重新加载配置才能生效</span>
-          <el-button size="small" type="warning" plain :loading="restarting" @click="restartNow">
-            立即重启
-          </el-button>
-        </div>
-      </template>
+      <div class="alert-row">
+        <span class="alert-hint">重启期间代理会短暂中断，核心会重新拉取订阅并重建防火墙规则</span>
+        <el-button size="small" type="warning" plain :loading="restarting" @click="restartNow">
+          立即重启
+        </el-button>
+      </div>
     </el-alert>
 
     <template v-if="loaded">
@@ -71,7 +91,7 @@
               type="primary"
               :icon="Play"
               :disabled="busy || status.running"
-              @click="runService('start', '启动 ShellCrash 服务？')"
+              @click="runService('start', '启动 ShellCrash 服务？核心会重新拉取订阅并重建规则，代理会短暂中断。')"
             >
               启动
             </el-button>
@@ -99,46 +119,39 @@
               <span class="switch-label">开机自启</span>
               <span class="switch-hint">重启路由器后自动拉起 ShellCrash</span>
             </div>
-            <el-switch
-              :model-value="status.autostart"
-              :loading="busy"
-              :disabled="busy"
-              @update:model-value="toggleAutostart(Boolean($event))"
-            />
+            <div class="switch-side">
+              <StatusBadge
+                :label="status.autostart ? '已开启' : '已关闭'"
+                :tone="status.autostart ? 'success' : 'neutral'"
+                :dot="false"
+              />
+              <el-switch
+                :model-value="status.autostart"
+                :loading="busy"
+                :disabled="busy"
+                @update:model-value="toggleAutostart(Boolean($event))"
+              />
+            </div>
           </div>
         </div>
 
         <p class="card-note">
-          服务动作由路由器后台执行，可能需要数十秒（核心会重新拉取订阅并重建防火墙规则）。
-          页面会自动刷新运行状态。
+          服务动作由路由器后台执行，核心要重新下载配置，通常需要几十秒。执行期间页面会显示进度，
+          结束后本页状态会自动刷新，不用手点刷新。
         </p>
       </PanelCard>
 
       <!-- 核心设置 -->
       <PanelCard title="核心设置" subtitle="ShellCrash.cfg 的白名单配置项，保存后需重启生效">
         <template #actions>
-          <el-button
-            v-if="Object.keys(changes).length"
-            size="small"
-            type="danger"
-            plain
-            :icon="RotateCcw"
-            :disabled="busy"
-            @click="discardChanges"
-          >
-            放弃修改
-          </el-button>
-          <el-button
-            size="small"
-            type="primary"
-            :icon="Save"
-            :loading="saving"
-            :disabled="busy || !Object.keys(changes).length"
-            @click="saveConfig"
-          >
-            保存<template v-if="Object.keys(changes).length">（{{ Object.keys(changes).length }}）</template>
-          </el-button>
+          <StatusBadge
+            :label="pendingCount ? `待保存 ${pendingCount} 项` : '已保存'"
+            :tone="pendingCount ? 'warning' : 'success'"
+            :dot="false"
+          />
         </template>
+
+        <DraftNotice :dirty="draftDirty" :saved-at="draftSavedAt" @discard="discardChanges" />
 
         <div class="setting-list">
           <div v-for="item in settingItems" :key="item.key" class="setting-row">
@@ -153,13 +166,13 @@
             <div class="setting-control">
               <el-switch
                 v-if="item.type === 'switch'"
-                :model-value="draft[item.key] === 'ON'"
+                :model-value="isOn(formValue(item.key))"
                 :disabled="busy || item.readonly"
                 @update:model-value="setDraft(item.key, $event ? 'ON' : 'OFF')"
               />
               <el-select
                 v-else-if="item.type === 'select'"
-                :model-value="draft[item.key]"
+                :model-value="formValue(item.key)"
                 :disabled="busy || item.readonly"
                 size="small"
                 class="setting-select"
@@ -174,7 +187,8 @@
               </el-select>
               <el-input-number
                 v-else-if="item.type === 'number'"
-                :model-value="Number(draft[item.key] || 0)"
+                :key="`num-${item.key}-${draftEpoch}`"
+                :model-value="Number(formValue(item.key) || 0)"
                 :min="item.min ?? 0"
                 :max="item.max ?? 99"
                 :disabled="busy || item.readonly"
@@ -184,17 +198,17 @@
               />
               <el-input
                 v-else-if="item.type === 'text'"
-                :model-value="draft[item.key]"
+                :model-value="formValue(item.key)"
                 :disabled="busy || item.readonly"
                 size="small"
                 class="setting-text"
                 @update:model-value="setDraft(item.key, String($event ?? ''))"
               />
-              <span v-else class="setting-value mono">{{ draft[item.key] || '—' }}</span>
+              <span v-else class="setting-value mono">{{ formValue(item.key) || '—' }}</span>
 
               <StatusBadge
-                v-if="isChanged(item.key)"
-                label="已修改"
+                v-if="isPending(item.key)"
+                label="待保存"
                 tone="warning"
                 :dot="false"
               />
@@ -203,23 +217,31 @@
         </div>
 
         <p class="card-note">
-          修改只提交改动项。写入前路由器会把原文件备份为
+          改动先存在本地草稿里，刷新页面不会丢；点「保存」才写进路由器。写入前路由器会把原文件备份为
           <code class="mono">ShellCrash.cfg.bak-&lt;时间戳&gt;</code>，写完需要重启 ShellCrash 才会生效。
         </p>
       </PanelCard>
 
-      <!-- 端口 -->
-      <PanelCard title="监听端口" subtitle="来自 mihomo 运行配置 /tmp/ShellCrash/config.yaml，只读">
-        <div class="port-grid">
-          <div v-for="port in portList" :key="port.key" class="port-cell">
-            <span class="port-name">{{ port.label }}</span>
-            <span class="port-value num mono">{{ port.value || '—' }}</span>
-            <span class="port-hint">{{ port.hint }}</span>
-          </div>
-        </div>
+      <!-- 端口占用 -->
+      <PanelCard title="端口占用" subtitle="路由器上这五个端口有没有进程在监听">
+        <template #actions>
+          <StatusBadge
+            :label="status.running ? '核心在运行' : '核心已停止'"
+            :tone="status.running ? 'success' : 'warning'"
+          />
+        </template>
+
+        <ScPortGrid :ports="portEntries" :configured="configuredPorts" />
+
         <p class="card-note">
-          端口由核心配置文件决定，修改需要在「覆写设置」里编辑 config.yaml 或 user.yaml，
-          然后重启 ShellCrash。
+          数据来自 <code class="mono">netstat -lntp</code>。核心没有运行时这些端口不会被监听，
+          页面会标成「未监听」；端口号可以在「核心设置」之外通过
+          <code class="mono">/etc/ShellCrash/yamls/config.yaml</code> 调整，改完要重启。
+        </p>
+        <p class="card-note">
+          运行配置里的端口：mixed {{ status.ports.mixed || '—' }} · redir {{ status.ports.redir || '—' }} ·
+          tproxy {{ status.ports.tproxy || '—' }} · socks {{ status.ports.socks || '—' }} ·
+          dns {{ status.ports.dns || '—' }} · controller {{ status.ports.controller || '—' }}
         </p>
       </PanelCard>
 
@@ -237,24 +259,34 @@
             <el-table-column label="文件" min-width="150">
               <template #default="{ row }">
                 <div class="table-primary mono">{{ row.name }}</div>
-                <div class="table-sub">{{ row.description || '（文件头没有说明）' }}</div>
+                <div class="table-sub">{{ row.summary || '（文件头没有说明）' }}</div>
               </template>
             </el-table-column>
-            <el-table-column label="大小" width="100">
+            <el-table-column label="大小 / 行数" width="120">
               <template #default="{ row }">
                 <span class="table-mono num">{{ formatBytes(row.size) }}</span>
+                <div class="table-sub-tight num">{{ row.lines }} 行</div>
               </template>
             </el-table-column>
-            <el-table-column label="修改时间" width="170">
+            <el-table-column label="修改时间" width="160">
               <template #default="{ row }">
                 <span class="table-mono">{{ row.mtime || '—' }}</span>
+              </template>
+            </el-table-column>
+            <el-table-column label="生效状态" width="130">
+              <template #default="{ row }">
+                <StatusBadge
+                  :label="overrideStateLabel(row)"
+                  :tone="overrideStateTone(row)"
+                  :dot="false"
+                />
               </template>
             </el-table-column>
             <el-table-column label="启用" width="90">
               <template #default="{ row }">
                 <el-switch
                   :model-value="row.enabled"
-                  :disabled="busy"
+                  :disabled="busy || row.state === 'missing'"
                   @update:model-value="toggleOverride(row, Boolean($event))"
                 />
               </template>
@@ -268,17 +300,31 @@
               <strong class="mono truncate">{{ row.name }}</strong>
               <el-switch
                 :model-value="row.enabled"
-                :disabled="busy"
+                :disabled="busy || row.state === 'missing'"
                 @update:model-value="toggleOverride(row, Boolean($event))"
               />
             </div>
             <div class="mobile-line">
-              <span>说明</span>
-              <span>{{ row.description || '（文件头没有说明）' }}</span>
+              <span>用途</span>
+              <span>{{ row.summary || '（文件头没有说明）' }}</span>
             </div>
             <div class="mobile-line">
-              <span>大小 / 修改时间</span>
-              <span class="mono">{{ formatBytes(row.size) }} · {{ row.mtime || '—' }}</span>
+              <span>大小 / 行数</span>
+              <span class="mono">{{ formatBytes(row.size) }} · {{ row.lines }} 行</span>
+            </div>
+            <div class="mobile-line">
+              <span>修改时间</span>
+              <span class="mono">{{ row.mtime || '—' }}</span>
+            </div>
+            <div class="mobile-line">
+              <span>生效状态</span>
+              <span>
+                <StatusBadge
+                  :label="overrideStateLabel(row)"
+                  :tone="overrideStateTone(row)"
+                  :dot="false"
+                />
+              </span>
             </div>
           </div>
         </div>
@@ -287,69 +333,77 @@
           v-if="!overrides.files.length"
           :icon="FileStack"
           title="没有覆写文件"
-          description="/etc/ShellCrash/yamls 下没有可管理的覆写文件。"
+          description="/etc/ShellCrash/yamls 下没有可管理的覆写文件，核心会直接使用订阅生成的配置。"
         />
 
         <div class="override-global">
           <div class="switch-copy">
             <span class="switch-label">全局禁用覆写</span>
             <span class="switch-hint">
-              开启后核心直接使用基础配置文件，yamls 目录下的所有覆写都不会合并
+              开启后核心直接使用基础配置文件，yamls 目录下的所有覆写都不会合并（保存后需重启生效）
             </span>
           </div>
-          <el-switch
-            :model-value="draft.disoverride === '1'"
-            :disabled="busy"
-            @update:model-value="setDraft('disoverride', $event ? '1' : '0')"
-          />
+          <div class="switch-side">
+            <StatusBadge
+              :label="isPending('disoverride') ? '待保存' : '已保存'"
+              :tone="isPending('disoverride') ? 'warning' : 'success'"
+              :dot="false"
+            />
+            <el-switch
+              :model-value="isOn(formValue('disoverride'))"
+              :disabled="busy"
+              @update:model-value="setDraft('disoverride', $event ? '1' : '0')"
+            />
+          </div>
         </div>
 
         <p class="card-note">
-          停用某个覆写文件会把文件改名为 <code class="mono">xxx.yaml.bak</code>，
-          重新启用会改回来，整个过程可逆。
+          ShellCrash 在启动时按文件是否存在合并：<code class="mono">xxx.yaml</code> 存在即生效，
+          <code class="mono">xxx.yaml.bak</code> 存在即停用。停用某个覆写文件会把文件改名成
+          <code class="mono">.bak</code>，重新启用会改回来，整个过程可逆；改完都要重启才生效。
         </p>
       </PanelCard>
 
       <!-- 订阅 -->
       <PanelCard title="订阅" subtitle="订阅源与机场提供方，令牌不会显示在页面上">
-        <div v-if="subs.subs.length" class="desktop-only">
-          <el-table :data="subs.subs" style="width: 100%">
-            <el-table-column label="别名" min-width="150">
-              <template #default="{ row }">
-                <span class="table-primary">{{ row.alias || '—' }}</span>
-              </template>
-            </el-table-column>
-            <el-table-column label="更新源 ID" width="120">
-              <template #default="{ row }">
-                <span class="table-mono num">{{ row.url_id || '—' }}</span>
-              </template>
-            </el-table-column>
-            <el-table-column label="地址" min-width="220">
-              <template #default="{ row }">
-                <span class="table-mono">{{ row.masked }}</span>
-              </template>
-            </el-table-column>
-          </el-table>
-        </div>
+        <template #actions>
+          <el-button
+            size="small"
+            :icon="Download"
+            :loading="subUpdateBusy"
+            :disabled="busy || !status.running || subUpdateRunning"
+            @click="updateSubscription"
+          >
+            {{ subUpdateRunning ? '更新中…' : '立即更新订阅' }}
+          </el-button>
+        </template>
 
-        <div v-if="subs.subs.length" class="mobile-only mobile-list">
-          <div v-for="row in subs.subs" :key="row.index" class="mobile-row">
-            <div class="mobile-row-head">
-              <strong class="truncate">{{ row.alias || '订阅 ' + row.index }}</strong>
-              <span class="pill num">ID {{ row.url_id || '—' }}</span>
-            </div>
-            <div class="mobile-line">
-              <span>地址</span>
-              <span class="mono">{{ row.masked }}</span>
-            </div>
-          </div>
+        <div v-if="subs.subs.length" class="sub-grid">
+          <ScSubscriptionCard
+            v-for="sub in subs.subs"
+            :key="sub.index"
+            :title="sub.source || `订阅 ${sub.index}`"
+            :alias="subs.alias"
+            :source="sourceLabel(sub)"
+            :entries="sub.entries"
+            :masked="sub.masked"
+            :enabled="sub.enabled"
+          />
         </div>
 
         <div v-if="subs.providers.length" class="provider-list">
           <div class="provider-title">机场提供方</div>
-          <div v-for="row in subs.providers" :key="row.name" class="provider-row">
-            <span class="provider-name truncate">{{ row.name }}</span>
-            <span class="provider-host mono">{{ row.masked }}</span>
+          <div class="provider-grid">
+            <ScSubscriptionCard
+              v-for="row in subs.providers"
+              :key="row.name"
+              :title="row.name"
+              :alias="subs.alias"
+              :source="`更新源 ID ${subs.url_id || '—'}`"
+              :entries="row.entries"
+              :masked="row.masked"
+              :enabled="row.enabled"
+            />
           </div>
         </div>
 
@@ -357,12 +411,46 @@
           v-if="!subs.subs.length && !subs.providers.length"
           :icon="Link2"
           title="没有订阅"
-          description="ShellCrash.cfg 里没有配置订阅链接，也没有机场提供方。"
+          description="ShellCrash.cfg 里没有配置订阅链接，也没有机场提供方，核心只能使用本地覆写文件。"
+        />
+
+        <dl v-if="subs.subs.length || subs.providers.length" class="sub-summary">
+          <div class="kv">
+            <dt>运行配置里的节点</dt>
+            <dd>{{ subs.node_count }} 个（其中自定义 {{ subs.custom_count }} 个）</dd>
+          </div>
+          <div class="kv">
+            <dt>更新源</dt>
+            <dd>{{ subs.update_source || '—' }}<span v-if="subs.url_id" class="muted"> · ID {{ subs.url_id }}</span></dd>
+          </div>
+        </dl>
+
+        <pre v-if="subUpdateLines.length" class="log-view mono">{{ subUpdateLines.join('\n') }}</pre>
+
+        <p class="card-note">
+          「立即更新订阅」执行的是 ShellCrash 自带的 <code class="mono">task.sh hotupdate</code>：
+          重新下载订阅、重建运行配置并推送给正在运行的核心，不会中断代理，但需要核心处于运行状态。
+        </p>
+      </PanelCard>
+
+      <!-- 自愈历史 -->
+      <PanelCard title="自愈历史" subtitle="CrashCore 拉起、运行配置回退修复与守护动作">
+        <template #actions>
+          <StatusBadge :label="`${heal.entries.length} 条记录`" tone="neutral" :dot="false" />
+        </template>
+
+        <ScHealList v-if="heal.entries.length" :entries="heal.entries" />
+
+        <EmptyState
+          v-else
+          :icon="ShieldCheck"
+          title="还没有自愈记录"
+          description="守护脚本 guardian.sh 每 5 分钟检查一次核心，只有在核心被 OOM 杀掉、出口被改或运行配置回退时才会留下记录。"
         />
       </PanelCard>
 
-      <!-- 日志与自愈 -->
-      <PanelCard title="日志与自愈" subtitle="ShellCrash 运行日志、CrashCore 状态与网络守护">
+      <!-- 日志 -->
+      <PanelCard title="运行日志" subtitle="ShellCrash 与守护脚本的日志尾部">
         <template #actions>
           <el-select
             v-if="log.files.length"
@@ -441,16 +529,16 @@
 </template>
 
 <script setup lang="ts">
-  import { computed, onMounted, ref, watch } from 'vue'
+  import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
   import { ElMessage, ElMessageBox } from 'element-plus'
   import {
     Cpu,
+    Download,
     FileStack,
     Link2,
     Network,
     Play,
     RefreshCw,
-    RotateCcw,
     Save,
     ShieldCheck,
     ShieldOff,
@@ -461,23 +549,34 @@
   import StatCard from '@/components/StatCard.vue'
   import StatusBadge from '@/components/StatusBadge.vue'
   import EmptyState from '@/components/EmptyState.vue'
+  import DraftNotice from '@/components/DraftNotice.vue'
+  import ScPortGrid from '@/components/config-sc/ScPortGrid.vue'
+  import ScHealList from '@/components/config-sc/ScHealList.vue'
+  import ScSubscriptionCard from '@/components/config-sc/ScSubscriptionCard.vue'
+  import { useDraft, useUnsavedGuard } from '@/composables/useDraft'
   import { useRefreshSignal } from '@/composables/useRefresh'
   import {
     fetchShellCrashConfig,
     fetchShellCrashCrash,
+    fetchShellCrashHeal,
     fetchShellCrashLog,
     fetchShellCrashOverrides,
+    fetchShellCrashPorts,
     fetchShellCrashStatus,
     fetchShellCrashSubs,
+    fetchShellCrashSubUpdate,
     runShellCrashService,
+    startShellCrashSubUpdate,
     toggleShellCrashOverride,
     writeShellCrashConfig,
-    type ShellCrashConfigResult,
     type ShellCrashCrashResult,
+    type ShellCrashHealResult,
     type ShellCrashLogResult,
     type ShellCrashOverrideEntry,
+    type ShellCrashPortsResult,
     type ShellCrashStatus,
-    type ShellCrashSubsResult
+    type ShellCrashSubsResult,
+    type ShellCrashSubscription
   } from '@/api/shellcrashConfig'
 
   defineOptions({ name: 'ShellCrashView' })
@@ -491,6 +590,40 @@
     options?: Array<{ label: string; value: string }>
     min?: number
     max?: number
+  }
+
+  interface RunningTask {
+    title: string
+    hint: string
+    startedAt: number
+    elapsed: number
+    percent: number
+  }
+
+  /**
+   * A change that is already written to the router but needs a restart. It is
+   * kept in the browser storage, so the notice survives a page reload and the
+   * user still sees that a restart is pending.
+   */
+  interface PendingRestart {
+    /** Epoch milliseconds of the change. */
+    at: number
+    /** The override files that were toggled. */
+    files: string[]
+  }
+
+  const PENDING_KEY = 'owrt-shellcrash:pending-restart'
+
+  function readPending(): PendingRestart | null {
+    try {
+      const raw = localStorage.getItem(PENDING_KEY)
+      if (!raw) return null
+      const parsed = JSON.parse(raw) as PendingRestart
+      if (!parsed || typeof parsed.at !== 'number') return null
+      return { at: parsed.at, files: Array.isArray(parsed.files) ? parsed.files : [] }
+    } catch {
+      return null
+    }
   }
 
   const status = ref<ShellCrashStatus>({
@@ -509,7 +642,6 @@
     autostart: false,
     last_action: ''
   })
-  const config = ref<ShellCrashConfigResult>({ ok: true, values: {}, url_host: '', secret_set: false })
   const overrides = ref<{ ok: boolean; files: ShellCrashOverrideEntry[]; global_disabled: boolean }>({
     ok: true,
     files: [],
@@ -522,7 +654,10 @@
     provider_count: 0,
     url_id: '',
     update_source: '',
+    update_url: '',
     alias: '',
+    node_count: 0,
+    custom_count: 0,
     subs: [],
     providers: []
   })
@@ -542,11 +677,16 @@
     guardian_cron: '',
     guardian_log: []
   })
+  const portEntries = ref<ShellCrashPortsResult['ports']>([])
+  const heal = ref<ShellCrashHealResult>({ ok: true, entries: [] })
 
   /** The values as they are on the router right now. */
   const baseline = ref<Record<string, string>>({})
-  /** The values the user is editing. */
-  const draft = ref<Record<string, string>>({})
+  /** The changes the user made and did not save yet. */
+  const draftState = useDraft<Record<string, string>>('shellcrash-core', {})
+  const draftValue = draftState.value
+  const draftSavedAt = draftState.savedAt
+  const clearDraft = draftState.clear
 
   const loaded = ref(false)
   const error = ref<Error | null>(null)
@@ -555,11 +695,37 @@
   const saving = ref(false)
   const restarting = ref(false)
   const loadingLog = ref(false)
-  const notice = ref('')
-  const restartPending = ref(false)
+  const pendingRestart = ref<PendingRestart | null>(readPending())
   const logFile = ref('')
+  const task = ref<RunningTask | null>(null)
+  const subUpdateBusy = ref(false)
+  const subUpdateRunning = ref(false)
+  const subUpdateLines = ref<string[]>([])
+  /**
+   * Bumped whenever the draft is reset. The number input keeps its own value
+   * while it has focus, so it is remounted to show the restored value.
+   */
+  const draftEpoch = ref(0)
 
   const refreshSignal = useRefreshSignal()
+
+  /** A restart is needed before the saved changes take effect. */
+  const restartNeeded = computed(() => pendingRestart.value !== null)
+  /** The override files that were toggled since the last restart. */
+  const touchedOverrides = computed(() => pendingRestart.value?.files ?? [])
+
+  watch(
+    pendingRestart,
+    (value) => {
+      try {
+        if (value) localStorage.setItem(PENDING_KEY, JSON.stringify(value))
+        else localStorage.removeItem(PENDING_KEY)
+      } catch {
+        // A full storage must never break the page.
+      }
+    },
+    { deep: true }
+  )
 
   /* ---------------------------------------------------------------- data */
 
@@ -635,13 +801,11 @@
     { key: 'hostdir', label: '面板地址', type: 'readonly', hint: '外部控制面板的监听路径' }
   ])
 
-  const changes = computed<Record<string, string>>(() => {
-    const out: Record<string, string> = {}
-    for (const [key, value] of Object.entries(draft.value)) {
-      if (baseline.value[key] !== value) out[key] = value
-    }
-    return out
-  })
+  /** The pending edits. The draft only holds the keys the user changed. */
+  const pendingCount = computed(() => Object.keys(draftValue.value).length)
+  const draftDirty = computed(() => pendingCount.value > 0)
+
+  useUnsavedGuard(draftDirty, 'ShellCrash 核心设置还有未保存的修改')
 
   const modeLabel = computed(() => {
     const mode = status.value.redir_mod
@@ -655,8 +819,15 @@
   const statusMeta = computed(() => {
     if (!status.value.running) return '核心进程未运行'
     const parts = [`PID ${status.value.pid}`]
-    if (status.value.service_status && status.value.service_status !== 'unknown') {
-      parts.push(`服务 ${status.value.service_status}`)
+    const service = status.value.service_status
+    if (service && service !== 'unknown' && service !== 'inactive') {
+      parts.push(`服务 ${service}`)
+    } else if (service === 'inactive') {
+      // The init script runs in conservative mode: the core is started by
+      // ShellCrash's own start script, so the procd instance stays inactive
+      // even while the core is up. Saying that is more useful than showing
+      // a bare "inactive".
+      parts.push('由 ShellCrash 直接拉起')
     }
     return parts.join(' · ')
   })
@@ -666,42 +837,54 @@
     const parts: string[] = []
     if (subs.value.url_count) parts.push(`${subs.value.url_count} 个订阅链接`)
     if (subs.value.provider_count) parts.push(`${subs.value.provider_count} 个机场提供方`)
+    parts.push(`${subs.value.node_count} 个节点`)
     return parts.join(' · ')
   })
 
-  const portList = computed(() => {
+  /** The port the running configuration uses for every default port. */
+  const configuredPorts = computed<Record<string, number>>(() => {
     const ports = status.value.ports
-    return [
-      { key: 'mixed', label: 'mixed', value: ports.mixed, hint: '混合端口（HTTP + SOCKS）' },
-      { key: 'redir', label: 'redir', value: ports.redir, hint: '透明代理（TCP 重定向）' },
-      { key: 'tproxy', label: 'tproxy', value: ports.tproxy, hint: '透明代理（UDP）' },
-      { key: 'socks', label: 'socks', value: ports.socks, hint: 'SOCKS 监听端口' },
-      { key: 'dns', label: 'dns', value: ports.dns, hint: '核心 DNS 监听端口' },
-      { key: 'controller', label: 'controller', value: ports.controller, hint: '控制面板 API 端口' }
-    ]
+    return {
+      '7890': ports.mixed,
+      '7892': ports.redir,
+      '7893': ports.tproxy,
+      '1053': ports.dns,
+      '9999': ports.controller
+    }
   })
 
   async function load(): Promise<void> {
-    const [nextStatus, nextConfig, nextOverrides, nextSubs, nextCrash] = await Promise.all([
-      fetchShellCrashStatus(),
-      fetchShellCrashConfig(),
-      fetchShellCrashOverrides(),
-      fetchShellCrashSubs(),
-      fetchShellCrashCrash()
-    ])
+    const [nextStatus, nextConfig, nextOverrides, nextSubs, nextCrash, nextPorts, nextHeal] =
+      await Promise.all([
+        fetchShellCrashStatus(),
+        fetchShellCrashConfig(),
+        fetchShellCrashOverrides(),
+        fetchShellCrashSubs(),
+        fetchShellCrashCrash(),
+        fetchShellCrashPorts(),
+        fetchShellCrashHeal()
+      ])
 
     status.value = nextStatus
-    config.value = nextConfig
     overrides.value = nextOverrides
     subs.value = nextSubs
     crash.value = nextCrash
+    portEntries.value = nextPorts.ports
+    heal.value = nextHeal
 
     const values: Record<string, string> = { ...nextConfig.values }
     // The global override switch is derived from the cfg, not from the
     // override list, so it is kept in sync with the file.
     values.disoverride = nextOverrides.global_disabled ? '1' : '0'
-    baseline.value = { ...values }
-    draft.value = { ...values }
+    baseline.value = values
+
+    // A core that was started after the change already runs the new
+    // configuration, so the pending restart notice can go.
+    if (pendingRestart.value && nextCrash.start_time) {
+      if (nextCrash.start_time * 1000 > pendingRestart.value.at) {
+        pendingRestart.value = null
+      }
+    }
   }
 
   async function loadLog(): Promise<void> {
@@ -766,12 +949,59 @@
     )}:${pad(date.getMinutes())}`
   }
 
-  function isChanged(key: string): boolean {
-    return baseline.value[key] !== draft.value[key]
+  /** The value the form shows: the pending edit, otherwise the server value. */
+  function formValue(key: string): string {
+    const pending = draftValue.value[key]
+    if (pending !== undefined) return pending
+    return baseline.value[key] ?? ''
   }
 
+  function isPending(key: string): boolean {
+    return draftValue.value[key] !== undefined
+  }
+
+  /**
+   * Records one edit. A value that equals the one on the router removes the
+   * key again, so the draft only holds the real differences.
+   */
   function setDraft(key: string, value: string): void {
-    draft.value = { ...draft.value, [key]: value }
+    const next = { ...draftValue.value }
+    if ((baseline.value[key] ?? '') === value) delete next[key]
+    else next[key] = value
+    draftValue.value = next
+  }
+
+  function isOn(value: string): boolean {
+    const normalized = (value || '').toUpperCase()
+    return normalized === 'ON' || normalized === '1' || normalized === 'TRUE'
+  }
+
+  function labelOfKey(key: string): string {
+    const item = settingItems.value.find((entry) => entry.key === key)
+    return item ? `${item.label}（${key}）` : key
+  }
+
+  function sourceLabel(sub: ShellCrashSubscription): string {
+    const parts: string[] = []
+    if (sub.source) parts.push(sub.source)
+    if (sub.url_id) parts.push(`ID ${sub.url_id}`)
+    return parts.join(' · ') || '—'
+  }
+
+  function overrideStateLabel(row: ShellCrashOverrideEntry): string {
+    if (row.state === 'active') {
+      return touchedOverrides.value.includes(row.name) && restartNeeded.value ? '待重启生效' : '生效中'
+    }
+    if (row.state === 'disabled') return '已停用'
+    return '文件不存在'
+  }
+
+  function overrideStateTone(row: ShellCrashOverrideEntry): 'success' | 'warning' | 'neutral' {
+    if (row.state === 'active') {
+      return touchedOverrides.value.includes(row.name) && restartNeeded.value ? 'warning' : 'success'
+    }
+    if (row.state === 'disabled') return 'neutral'
+    return 'warning'
   }
 
   async function confirm(
@@ -792,17 +1022,87 @@
     }
   }
 
+  function delay(ms: number): Promise<void> {
+    return new Promise((resolve) => window.setTimeout(resolve, ms))
+  }
+
+  /* --------------------------------------------------------------- tasks */
+
+  let ticker: number | null = null
+  let statusTicker: number | null = null
+
+  function startTicker(): void {
+    stopTicker()
+    ticker = window.setInterval(() => {
+      if (!task.value) return
+      const elapsed = Math.floor((Date.now() - task.value.startedAt * 1000) / 1000)
+      task.value = {
+        ...task.value,
+        elapsed,
+        percent: Math.min(96, Math.round((elapsed / 90) * 100))
+      }
+    }, 1000)
+    // While the router works the status card would show a stale state - a
+    // restart looked like "not running" until somebody hit refresh. The
+    // status is therefore pulled in the background every few seconds.
+    statusTicker = window.setInterval(() => {
+      if (!task.value) return
+      void pullStatus()
+    }, 3000)
+  }
+
+  function stopTicker(): void {
+    if (ticker !== null) {
+      window.clearInterval(ticker)
+      ticker = null
+    }
+    if (statusTicker !== null) {
+      window.clearInterval(statusTicker)
+      statusTicker = null
+    }
+  }
+
+  /** Pulls the status without touching the rest of the page. */
+  async function pullStatus(): Promise<void> {
+    try {
+      status.value = await fetchShellCrashStatus()
+    } catch {
+      // The router is busy while it rebuilds the configuration, the next
+      // tick tries again.
+    }
+  }
+
+  /**
+   * Keeps the status card in sync with the router after an action. The core
+   * can need a minute to come up, so the loop keeps running in the
+   * background even when the action itself was already reported as done.
+   */
+  function keepStatusFresh(expectRunning: boolean): void {
+    let rounds = 0
+    const tick = async (): Promise<void> => {
+      rounds += 1
+      if (rounds > 60) return
+      await delay(3000)
+      await pullStatus()
+      if (status.value.running === expectRunning) return
+      void tick()
+    }
+    void tick()
+  }
+
+  onBeforeUnmount(() => stopTicker())
+
   /* -------------------------------------------------------------- actions */
 
   async function saveConfig(): Promise<void> {
-    const pending = { ...changes.value }
+    const pending = { ...draftValue.value }
     if (!Object.keys(pending).length) {
       ElMessage.info('没有需要保存的改动')
       return
     }
 
     const summary = Object.entries(pending)
-      .map(([key, value]) => `${key} → ${value}`)
+      .map(([key, value]) => `${labelOfKey(key)} → ${value}`)
       .join('，')
 
     const ok = await confirm(
@@ -815,10 +1115,20 @@
     saving.value = true
     try {
       const result = await writeShellCrashConfig(pending)
+      draftValue.value = {}
+      draftEpoch.value += 1
+      await nextTick()
+      clearDraft()
       await load()
-      restartPending.value = true
-      notice.value = '配置已保存，需重启 ShellCrash 生效'
-      ElMessage.success(result.message || '配置已保存，需重启 ShellCrash 生效')
+      pendingRestart.value = { at: Date.now(), files: touchedOverrides.value }
+      // The router reports what it wrote as "key=value" pairs, so the toast
+      // can name the fields instead of only counting them.
+      const written = (result?.changed ?? []).map((entry) => {
+        const [key, ...rest] = entry.split('=')
+        return `${labelOfKey(key)} → ${rest.join('=')}`
+      })
+      const detail = written.length ? `已写入 ${written.join('，')}；` : ''
+      ElMessage.success(`${detail}${result?.message || '配置已保存，重启 ShellCrash 后生效'}`)
     } catch (err) {
       ElMessage.error(`保存配置失败：${messageOf(err)}`)
     } finally {
@@ -826,11 +1136,57 @@
     }
   }
 
-  function discardChanges(): void {
-    draft.value = { ...baseline.value }
-    notice.value = ''
-    restartPending.value = false
-    ElMessage.info('已放弃未保存的改动')
+  async function discardChanges(): Promise<void> {
+    draftValue.value = {}
+    draftEpoch.value += 1
+    await nextTick()
+    clearDraft()
+    ElMessage.info('已放弃未保存的修改，表单恢复为路由器上的现值')
+  }
+
+  /**
+   * Waits until the router reports the service action as finished. The CGI
+   * writes "<action> <rc> <timestamp>" into its state file when the action
+   * is over, so the browser can tell "still running" from "done".
+   * The return value is the exit code of the action, or null when the router
+   * never reported back.
+   */
+  async function waitForServiceAction(action: string, since: number): Promise<number | null> {
+    for (let round = 0; round < 90; round += 1) {
+      await delay(2000)
+      try {
+        const next = await fetchShellCrashStatus()
+        status.value = next
+        const parts = (next.last_action || '').split(/\s+/)
+        if (parts.length >= 3 && parts[0] === action) {
+          const stamp = Number(parts[2])
+          if (Number.isFinite(stamp) && stamp >= since - 10) {
+            const rc = Number(parts[1])
+            return Number.isFinite(rc) ? rc : 0
+          }
+        }
+      } catch {
+        // The router is busy while it rebuilds the configuration, the next
+        // round tries again.
+      }
+    }
+    return null
+  }
+
+  /**
+   * The router reports the action as done when the start/stop script
+   * returns, which is before the new core is up. The console waits for the
+   * state itself, so a restart never leaves the page showing "not running"
+   * until somebody hits refresh.
+   */
+  async function waitForExpectedState(action: 'start' | 'stop' | 'restart'): Promise<boolean> {
+    const expectRunning = action !== 'stop'
+    for (let round = 0; round < 60; round += 1) {
+      if (status.value.running === expectRunning) return true
+      await delay(2000)
+      await pullStatus()
+    }
+    return status.value.running === expectRunning
   }
 
   async function runService(action: 'start' | 'stop' | 'restart', question: string): Promise<void> {
@@ -839,38 +1195,66 @@
 
     busy.value = true
     if (action === 'restart') restarting.value = true
+    const startedAt = Math.floor(Date.now() / 1000)
+    task.value = {
+      title: action === 'stop' ? '正在停止 ShellCrash' : action === 'start' ? '正在启动 ShellCrash' : '正在重启 ShellCrash',
+      hint: '核心会重新拉取订阅并重建防火墙规则，完成后本页状态会自动刷新',
+      startedAt,
+      elapsed: 0,
+      percent: 2
+    }
+    startTicker()
+
     try {
       await runShellCrashService(action)
       ElMessage.success('操作已提交，路由器正在执行')
-      await pollStatus()
+      const rc = await waitForServiceAction(action, startedAt)
+      const settled = await waitForExpectedState(action)
+      await refresh()
+      if (rc === null) {
+        ElMessage.warning('路由器没有回报完成结果，请看下面的运行状态')
+      } else if (rc !== 0) {
+        ElMessage.error(
+          action === 'stop'
+            ? '停止失败，核心进程还在，请看下面的运行状态'
+            : '操作失败，核心没有正常启动，请看下面的运行状态'
+        )
+      } else if (!settled) {
+        // The core is still coming up. The page keeps polling in the
+        // background, so the card catches up on its own.
+        keepStatusFresh(action !== 'stop')
+        ElMessage.warning(
+          action === 'stop'
+            ? '核心进程还在运行，页面会继续跟踪'
+            : '核心还没有起来，页面会继续跟踪，请看下面的运行状态'
+        )
+      } else {
+        if (action === 'restart') {
+          pendingRestart.value = null
+        }
+        ElMessage.success(
+          action === 'stop'
+            ? 'ShellCrash 已停止'
+            : action === 'start'
+              ? 'ShellCrash 已启动'
+              : 'ShellCrash 已重启，配置已生效'
+        )
+      }
     } catch (err) {
       ElMessage.error(`操作失败：${messageOf(err)}`)
     } finally {
       busy.value = false
       restarting.value = false
+      task.value = null
+      stopTicker()
     }
   }
 
   async function restartNow(): Promise<void> {
-    const ok = await confirm(
-      '立即重启 ShellCrash？重启期间代理会短暂中断，核心会重新拉取订阅并重建规则。',
-      '确认重启 ShellCrash'
+    await runService(
+      'restart',
+      '立即重启 ShellCrash？重启期间代理会短暂中断，核心会重新拉取订阅并重建规则。'
     )
-    if (!ok) return
-
-    restarting.value = true
-    try {
-      await runShellCrashService('restart')
-      notice.value = 'ShellCrash 正在重启，请稍候'
-      ElMessage.success('重启已提交，路由器正在执行')
-      await pollStatus()
-      restartPending.value = false
-      notice.value = 'ShellCrash 已重启，配置已生效'
-    } catch (err) {
-      ElMessage.error(`重启失败：${messageOf(err)}`)
-    } finally {
-      restarting.value = false
-    }
   }
 
   async function toggleAutostart(enable: boolean): Promise<void> {
@@ -921,9 +1305,11 @@
         enable
       )
       await load()
-      restartPending.value = true
-      notice.value = result.message || '覆写状态已更新，需重启 ShellCrash 生效'
-      ElMessage.success('覆写状态已更新，需重启 ShellCrash 生效')
+      pendingRestart.value = {
+        at: Date.now(),
+        files: Array.from(new Set([...touchedOverrides.value, row.name]))
+      }
+      ElMessage.success(result.message || '覆写状态已更新，重启 ShellCrash 后生效')
     } catch (err) {
       ElMessage.error(`修改覆写状态失败：${messageOf(err)}`)
     } finally {
@@ -931,21 +1317,130 @@
     }
   }
 
-  /** Polls the status while the router is working on a service action. */
-  async function pollStatus(): Promise<void> {
-    for (let round = 0; round < 15; round += 1) {
-      await new Promise((resolve) => window.setTimeout(resolve, 2000))
-      try {
-        status.value = await fetchShellCrashStatus()
-        crash.value = await fetchShellCrashCrash()
-      } catch {
-        // the router may be busy, the next round tries again
+  /**
+   * Runs the hot update of the online subscription. The task lives on the
+   * router, so the browser only submits it and then polls the state.
+   */
+  async function updateSubscription(): Promise<void> {
+    if (!status.value.running) {
+      ElMessage.warning('核心没有运行，热更新无法把新配置推送给核心')
+      return
+    }
+    const ok = await confirm(
+      '立即更新订阅？会重新下载订阅、重建运行配置并推送给正在运行的核心。' +
+        '过程中代理不会中断，但机场的订阅转换服务不稳定时可能失败。',
+      '确认更新订阅'
+    )
+    if (!ok) return
+
+    subUpdateBusy.value = true
+    subUpdateRunning.value = true
+    subUpdateLines.value = []
+    const startedAt = Math.floor(Date.now() / 1000)
+    task.value = {
+      title: '正在更新订阅',
+      hint: '正在重新下载订阅并把新配置推送给核心',
+      startedAt,
+      elapsed: 0,
+      percent: 2
+    }
+    startTicker()
+
+    try {
+      await startShellCrashSubUpdate()
+      ElMessage.success('订阅更新已提交，路由器正在执行')
+
+      let finished = false
+      for (let round = 0; round < 90 && !finished; round += 1) {
+        await delay(2000)
+        try {
+          const state = await fetchShellCrashSubUpdate()
+          subUpdateLines.value = state.lines ?? []
+          if (state.done) {
+            finished = true
+            if (state.success) {
+              await load()
+              ElMessage.success('订阅已更新，节点已经重新加载')
+            } else {
+              ElMessage.error(`订阅更新失败（退出码 ${state.rc ?? 0}），下面是任务日志`)
+            }
+          }
+        } catch {
+          // The router is busy downloading, the next round tries again.
+        }
       }
+      if (!finished) {
+        ElMessage.warning('订阅更新还没有结束，路由器可能还在下载，请稍后刷新查看')
+      }
+    } catch (err) {
+      ElMessage.error(`订阅更新失败：${messageOf(err)}`)
+    } finally {
+      subUpdateBusy.value = false
+      subUpdateRunning.value = false
+      task.value = null
+      stopTicker()
     }
   }
 </script>
 
 <style scoped>
+  /* Element Plus 给相邻按钮加了 12px 左边距，和外层 flex 的 gap 叠加后
+     同一行的按钮会被拉到 20px 间距；这里把间距统一交回给 gap 控制。 */
+  .el-button + .el-button {
+    margin-left: 0;
+  }
+
+  .task-banner {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    padding: 12px 16px;
+    margin-bottom: 12px;
+    background: var(--brand-soft);
+    border: 1px solid color-mix(in srgb, var(--brand) 26%, transparent);
+    border-radius: var(--radius);
+  }
+
+  .task-head {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    min-width: 220px;
+  }
+
+  .task-title {
+    color: var(--brand-text);
+    font-size: var(--text-sm);
+    font-weight: 600;
+  }
+
+  .task-hint {
+    color: var(--text-muted);
+    font-size: 11.5px;
+  }
+
+  .task-track {
+    flex: 1 1 auto;
+    height: 6px;
+    overflow: hidden;
+    background: var(--surface-2);
+    border-radius: 999px;
+  }
+
+  .task-fill {
+    display: block;
+    height: 100%;
+    background: var(--brand);
+    border-radius: inherit;
+    transition: width 0.4s ease;
+  }
+
+  .task-elapsed {
+    flex-shrink: 0;
+    color: var(--text-secondary);
+    font-size: 12px;
+  }
+
   .service-row {
     display: flex;
     align-items: center;
@@ -967,6 +1462,12 @@
     padding: 8px 12px;
     background: var(--surface-2);
     border-radius: var(--radius);
+  }
+
+  .switch-side {
+    display: flex;
+    align-items: center;
+    gap: 10px;
   }
 
   .switch-copy {
@@ -1057,39 +1558,6 @@
     font-size: 12.5px;
   }
 
-  .port-grid {
-    display: grid;
-    grid-template-columns: repeat(6, minmax(0, 1fr));
-    gap: var(--space-3);
-  }
-
-  .port-cell {
-    display: flex;
-    flex-direction: column;
-    gap: 3px;
-    padding: 10px 12px;
-    background: var(--surface-2);
-    border-radius: var(--radius);
-  }
-
-  .port-name {
-    color: var(--text-muted);
-    font-size: 11px;
-    font-family: var(--font-mono);
-  }
-
-  .port-value {
-    color: var(--text);
-    font-size: var(--text-lg);
-    font-weight: 600;
-  }
-
-  .port-hint {
-    color: var(--text-faint);
-    font-size: 10.5px;
-    line-height: 1.4;
-  }
-
   .table-primary {
     color: var(--text);
     font-size: var(--text-sm);
@@ -1109,9 +1577,20 @@
     -webkit-box-orient: vertical;
   }
 
+  .table-sub-tight {
+    color: var(--text-faint);
+    font-size: 11px;
+  }
+
   .table-mono {
     color: var(--text-secondary);
     font-size: 12px;
+  }
+
+  .sub-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+    gap: var(--space-3);
   }
 
   .provider-list {
@@ -1126,28 +1605,37 @@
     font-size: 11.5px;
   }
 
-  .provider-row {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
+  .provider-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
     gap: var(--space-3);
-    padding: 7px 12px;
-    background: var(--surface-2);
-    border-radius: var(--radius);
   }
 
-  .provider-row + .provider-row {
-    margin-top: 6px;
+  .sub-summary {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 12px 20px;
+    margin-top: var(--space-4);
+    padding-top: var(--space-3);
+    border-top: 1px solid var(--border);
   }
 
-  .provider-name {
+  .sub-summary dt {
+    margin: 0 0 2px;
+    color: var(--text-muted);
+    font-size: var(--text-xs);
+  }
+
+  .sub-summary dd {
+    margin: 0;
     color: var(--text);
     font-size: var(--text-sm);
+    font-weight: 500;
   }
 
-  .provider-host {
+  .muted {
     color: var(--text-muted);
-    font-size: 11.5px;
+    font-weight: 400;
   }
 
   .override-global {
@@ -1216,6 +1704,12 @@
     width: 190px;
   }
 
+  /* 卡片头部的下拉和按钮是同一档高度（small = 30px），否则两者在
+     同一行里会一高一矮。 */
+  .log-select :deep(.el-select__wrapper) {
+    min-height: 30px;
+  }
+
   .alert-row {
     display: flex;
     align-items: center;
@@ -1281,12 +1775,6 @@
     word-break: break-all;
   }
 
-  @media (max-width: 1180px) {
-    .port-grid {
-      grid-template-columns: repeat(3, minmax(0, 1fr));
-    }
-  }
-
   @media (max-width: 900px) {
     .crash-grid {
       grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -1294,10 +1782,6 @@
   }
 
   @media (max-width: 640px) {
-    .port-grid {
-      grid-template-columns: repeat(2, minmax(0, 1fr));
-    }
-
     .crash-grid {
       grid-template-columns: minmax(0, 1fr);
     }
@@ -1324,8 +1808,23 @@
       width: 100%;
     }
 
+    .service-switch,
+    .override-global {
+      justify-content: space-between;
+    }
+
     .log-select {
       width: 100%;
+    }
+
+    .task-banner {
+      flex-direction: column;
+      align-items: stretch;
+      gap: 8px;
+    }
+
+    .sub-summary {
+      grid-template-columns: minmax(0, 1fr);
     }
   }
 </style>

@@ -47,6 +47,24 @@
       </div>
     </dl>
 
+    <div class="zone-traffic">
+      <div class="zone-traffic-item">
+        <span class="zone-traffic-label">当前连接</span>
+        <span class="zone-traffic-value num">{{ traffic ? traffic.connections : '—' }}</span>
+      </div>
+      <div class="zone-traffic-item">
+        <span class="zone-traffic-label">入站连接</span>
+        <span class="zone-traffic-value num">{{ traffic ? traffic.incoming : '—' }}</span>
+      </div>
+      <div class="zone-traffic-item">
+        <span class="zone-traffic-label">流量</span>
+        <span class="zone-traffic-value num">{{ trafficBytes }}</span>
+      </div>
+      <p class="zone-traffic-note">
+        连接数按内核连接跟踪表统计：源地址落在区域网段内记为出站连接，目的地址落在区域内记为入站连接。
+      </p>
+    </div>
+
     <footer class="zone-foot">
       <StatusBadge
         v-if="zone.mtuFix"
@@ -76,12 +94,15 @@
   import { computed } from 'vue'
   import { Pencil, ShieldCheck, Trash2 } from 'lucide-vue-next'
   import StatusBadge from '@/components/StatusBadge.vue'
-  import { familyText, policyTone, type FwZone } from '@/api/firewallConfig'
+  import { familyText, policyTone, type FwZone, type FwZoneTraffic } from '@/api/firewallConfig'
+  import { formatBytes } from '@/utils/format'
 
   defineOptions({ name: 'FwZoneCard' })
 
   const props = defineProps<{
     zone: FwZone
+    /** The current traffic of the zone (from the connection tracking table). */
+    traffic?: FwZoneTraffic
     disabled?: boolean
   }>()
 
@@ -95,6 +116,11 @@
     { key: 'output', label: 'output（出站）', value: props.zone.output },
     { key: 'forward', label: 'forward（转发）', value: props.zone.forward }
   ])
+
+  const trafficBytes = computed(() => {
+    const bytes = props.traffic?.bytes ?? 0
+    return bytes ? formatBytes(bytes) : '—'
+  })
 </script>
 
 <style scoped>
@@ -211,6 +237,41 @@
   .zone-empty {
     color: var(--text-faint);
     font-size: 11.5px;
+  }
+
+  .zone-traffic {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 8px;
+    margin-top: 12px;
+    padding-top: 12px;
+    border-top: 1px solid var(--border);
+  }
+
+  .zone-traffic-item {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+    min-width: 0;
+  }
+
+  .zone-traffic-label {
+    color: var(--text-muted);
+    font-size: 11px;
+  }
+
+  .zone-traffic-value {
+    color: var(--text);
+    font-size: var(--text-sm);
+    font-weight: 500;
+  }
+
+  .zone-traffic-note {
+    grid-column: span 3;
+    margin: 0;
+    color: var(--text-faint);
+    font-size: 11px;
+    line-height: 1.6;
   }
 
   .zone-foot {

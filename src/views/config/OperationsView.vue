@@ -4,7 +4,7 @@
       <el-button :icon="RefreshCw" :loading="refreshing" @click="refresh">刷新</el-button>
     </PageHeader>
 
-    <el-alert v-if="error" type="error" :title="error.message" :closable="false" show-icon />
+    <el-alert v-if="error" type="error" :title="error?.message || '操作失败'" :closable="false" show-icon />
     <el-alert
       v-if="sectionErrors.system"
       type="warning"
@@ -410,6 +410,15 @@
 </script>
 
 <style scoped>
+  /* The service and backup tables live in shared components: their buttons
+     still carry Element Plus' 12px sibling margin, which stacks on top of
+     the 6px gap of the row. Cancel it here so every row keeps one spacing. */
+  :deep(.ops-actions .el-button + .el-button),
+  :deep(.ops-action-buttons .el-button + .el-button),
+  :deep(.ops-mobile-actions .el-button + .el-button) {
+    margin-left: 0;
+  }
+
   .ops-badge {
     display: inline-flex;
     align-items: center;

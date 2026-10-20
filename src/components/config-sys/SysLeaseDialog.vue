@@ -102,9 +102,9 @@
       { leases: props.leases, pools: props.pools, editingSection: props.lease?.section }
     )
 
-    errors.name = result.field === 'name' ? result.message : ''
-    errors.mac = result.field === 'mac' ? result.message : ''
-    errors.ip = result.field === 'ip' ? result.message : ''
+    errors.name = result.field === 'name' ? result?.message : ''
+    errors.mac = result.field === 'mac' ? result?.message : ''
+    errors.ip = result.field === 'ip' ? result?.message : ''
 
     if (!result.ok) return
 

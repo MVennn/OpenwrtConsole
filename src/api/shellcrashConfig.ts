@@ -24,6 +24,10 @@ export type ShellCrashAction =
   | 'subs'
   | 'log'
   | 'crash'
+  | 'ports'
+  | 'heal'
+  | 'sub-update'
+  | 'sub-update-state'
 
 /** The service actions the CGI accepts. */
 export type ShellCrashServiceAction = 'start' | 'stop' | 'restart' | 'enable' | 'disable'
@@ -108,15 +112,30 @@ export interface ShellCrashConfigResult {
   secret_set: boolean
 }
 
+/**
+ * The state of one override file.
+ *
+ * `active` means `xxx.yaml` exists and is merged into the runtime
+ * configuration, `disabled` means only `xxx.yaml.bak` is there (the file was
+ * moved aside and is not merged), `missing` means neither exists.
+ */
+export type ShellCrashOverrideState = 'active' | 'disabled' | 'missing'
+
 export interface ShellCrashOverrideEntry {
   name: string
   /** The file is merged into the runtime configuration. */
   enabled: boolean
+  /** Whether the file is merged, moved aside or absent. */
+  state: ShellCrashOverrideState
   size: number
   mtime: string
   mtime_epoch: number
+  /** The first comment line of the file: what it is for. */
+  summary: string
   /** The header comment of the file. */
   description: string
+  /** The number of lines of the file. */
+  lines: number
 }
 
 export interface ShellCrashOverridesResult {
@@ -129,15 +148,26 @@ export interface ShellCrashOverridesResult {
 export interface ShellCrashSubscription {
   index: number
   alias: string
+  /** The name of the update source in the servers list. */
+  source: string
+  /** The base url of the update source. */
+  source_url: string
   url_id: string
   host: string
   masked: string
+  /** The link is active in the config (a commented out link is not). */
+  enabled: boolean
+  /** The nodes the subscription adds to the running configuration. */
+  entries: number
 }
 
 export interface ShellCrashProvider {
   name: string
   host: string
   masked: string
+  /** The nodes of the pool the provider is merged into. */
+  entries: number
+  enabled: boolean
 }
 
 export interface ShellCrashSubsResult {
@@ -147,7 +177,13 @@ export interface ShellCrashSubsResult {
   provider_count: number
   url_id: string
   update_source: string
+  /** The base url of the update source. */
+  update_url: string
   alias: string
+  /** The nodes in the running configuration. */
+  node_count: number
+  /** The nodes the user added by hand. */
+  custom_count: number
   subs: ShellCrashSubscription[]
   providers: ShellCrashProvider[]
 }
@@ -181,6 +217,58 @@ export interface ShellCrashWriteResult {
   ok: boolean
   changed?: string[]
   backup?: string
+  message?: string
+}
+
+/** One of the five ports the console watches. */
+export interface ShellCrashPortEntry {
+  port: number
+  /** Something listens on the port. */
+  listening: boolean
+  /** The pid of the process that owns the port, 0 when it is free. */
+  pid: number
+  /** The name of the process that owns the port. */
+  process: string
+}
+
+export interface ShellCrashPortsResult {
+  ok: boolean
+  ports: ShellCrashPortEntry[]
+}
+
+/** One entry of the self healing history. */
+export interface ShellCrashHealEntry {
+  /** Epoch seconds of the action. */
+  time: number
+  level: 'info' | 'warning' | 'error' | 'success'
+  message: string
+  /** The file the information comes from. */
+  source: string
+}
+
+export interface ShellCrashHealResult {
+  ok: boolean
+  entries: ShellCrashHealEntry[]
+}
+
+export interface ShellCrashSubUpdateResult {
+  ok: boolean
+  /** The task was handed over to the router. */
+  started?: boolean
+  /** The task is still running. */
+  running?: boolean
+  /** The task finished. */
+  done?: boolean
+  /** The task finished without an error. */
+  success?: boolean
+  /** The exit code of the task. */
+  rc?: number
+  /** Epoch seconds when the task was started. */
+  started_at?: number
+  /** Epoch seconds when the task finished. */
+  finished_at?: number
+  /** The tail of the task log. */
+  lines?: string[]
   message?: string
 }
 
@@ -259,13 +347,42 @@ export async function runShellCrashAction<T = unknown>(
   }
 
   const text = await response.text()
-  let result: { error?: string; ok?: boolean } | null = null
-  if (text) {
-    try {
-      result = JSON.parse(text) as { error?: string; ok?: boolean }
-    } catch {
-      result = null
-    }
+  if (!text.trim()) {
+    // An empty body usually means the CGI was killed halfway (uhttpd kills a
+    // script after 30 s). The write may already have happened, so the message
+    // asks for a refresh instead of pretending the operation failed.
+    throw new ShellCrashError(
+      '路由器没有返回内容，请求可能超时。若刚重启过 ShellCrash，请刷新后确认配置是否已写入。',
+      'empty-response'
+    )
+  }
+
+  let result: { error?: string; ok?: boolean }
+  try {
+    result = JSON.parse(text) as { error?: string; ok?: boolean }
+  } catch (err) {
+    // The parser error names the offending position, which is the only way to
+    // tell a truncated body from a body that carries a stray byte.
+    const why = err instanceof Error ? err.message : String(err)
+    const pos = /position (\d+)/.exec(why)
+    const at = pos ? Number(pos[1]) : -1
+    const around =
+      at >= 0 && at < text.length
+        ? `第 ${at} 个字符是 ${JSON.stringify(text[at])}（U+${text
+            .charCodeAt(at)
+            .toString(16)
+            .toUpperCase()
+            .padStart(4, '0')}）`
+        : ''
+    const flat = text.replace(/\s+/g, ' ').trim()
+    const excerpt =
+      flat.length > 160 ? `${flat.slice(0, 80)} … ${flat.slice(-80)}` : flat
+    throw new ShellCrashError(
+      `路由器返回的内容无法解析（${why}${around ? `；${around}` : ''}；共 ${text.length} 字符${
+        excerpt ? `：${excerpt}` : ''
+      }）。` + '请刷新后确认配置是否已写入，再决定是否重试。',
+      'invalid-response'
+    )
   }
 
   if (!response.ok) {
@@ -273,7 +390,7 @@ export async function runShellCrashAction<T = unknown>(
     throw new ShellCrashError(explain(code, `操作失败（HTTP ${response.status}）`), code)
   }
 
-  if (result && result.ok === false) {
+  if (result.ok === false) {
     const code = result.error || 'failed'
     throw new ShellCrashError(explain(code, '操作失败'), code)
   }
@@ -364,4 +481,33 @@ export async function fetchShellCrashLog(file?: string): Promise<ShellCrashLogRe
 export async function fetchShellCrashCrash(): Promise<ShellCrashCrashResult> {
   const data = await runShellCrashAction<ShellCrashCrashResult>('crash')
   return { ...data, guardian_log: data.guardian_log ?? [] }
+}
+
+/**
+ * Who listens on the five ShellCrash ports. The router has no `ss`, so the
+ * CGI parses `netstat -lntp`; a port without an owner is free.
+ */
+export async function fetchShellCrashPorts(): Promise<ShellCrashPortsResult> {
+  const data = await runShellCrashAction<ShellCrashPortsResult>('ports')
+  return { ...data, ports: data.ports ?? [] }
+}
+
+/** The self healing history of the guardian and of the legacy watchdog. */
+export async function fetchShellCrashHeal(): Promise<ShellCrashHealResult> {
+  const data = await runShellCrashAction<ShellCrashHealResult>('heal')
+  return { ...data, entries: data.entries ?? [] }
+}
+
+/**
+ * Starts the hot update of the online subscription. It runs on the router
+ * and takes a while, so the browser polls {@link fetchShellCrashSubUpdate}.
+ */
+export async function startShellCrashSubUpdate(): Promise<ShellCrashSubUpdateResult> {
+  return runShellCrashAction<ShellCrashSubUpdateResult>('sub-update', { confirm: 'yes' })
+}
+
+/** The state of the running subscription update. */
+export async function fetchShellCrashSubUpdate(): Promise<ShellCrashSubUpdateResult> {
+  const data = await runShellCrashAction<ShellCrashSubUpdateResult>('sub-update-state')
+  return { ...data, lines: data.lines ?? [] }
 }

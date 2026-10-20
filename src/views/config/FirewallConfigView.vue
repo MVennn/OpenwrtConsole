@@ -3,7 +3,7 @@
     <PageHeader title="防火墙配置" description="安全区域、区域转发、端口转发与出站规则，保存后可一键应用">
       <el-button :icon="RefreshCw" :loading="refreshing" @click="refresh">刷新</el-button>
       <el-button
-        v-if="pending.length || dirty"
+        v-if="hasPending"
         :icon="RotateCcw"
         :loading="discarding"
         @click="discardChanges"
@@ -11,11 +11,13 @@
         放弃修改
       </el-button>
       <el-button type="primary" :icon="Save" :loading="applying" @click="saveAndApply">
-        保存并应用<template v-if="pending.length">（{{ pending.length }}）</template>
+        保存并应用<template v-if="pendingEntries.length">（{{ pendingEntries.length }}）</template>
       </el-button>
     </PageHeader>
 
-    <el-alert v-if="error" type="error" :title="error.message" :closable="false" show-icon />
+    <DraftNotice :dirty="draftDirty" :saved-at="savedAt" @discard="discardChanges" />
+
+    <el-alert v-if="error" type="error" :title="error?.message || '操作失败'" :closable="false" show-icon />
     <el-alert
       v-if="notice"
       type="warning"
@@ -79,7 +81,14 @@
 
       <PanelCard title="安全区域" :subtitle="`${zones.length} 个 zone 段`">
         <template #actions>
-          <el-button size="small" :icon="Plus" :disabled="busy" @click="openZoneDialog()">
+          <el-button
+            link
+            type="primary"
+            size="small"
+            :icon="Plus"
+            :disabled="busy"
+            @click="openZoneDialog()"
+          >
             新增区域
           </el-button>
         </template>
@@ -89,6 +98,7 @@
             v-for="zone in zones"
             :key="zone.id"
             :zone="zone"
+            :traffic="zoneTrafficOf(zone)"
             :disabled="busy"
             @edit="openZoneDialog"
             @remove="removeZone"
@@ -105,7 +115,14 @@
 
       <PanelCard title="区域转发" :subtitle="`${forwardings.length} 条 forwarding 段`">
         <template #actions>
-          <el-button size="small" :icon="Plus" :disabled="busy" @click="openForwardingDialog()">
+          <el-button
+            link
+            type="primary"
+            size="small"
+            :icon="Plus"
+            :disabled="busy"
+            @click="openForwardingDialog()"
+          >
             新增转发
           </el-button>
         </template>
@@ -117,13 +134,19 @@
             <span class="forward-zone">{{ item.dest || '—' }}</span>
             <span class="forward-id mono">{{ item.id }}</span>
             <span class="forward-spacer" />
-            <el-button size="small" :icon="Pencil" :disabled="busy" @click="openForwardingDialog(item)">
+            <el-button
+              link
+              size="small"
+              :icon="Pencil"
+              :disabled="busy"
+              @click="openForwardingDialog(item)"
+            >
               编辑
             </el-button>
             <el-button
+              link
               size="small"
               type="danger"
-              plain
               :icon="Trash2"
               :disabled="busy"
               @click="removeForwarding(item)"
@@ -143,7 +166,14 @@
 
       <PanelCard title="端口转发" :subtitle="`${redirects.length} 条 redirect 段`" flush>
         <template #actions>
-          <el-button size="small" :icon="Plus" :disabled="busy" @click="openRedirectDialog()">
+          <el-button
+            link
+            type="primary"
+            size="small"
+            :icon="Plus"
+            :disabled="busy"
+            @click="openRedirectDialog()"
+          >
             新增端口转发
           </el-button>
         </template>
@@ -176,6 +206,12 @@
                 <span class="mono table-mono">{{ row.target || '—' }}</span>
               </template>
             </el-table-column>
+            <el-table-column label="命中流量" min-width="150">
+              <template #default="{ row }">
+                <span class="num table-mono">{{ redirectTrafficOf(row).connections }} 条连接</span>
+                <div class="table-sub num">{{ redirectTrafficOf(row).bytesText }}</div>
+              </template>
+            </el-table-column>
             <el-table-column label="启用" width="80">
               <template #default="{ row }">
                 <el-switch
@@ -188,20 +224,20 @@
             <el-table-column label="操作" width="150">
               <template #default="{ row }">
                 <div class="row-actions">
-                <el-button link size="small" :icon="Pencil" :disabled="busy" @click="openRedirectDialog(row)">
-                  编辑
-                </el-button>
-                <el-button link
-                  size="small"
-                  type="danger"
-                  plain
-                  :icon="Trash2"
-                  :disabled="busy"
-                  @click="removeRedirect(row)"
-                >
-                  删除
-                </el-button>
-                              </div>
+                  <el-button link size="small" :icon="Pencil" :disabled="busy" @click="openRedirectDialog(row)">
+                    编辑
+                  </el-button>
+                  <el-button
+                    link
+                    size="small"
+                    type="danger"
+                    :icon="Trash2"
+                    :disabled="busy"
+                    @click="removeRedirect(row)"
+                  >
+                    删除
+                  </el-button>
+                </div>
               </template>
             </el-table-column>
           </el-table>
@@ -228,6 +264,10 @@
             <div class="mobile-line">
               <span>协议</span>
               <span>{{ protoText(row.proto) }}</span>
+            </div>
+            <div class="mobile-line">
+              <span>命中流量</span>
+              <span class="num">{{ redirectTrafficOf(row).connections }} 条连接</span>
             </div>
             <div class="mobile-actions">
               <el-button size="small" :icon="Pencil" :disabled="busy" @click="openRedirectDialog(row)">
@@ -257,7 +297,14 @@
 
       <PanelCard title="出站规则" :subtitle="`${rules.length} 条 rule 段`" flush>
         <template #actions>
-          <el-button size="small" :icon="Plus" :disabled="busy" @click="openRuleDialog()">
+          <el-button
+            link
+            type="primary"
+            size="small"
+            :icon="Plus"
+            :disabled="busy"
+            @click="openRuleDialog()"
+          >
             新增出站规则
           </el-button>
         </template>
@@ -310,20 +357,20 @@
             <el-table-column label="操作" width="150">
               <template #default="{ row }">
                 <div class="row-actions">
-                <el-button link size="small" :icon="Pencil" :disabled="busy" @click="openRuleDialog(row)">
-                  编辑
-                </el-button>
-                <el-button link
-                  size="small"
-                  type="danger"
-                  plain
-                  :icon="Trash2"
-                  :disabled="busy"
-                  @click="removeRule(row)"
-                >
-                  删除
-                </el-button>
-                              </div>
+                  <el-button link size="small" :icon="Pencil" :disabled="busy" @click="openRuleDialog(row)">
+                    编辑
+                  </el-button>
+                  <el-button
+                    link
+                    size="small"
+                    type="danger"
+                    :icon="Trash2"
+                    :disabled="busy"
+                    @click="removeRule(row)"
+                  >
+                    删除
+                  </el-button>
+                </div>
               </template>
             </el-table-column>
           </el-table>
@@ -377,13 +424,14 @@
         />
       </PanelCard>
 
-      <PanelCard
-        title="待应用改动"
-        :subtitle="pending.length ? `${pending.length} 项改动尚未提交` : '所有改动都已提交'"
+      <ConfigPendingPanel
+        :entries="pendingEntries"
+        title="待生效的改动"
+        subtitle="暂存在 UCI 暂存区，还没有写入 /etc/config/firewall"
       >
         <template #actions>
           <el-button
-            v-if="pending.length || dirty"
+            v-if="hasPending"
             size="small"
             type="danger"
             plain
@@ -394,34 +442,7 @@
             放弃修改
           </el-button>
         </template>
-
-        <ul v-if="pending.length" class="change-list">
-          <li
-            v-for="(change, index) in pending"
-            :key="`${change.op}-${change.section}-${change.option ?? ''}-${index}`"
-            class="change-item"
-          >
-            <span class="change-op" :class="`op-${change.op}`">{{ opText(change.op) }}</span>
-            <span class="change-text">{{ changeText(change) }}</span>
-          </li>
-        </ul>
-
-        <el-alert
-          v-else-if="dirty"
-          type="warning"
-          show-icon
-          :closable="false"
-          title="有未提交的改动"
-          description="改动已经写入 UCI 暂存区，路由器没有返回明细列表，点击「保存并应用」提交并重载防火墙服务。"
-        />
-
-        <EmptyState
-          v-else
-          :icon="CheckCircle2"
-          title="没有待应用的改动"
-          description="当前页面显示的配置与路由器上生效的配置一致。"
-        />
-      </PanelCard>
+      </ConfigPendingPanel>
 
       <p class="page-note">
         所有修改先写入 UCI 暂存区，确认无误后点击「保存并应用」提交并重载防火墙服务。
@@ -473,7 +494,6 @@
   import {
     ArrowRight,
     ArrowRightLeft,
-    CheckCircle2,
     ListFilter,
     Pencil,
     Plus,
@@ -490,34 +510,48 @@
   import StatCard from '@/components/StatCard.vue'
   import StatusBadge from '@/components/StatusBadge.vue'
   import EmptyState from '@/components/EmptyState.vue'
+  import DraftNotice from '@/components/DraftNotice.vue'
+  import ConfigPendingPanel from '@/components/cfg-pending/ConfigPendingPanel.vue'
   import FwZoneCard from '@/components/config-fw/FwZoneCard.vue'
   import FwZoneDialog from '@/components/config-fw/FwZoneDialog.vue'
   import FwForwardingDialog from '@/components/config-fw/FwForwardingDialog.vue'
   import FwRedirectDialog from '@/components/config-fw/FwRedirectDialog.vue'
   import FwRuleDialog from '@/components/config-fw/FwRuleDialog.vue'
   import FwOffloadCard from '@/components/config-fw/FwOffloadCard.vue'
+  import { useDraft, useUnsavedGuard } from '@/composables/useDraft'
   import { useRefreshSignal } from '@/composables/useRefresh'
-  import type { UciChange } from '@/api/uci'
+  import { uciChanges, uciGet, type UciChange, type UciSection } from '@/api/uci'
+  import {
+    applyEdits,
+    buildPendingEntries,
+    resetDraft,
+    stageEdits,
+    type PendingEntry,
+    type StagedEdit
+  } from '@/api/configPending'
   import {
     applyFirewall,
-    changeText,
     createEmptyFirewallModel,
     deleteForwardingSection,
     deleteRedirectSection,
     deleteRuleSection,
     deleteZoneSection,
+    fetchConntrackEntries,
     fetchFirewallModel,
     fetchNetworkNames,
-    fetchPendingChanges,
+    fetchNetworkSubnets,
     familyText,
     policyTone,
     protoText,
+    redirectTraffic,
     revertFirewall,
     saveForwarding as persistForwarding,
     saveRedirect as persistRedirect,
     saveRule as persistRule,
     saveZone as persistZone,
     setFlowOffloading,
+    zoneTraffic,
+    type FwConntrackEntry,
     type FwForwarding,
     type FwForwardingDraft,
     type FwRedirect,
@@ -526,14 +560,28 @@
     type FwRuleDraft,
     type FwZone,
     type FwZoneDraft,
+    type FwZoneTraffic,
     type FirewallModel
   } from '@/api/firewallConfig'
+  import { formatBytes } from '@/utils/format'
 
   defineOptions({ name: 'FirewallConfigView' })
 
+  interface FwDraft {
+    edits: StagedEdit[]
+  }
+
+  const draft = useDraft<FwDraft>('fw-config', { edits: [] })
+  const savedAt = draft.savedAt
+
   const model = ref<FirewallModel>(createEmptyFirewallModel())
-  const pending = ref<UciChange[]>([])
+  const baseline = ref<Record<string, UciSection>>({})
+  /** True once the committed configuration has been read. */
+  const baselineReady = ref(false)
+  const routerChanges = ref<UciChange[]>([])
   const networkOptions = ref<string[]>([])
+  const conntrackEntries = ref<FwConntrackEntry[]>([])
+  const subnets = ref<Record<string, string>>({})
 
   const loaded = ref(false)
   const error = ref<Error | null>(null)
@@ -542,9 +590,6 @@
   const applying = ref(false)
   const discarding = ref(false)
   const notice = ref('')
-  /** Set as soon as a change was staged, even when the router does not
-   *  return a change list. */
-  const dirty = ref(false)
 
   const refreshSignal = useRefreshSignal()
 
@@ -565,6 +610,8 @@
     item: null
   })
 
+  /* ------------------------------------------------------------ derived */
+
   const defaults = computed(() => model.value.defaults)
   const zones = computed(() => model.value.zones)
   const forwardings = computed(() => model.value.forwardings)
@@ -575,6 +622,71 @@
   const takenZoneNames = computed(() =>
     zones.value.filter((zone) => zone.id !== zoneDialog.zone?.id).map((zone) => zone.name)
   )
+
+  /** The changes the router reports but the console did not stage itself. */
+  const foreignEdits = computed<StagedEdit[]>(() => {
+    const known = new Set(
+      draft.value.value.edits.map((edit) => `${edit.section}.${edit.option ?? ''}`)
+    )
+    const edits: StagedEdit[] = []
+    for (const change of routerChanges.value) {
+      const key = `${change.section}.${change.option ?? ''}`
+      if (known.has(key)) continue
+      known.add(key)
+      if (change.op === 'delete' && !change.option) {
+        edits.push({ op: 'delete', section: change.section, before: '' })
+      } else if (change.op === 'add') {
+        edits.push({ op: 'add', section: change.section, type: change.type, before: '' })
+      } else if (change.option) {
+        edits.push({
+          op: 'set',
+          section: change.section,
+          option: change.option,
+          value: change.value ?? '',
+          before: ''
+        })
+      }
+    }
+    return edits
+  })
+
+  const effectiveValues = computed(() =>
+    applyEdits(baseline.value, [...draft.value.value.edits, ...foreignEdits.value])
+  )
+
+  const pendingEntries = computed<PendingEntry[]>(() =>
+    buildPendingEntries(baseline.value, routerChanges.value, [
+      ...draft.value.value.edits,
+      ...foreignEdits.value
+    ])
+  )
+
+  const hasPending = computed(() => pendingEntries.value.length > 0)
+
+  const draftEdits = computed(() => draft.value.value.edits)
+
+  const draftDirty = computed(() => draft.dirty.value && draftEdits.value.length > 0)
+
+  useUnsavedGuard(draftDirty, '防火墙配置有未保存的修改')
+
+  /** The current traffic of every zone. */
+  const zoneTrafficMap = computed(() => {
+    const map = new Map<string, FwZoneTraffic>()
+    for (const zone of zones.value) {
+      map.set(zone.id, zoneTraffic(zone, subnets.value, conntrackEntries.value))
+    }
+    return map
+  })
+
+  /** The traffic that hit a port forwarding rule. */
+  const redirectTrafficMap = computed(() => {
+    const map = new Map<string, { connections: number; bytes: number }>()
+    for (const redirect of redirects.value) {
+      const traffic = redirectTraffic(redirect, conntrackEntries.value)
+      map.set(redirect.id, { connections: traffic.connections, bytes: traffic.bytes })
+    }
+    return map
+  })
 
   const defaultPolicies = computed(() => [
     { key: 'input', value: defaults.value.input },
@@ -602,14 +714,38 @@
   /* ---------------------------------------------------------------- data */
 
   async function load(): Promise<void> {
-    const [nextModel, nextChanges, nextNetworks] = await Promise.all([
-      fetchFirewallModel(),
-      fetchPendingChanges(),
-      fetchNetworkNames().catch(() => [] as string[])
+    const [values, changes, networks, entries, nextSubnets] = await Promise.all([
+      uciGet('firewall'),
+      uciChanges('firewall'),
+      fetchNetworkNames().catch(() => [] as string[]),
+      fetchConntrackEntries().catch(() => [] as FwConntrackEntry[]),
+      fetchNetworkSubnets().catch(() => ({}) as Record<string, string>)
     ])
-    model.value = nextModel
-    pending.value = nextChanges
-    networkOptions.value = nextNetworks
+
+    // The committed configuration is the base of the change list. It is only
+    // refreshed while the router has no staged changes — otherwise the
+    // staged values would be mistaken for the old ones.
+    if (!baselineReady.value || !changes.length) {
+      baseline.value = values
+      baselineReady.value = true
+    }
+    routerChanges.value = changes
+    networkOptions.value = networks
+    conntrackEntries.value = entries
+    subnets.value = nextSubnets
+
+    // The staging area of the router is empty — the recorded changes were
+    // applied or discarded somewhere else.
+    if (!changes.length && draftEdits.value.length) {
+      setDraftEdits([])
+      await resetDraft(draft)
+    }
+
+    model.value = await fetchFirewallModel(effectiveValues.value)
+  }
+
+  function setDraftEdits(next: StagedEdit[]): void {
+    draft.value.value.edits = next
   }
 
   async function refresh(): Promise<void> {
@@ -661,15 +797,6 @@
     return value ? 'success' : 'neutral'
   }
 
-  function opText(op: UciChange['op']): string {
-    if (op === 'set') return '设置'
-    if (op === 'delete') return '删除'
-    if (op === 'add') return '新增'
-    if (op === 'rename') return '重命名'
-    if (op === 'move') return '移动'
-    return op
-  }
-
   function sourceDetail(row: FwRedirect): string {
     const parts = [row.srcIp, row.srcDport].filter(Boolean)
     return parts.length ? parts.join(':') : '任意'
@@ -703,6 +830,20 @@
     }
   }
 
+  /** The current traffic of a zone. */
+  function zoneTrafficOf(zone: FwZone): FwZoneTraffic | undefined {
+    return zoneTrafficMap.value.get(zone.id)
+  }
+
+  /** The traffic that hit a port forwarding rule. */
+  function redirectTrafficOf(row: FwRedirect): { connections: number; bytesText: string } {
+    const traffic = redirectTrafficMap.value.get(row.id)
+    return {
+      connections: traffic?.connections ?? 0,
+      bytesText: traffic?.bytes ? formatBytes(traffic.bytes) : '暂无流量'
+    }
+  }
+
   /* -------------------------------------------------------------- dialogs */
 
   function openZoneDialog(zone?: FwZone): void {
@@ -725,29 +866,34 @@
     ruleDialog.open = true
   }
 
+  /** Records the staged edits and refreshes the view. */
+  function remember(edits: StagedEdit[]): void {
+    setDraftEdits(stageEdits(baseline.value, draftEdits.value, edits))
+  }
+
   /* ---------------------------------------------------------------- zones */
 
-  async function saveZone(draft: FwZoneDraft): Promise<void> {
-    const original = draft.id ? zones.value.find((zone) => zone.id === draft.id) : undefined
+  async function saveZone(draftData: FwZoneDraft): Promise<void> {
+    const original = draftData.id ? zones.value.find((zone) => zone.id === draftData.id) : undefined
 
     if (
       original &&
-      (original.input !== draft.input ||
-        original.output !== draft.output ||
-        original.forward !== draft.forward)
+      (original.input !== draftData.input ||
+        original.output !== draftData.output ||
+        original.forward !== draftData.forward)
     ) {
       const ok = await confirm(
         `区域 ${original.name} 的策略将从 ${original.input} / ${original.output} / ${original.forward} ` +
-          `改为 ${draft.input} / ${draft.output} / ${draft.forward}。` +
-          '策略改动会重建防火墙规则链，可能立即中断当前连接（包括本管理页面的访问）。是否继续？',
+          `改为 ${draftData.input} / ${draftData.output} / ${draftData.forward}。` +
+          '策略改动会在点击「保存并应用」后重建防火墙规则链，可能中断当前连接（包括本管理页面的访问）。是否继续？',
         '确认修改区域策略'
       )
       if (!ok) return
     }
 
-    if (original && original.name !== draft.name) {
+    if (original && original.name !== draftData.name) {
       const ok = await confirm(
-        `区域名称将从 ${original.name} 改为 ${draft.name}。` +
+        `区域名称将从 ${original.name} 改为 ${draftData.name}。` +
           '引用旧名称的区域转发与端口转发将不再匹配，需要一并更新。是否继续？',
         '确认重命名安全区域'
       )
@@ -756,11 +902,13 @@
 
     busy.value = true
     try {
-      const result = await persistZone(draft)
+      const result = await persistZone(draftData)
       zoneDialog.open = false
+      remember(result.edits)
       await load()
-      dirty.value = true
-      ElMessage.success(result.id === draft.id ? '区域已更新，等待应用' : '区域已新增，等待应用')
+      ElMessage.success(
+        result.id === draftData.id ? '区域已更新，等待应用' : '区域已新增，等待应用'
+      )
       if (result.warning) notice.value = result.warning
     } catch (err) {
       ElMessage.error(`保存区域失败：${messageOf(err)}`)
@@ -776,7 +924,7 @@
     const relatedRedirects = redirects.value.filter((item) => item.src === zone.name)
 
     const ok = await confirm(
-      `删除区域 ${zone.name} 会立即移除它的入站 / 出站 / 转发策略，` +
+      `删除区域 ${zone.name} 会移除它的入站 / 出站 / 转发策略，` +
         '绑定该区域的设备可能失去访问权限，现有连接也可能被中断。' +
         (relatedForwardings.length
           ? `同时会删除 ${relatedForwardings.length} 条相关的区域转发。`
@@ -792,10 +940,13 @@
 
     busy.value = true
     try {
-      for (const item of relatedForwardings) await deleteForwardingSection(item.id)
-      await deleteZoneSection(zone.id)
+      for (const item of relatedForwardings) {
+        const result = await deleteForwardingSection(item.id)
+        remember(result.edits)
+      }
+      const result = await deleteZoneSection(zone.id)
+      remember(result.edits)
       await load()
-      dirty.value = true
       ElMessage.success('区域已删除，等待应用')
     } catch (err) {
       ElMessage.error(`删除区域失败：${messageOf(err)}`)
@@ -806,13 +957,13 @@
 
   /* ----------------------------------------------------------- forwarding */
 
-  async function saveForwarding(draft: FwForwardingDraft): Promise<void> {
+  async function saveForwarding(draftData: FwForwardingDraft): Promise<void> {
     busy.value = true
     try {
-      await persistForwarding(draft)
+      const result = await persistForwarding(draftData)
       forwardingDialog.open = false
+      remember(result.edits)
       await load()
-      dirty.value = true
       ElMessage.success('区域转发已保存，等待应用')
     } catch (err) {
       ElMessage.error(`保存区域转发失败：${messageOf(err)}`)
@@ -831,9 +982,9 @@
 
     busy.value = true
     try {
-      await deleteForwardingSection(item.id)
+      const result = await deleteForwardingSection(item.id)
+      remember(result.edits)
       await load()
-      dirty.value = true
       ElMessage.success('区域转发已删除，等待应用')
     } catch (err) {
       ElMessage.error(`删除区域转发失败：${messageOf(err)}`)
@@ -844,13 +995,13 @@
 
   /* ------------------------------------------------------------- redirect */
 
-  async function saveRedirect(draft: FwRedirectDraft): Promise<void> {
+  async function saveRedirect(draftData: FwRedirectDraft): Promise<void> {
     busy.value = true
     try {
-      await persistRedirect(draft)
+      const result = await persistRedirect(draftData)
       redirectDialog.open = false
+      remember(result.edits)
       await load()
-      dirty.value = true
       ElMessage.success('端口转发已保存，等待应用')
     } catch (err) {
       ElMessage.error(`保存端口转发失败：${messageOf(err)}`)
@@ -862,9 +1013,9 @@
   async function toggleRedirect(row: FwRedirect, enabled: boolean): Promise<void> {
     busy.value = true
     try {
-      await persistRedirect({ ...toRedirectDraft(row), enabled })
+      const result = await persistRedirect({ ...toRedirectDraft(row), enabled })
+      remember(result.edits)
       await load()
-      dirty.value = true
       ElMessage.success(enabled ? '规则已启用，等待应用' : '规则已停用，等待应用')
     } catch (err) {
       ElMessage.error(`更新端口转发失败：${messageOf(err)}`)
@@ -884,9 +1035,9 @@
 
     busy.value = true
     try {
-      await deleteRedirectSection(row.id)
+      const result = await deleteRedirectSection(row.id)
+      remember(result.edits)
       await load()
-      dirty.value = true
       ElMessage.success('端口转发已删除，等待应用')
     } catch (err) {
       ElMessage.error(`删除端口转发失败：${messageOf(err)}`)
@@ -897,13 +1048,13 @@
 
   /* ---------------------------------------------------------------- rules */
 
-  async function saveRule(draft: FwRuleDraft): Promise<void> {
+  async function saveRule(draftData: FwRuleDraft): Promise<void> {
     busy.value = true
     try {
-      await persistRule(draft)
+      const result = await persistRule(draftData)
       ruleDialog.open = false
+      remember(result.edits)
       await load()
-      dirty.value = true
       ElMessage.success('出站规则已保存，等待应用')
     } catch (err) {
       ElMessage.error(`保存出站规则失败：${messageOf(err)}`)
@@ -915,9 +1066,9 @@
   async function toggleRule(row: FwRule, enabled: boolean): Promise<void> {
     busy.value = true
     try {
-      await persistRule({ ...toRuleDraft(row), enabled })
+      const result = await persistRule({ ...toRuleDraft(row), enabled })
+      remember(result.edits)
       await load()
-      dirty.value = true
       ElMessage.success(enabled ? '规则已启用，等待应用' : '规则已停用，等待应用')
     } catch (err) {
       ElMessage.error(`更新出站规则失败：${messageOf(err)}`)
@@ -936,9 +1087,9 @@
 
     busy.value = true
     try {
-      await deleteRuleSection(row.id)
+      const result = await deleteRuleSection(row.id)
+      remember(result.edits)
       await load()
-      dirty.value = true
       ElMessage.success('出站规则已删除，等待应用')
     } catch (err) {
       ElMessage.error(`删除出站规则失败：${messageOf(err)}`)
@@ -952,9 +1103,9 @@
   async function toggleOffload(payload: { software: boolean; hardware: boolean }): Promise<void> {
     busy.value = true
     try {
-      await setFlowOffloading(payload.software, payload.hardware)
+      const result = await setFlowOffloading(payload.software, payload.hardware)
+      remember(result.edits)
       await load()
-      dirty.value = true
       ElMessage.success('流量卸载设置已暂存，点击「保存并应用」生效')
     } catch (err) {
       ElMessage.error(`设置流量卸载失败：${messageOf(err)}`)
@@ -966,13 +1117,13 @@
   /* --------------------------------------------------------- commit/apply */
 
   async function saveAndApply(): Promise<void> {
-    if (!pending.value.length) {
+    if (!hasPending.value) {
       ElMessage.info('没有待应用的改动')
       return
     }
 
     const ok = await confirm(
-      `即将提交 ${pending.value.length} 项防火墙改动并重载防火墙服务。` +
+      `即将提交 ${pendingEntries.value.length} 项防火墙改动并重载防火墙服务。` +
         '规则链会被重建，短暂的连接中断（包括本管理页面）是正常现象。是否继续？',
       '确认保存并应用'
     )
@@ -981,11 +1132,15 @@
     applying.value = true
     try {
       await applyFirewall()
+      setDraftEdits([])
+      await resetDraft(draft)
       await load()
-      dirty.value = false
       ElMessage.success('防火墙配置已保存并应用')
     } catch (err) {
-      ElMessage.error(`应用防火墙配置失败：${messageOf(err)}`)
+      ElMessage.error(
+        `应用防火墙配置失败：${messageOf(err)}。` +
+          '防火墙重载期间连接可能短暂中断，请刷新页面确认配置是否已经生效。'
+      )
     } finally {
       applying.value = false
     }
@@ -1001,8 +1156,9 @@
     discarding.value = true
     try {
       await revertFirewall()
+      setDraftEdits([])
+      await resetDraft(draft)
       await load()
-      dirty.value = false
       ElMessage.success('已放弃未提交的改动')
     } catch (err) {
       ElMessage.error(`放弃改动失败：${messageOf(err)}`)
@@ -1013,6 +1169,19 @@
 </script>
 
 <style scoped>
+  /* The zone cards live in a shared component: their footer buttons still
+     carry Element Plus' 12px sibling margin, which stacks on top of the
+     6px gap of the row. Cancel it here so the row keeps one spacing. */
+  :deep(.zone-foot .el-button + .el-button) {
+    margin-left: 0;
+  }
+
+  /* Element Plus 给相邻按钮加了 12px 左边距，和外层 flex 的 gap 叠加后
+     同一行的按钮会被拉到 20px 间距；这里把间距统一交回给 gap 控制。 */
+  .el-button + .el-button {
+    margin-left: 0;
+  }
+
   .zone-grid {
     display: grid;
     grid-template-columns: repeat(3, minmax(0, 1fr));

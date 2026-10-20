@@ -122,7 +122,7 @@
             <span class="change-to">{{ change.to }}</span>
           </li>
         </ul>
-        <p class="change-note">保存后无线服务会重新加载，连接会短暂中断。</p>
+        <p class="change-note">改动先写入暂存区，点击「保存并应用」后无线服务才会重新加载，连接会短暂中断。</p>
       </div>
       <p v-else class="change-empty">尚未修改任何内容。</p>
     </template>
@@ -135,7 +135,7 @@
         :disabled="!changes.length"
         @click="save"
       >
-        保存并应用
+        暂存改动
       </el-button>
     </template>
   </el-dialog>
@@ -146,8 +146,7 @@
   import { ElMessage } from 'element-plus'
   import { useMediaQuery } from '@/composables/useMediaQuery'
   import {
-    applyWirelessConfig,
-    discardWirelessChanges,
+    stageWirelessConfig,
     encryptionText,
     macFilterText,
     modeText,
@@ -156,6 +155,7 @@
     MAC_FILTER_OPTIONS,
     type WifiIfaceConfig
   } from '@/api/wirelessConfig'
+  import type { StagedEdit } from '@/api/configPending'
 
   interface PendingChange {
     option: string
@@ -172,7 +172,8 @@
 
   const emit = defineEmits<{
     'update:modelValue': [value: boolean]
-    saved: []
+    /** The changes that were staged in the UCI delta. */
+    saved: [edits: StagedEdit[]]
   }>()
 
   const form = reactive({
@@ -408,12 +409,11 @@
 
     saving.value = true
     try {
-      await applyWirelessConfig([{ section: iface.section, values, remove }])
-      ElMessage.success('SSID 已保存并应用')
-      emit('saved')
+      const result = await stageWirelessConfig([{ section: iface.section, values, remove }])
+      ElMessage.success('SSID 已暂存，点击「保存并应用」后生效')
+      emit('saved', result.edits)
       emit('update:modelValue', false)
     } catch (err) {
-      await discardWirelessChanges().catch(() => undefined)
       ElMessage.error(err instanceof Error ? err.message : '保存失败')
     } finally {
       saving.value = false

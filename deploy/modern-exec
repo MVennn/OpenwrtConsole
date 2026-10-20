@@ -1,6 +1,8 @@
 #!/bin/sh
 # POST /cgi-bin/modern-exec?sid=<session>
-# Body: { "tool": "ping" | "dns" | "trace" | "routes" | "ports", "target": "example.com" }
+# Body: { "tool": "ping" | "dns" | "trace" | "routes" | "ports", "target": "example.com",
+#         "count": "5", "size": "56", "wait": "3",
+#         "hops": "15", "twait": "1", "probes": "3" }
 #
 # Runs one of five fixed, read-only diagnostics. The tool name only selects a
 # command from the allowlist below, so a caller can never name a program or
@@ -8,12 +10,53 @@
 # against a strict character set and then handed to the command as one quoted
 # argument, so the shell never re-parses it.
 #
+# The presets of the network tools (ping count, packet size, wait time,
+# traceroute hops, wait time, probes) are numbers only. They are clamped to a
+# sane range and a value outside the range falls back to the default, so a
+# caller can never turn them into an option. They are part of the command
+# line, so the answer carries the command that really ran and the effective
+# values of the parameters.
+#
 # Response body:
-#   { "tool", "target", "command", "output", "exit_code", "duration_ms", "truncated" }
+#   { "tool", "target", "command", "params", "output", "exit_code",
+#     "duration_ms", "truncated" }
 
 MAX_BODY=4096
 MAX_OUTPUT=204800
-RUN_TIMEOUT=12
+
+# Watchdog per tool (seconds). The router has no `timeout` command, so every
+# command runs in the background and a watchdog kills it when it overruns.
+# A traceroute with 20 hops, 3 probes and 2 seconds per probe needs the
+# largest budget of them.
+T_PING=30
+T_DNS=15
+T_TRACE=120
+T_LOCAL=10
+
+# The defaults of the presets. They are the same on the console side.
+D_COUNT=5
+D_SIZE=56
+D_WAIT=3
+D_HOPS=15
+D_TWAIT=1
+D_PROBES=3
+
+# Sends the body of a reply. The body is validated before it leaves the
+# router: a malformed answer only shows up in the browser as "cannot parse"
+# and hides the real cause, so a body that does not survive jsonfilter is
+# replaced by a readable error.
+send_json() {
+	__sj_body="$1"
+	__sj_out="/tmp/.modern-resp.$$"
+	printf '%s' "$__sj_body" > "$__sj_out" 2>/dev/null
+	if command -v jsonfilter >/dev/null 2>&1; then
+		if ! jsonfilter -i "$__sj_out" -e '@' >/dev/null 2>&1; then
+			printf '%s' '{"ok":false,"error":"路由器生成了无效的响应，请查看系统日志"}' > "$__sj_out"
+		fi
+	fi
+	cat "$__sj_out"
+	rm -f "$__sj_out" 2>/dev/null
+}
 
 deny() {
 	printf 'Status: 401 Unauthorized\r\n'
@@ -29,7 +72,7 @@ fail() {
 	printf 'Content-Type: application/json; charset=utf-8\r\n'
 	printf 'Cache-Control: no-store\r\n'
 	printf 'X-Content-Type-Options: nosniff\r\n\r\n'
-	printf '%s' "$2"
+	send_json "$2"
 	exit 0
 }
 
@@ -85,6 +128,12 @@ json_string() {
 
 tool="$(json_string tool)"
 target="$(json_string target)"
+raw_count="$(json_string count)"
+raw_size="$(json_string size)"
+raw_wait="$(json_string wait)"
+raw_hops="$(json_string hops)"
+raw_twait="$(json_string twait)"
+raw_probes="$(json_string probes)"
 
 case "$tool" in
 	ping|dns|trace|routes|ports) ;;
@@ -108,6 +157,27 @@ if [ "$tool" != "routes" ] && [ "$tool" != "ports" ]; then
 	esac
 fi
 
+# --------------------------------------------------------------- presets ---
+# Prints the parameter when it is a plain number inside the range, otherwise
+# the default. $1 = value, $2 = min, $3 = max, $4 = default.
+num_param() {
+	case "$1" in
+		''|*[!0-9]*) printf '%s' "$4"; return ;;
+	esac
+	if [ "$1" -lt "$2" ] || [ "$1" -gt "$3" ]; then
+		printf '%s' "$4"
+		return
+	fi
+	printf '%s' "$1"
+}
+
+p_count="$(num_param "$raw_count" 1 20 "$D_COUNT")"
+p_size="$(num_param "$raw_size" 56 1400 "$D_SIZE")"
+p_wait="$(num_param "$raw_wait" 1 10 "$D_WAIT")"
+p_hops="$(num_param "$raw_hops" 1 30 "$D_HOPS")"
+p_twait="$(num_param "$raw_twait" 1 5 "$D_TWAIT")"
+p_probes="$(num_param "$raw_probes" 1 3 "$D_PROBES")"
+
 # -------------------------------------------------------------- execution ---
 out_file="/tmp/modern-exec.$$"
 : > "$out_file" 2>/dev/null || fail "500 Internal Server Error" '{"error":"无法写入临时文件"}'
@@ -119,11 +189,21 @@ case "$start_ts" in
 esac
 
 # This router has no coreutils timeout, so the command runs in the background
-# and a watchdog kills it when it overruns RUN_TIMEOUT seconds.
+# and a watchdog kills it when it overruns the budget of the tool.
+#   $1 = timeout seconds, rest = command
 run_tool() {
+	_rt="$1"
+	shift
 	"$@" > "$out_file" 2>&1 &
 	_rt_pid=$!
-	( sleep "$RUN_TIMEOUT"; kill -9 "$_rt_pid" 2>/dev/null ) &
+	(
+		_i=0
+		while [ "$_i" -lt "$_rt" ]; do
+			sleep 1
+			_i=$((_i + 1))
+		done
+		kill -9 "$_rt_pid" 2>/dev/null
+	) &
 	_rt_guard=$!
 	wait "$_rt_pid" 2>/dev/null
 	_rt_status=$?
@@ -132,26 +212,29 @@ run_tool() {
 	return $_rt_status
 }
 
+params_json="{}"
 case "$tool" in
 	ping)
-		command="ping -c 3 -W 3 $target"
-		run_tool ping -c 3 -W 3 "$target"
+		command="ping -c $p_count -s $p_size -W $p_wait $target"
+		params_json="{\"count\":$p_count,\"size\":$p_size,\"wait\":$p_wait}"
+		run_tool "$T_PING" ping -c "$p_count" -s "$p_size" -W "$p_wait" "$target"
 		;;
 	dns)
 		command="nslookup $target"
-		run_tool nslookup "$target"
+		run_tool "$T_DNS" nslookup "$target"
 		;;
 	trace)
-		command="traceroute -n -w 1 -q 3 $target"
-		run_tool traceroute -n -w 1 -q 3 "$target"
+		command="traceroute -n -w $p_twait -q $p_probes -m $p_hops $target"
+		params_json="{\"hops\":$p_hops,\"twait\":$p_twait,\"probes\":$p_probes}"
+		run_tool "$T_TRACE" traceroute -n -w "$p_twait" -q "$p_probes" -m "$p_hops" "$target"
 		;;
 	routes)
 		command="ip route show"
-		run_tool ip route show
+		run_tool "$T_LOCAL" ip route show
 		;;
 	ports)
 		command="netstat -lntup"
-		run_tool netstat -lntup
+		run_tool "$T_LOCAL" netstat -lntup
 		;;
 esac
 status=$?
@@ -188,12 +271,13 @@ fi
 # The command output is embedded as a JSON string, so quotes, backslashes and
 # control characters have to be escaped. Everything is rendered as plain text.
 json="$(awk -v code="$status" -v tool="$tool" -v target="$target" \
-	-v command="$command" -v dur="$duration_ms" -v trunc="$truncated" '
+	-v command="$command" -v dur="$duration_ms" -v trunc="$truncated" \
+	-v params="$params_json" '
 BEGIN {
 	ctrl = "\001\002\003\004\005\006\007\010\013\014\016\017\020\021\022\023\024\025\026\027\030\031\032\033\034\035\036\037"
 	nl = "\\n"
-	printf "{\"tool\":\"%s\",\"target\":\"%s\",\"command\":\"%s\",\"exit_code\":%d,\"duration_ms\":%d,\"truncated\":%s,\"output\":\"",
-		tool, target, command, code, dur, (trunc == "true" ? "true" : "false")
+	printf "{\"tool\":\"%s\",\"target\":\"%s\",\"command\":\"%s\",\"params\":%s,\"exit_code\":%d,\"duration_ms\":%d,\"truncated\":%s,\"output\":\"",
+		tool, target, command, params, code, dur, (trunc == "true" ? "true" : "false")
 }
 function esc(s,   i, c, out) {
 	out = ""
@@ -223,4 +307,4 @@ printf 'Status: 200 OK\r\n'
 printf 'Content-Type: application/json; charset=utf-8\r\n'
 printf 'Cache-Control: no-store\r\n'
 printf 'X-Content-Type-Options: nosniff\r\n\r\n'
-printf '%s' "$json"
+send_json "$json"

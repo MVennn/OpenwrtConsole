@@ -4,12 +4,12 @@
 
 ## 1. 项目概况
 
-- 路径：`F:\Project\Openwrt\frontend`
+- 路径：仓库根目录（本仓是快照，源目录在上游 OpenWrt 运维仓的 `frontend/`）
 - 技术栈：Vue 3.5 + Vite 6 + TypeScript 5.7 + Element Plus 2.9 + ECharts 5 + lucide-vue-next
 - 路由：`vue-router` 的 hash 模式，`src/router/index.ts`（**共享，勿改**）
 - 样式：纯 CSS 设计令牌（`src/styles/tokens.css`、`layout.css`、`element.css`），无 Tailwind
 - 构建：`npm run build`；产物 base 为 `/modern/`
-- 已部署：<https://10.0.0.1/modern/>（CGI 在 `/www/cgi-bin/modern-*`，部署脚本 `deploy/deploy.sh`）
+- 已部署：<https://<路由器IP>/modern/>（CGI 在 `/www/cgi-bin/modern-*`，部署脚本 `deploy/deploy.sh`）
 
 ## 2. 文件归属（硬性）
 

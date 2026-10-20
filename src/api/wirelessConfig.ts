@@ -2,6 +2,7 @@ import {
   uciCommit,
   uciDelete,
   uciGet,
+  uciGetSection,
   uciList,
   uciSet,
   uciString,
@@ -11,6 +12,7 @@ import {
 } from '@/api/uci'
 import { systemOps } from '@/api/systemOps'
 import { api } from '@/api/openwrt'
+import { optionText, type StagedEdit } from '@/api/configPending'
 
 /**
  * Wireless configuration module (writable).
@@ -87,6 +89,25 @@ export const CHANNELS_6G: number[] = [
  * Model
  * ------------------------------------------------------------------ */
 
+/** A client that is associated with an SSID. */
+export interface WifiStation {
+  mac: string
+  /** Signal strength in dBm. */
+  signal: number
+  /** Average signal strength in dBm. */
+  signalAvg: number
+  /** Noise level in dBm. */
+  noise: number
+  /** Seconds since the last packet of this station. */
+  inactive: number
+  /** Seconds the station has been associated. */
+  connectedTime: number
+  /** Receive rate in Kbit/s. */
+  rxRate: number
+  /** Transmit rate in Kbit/s. */
+  txRate: number
+}
+
 /** A `wifi-device` section of /etc/config/wireless. */
 export interface WifiRadioConfig {
   /** UCI section name (`radio0`, `radio1`, …). Empty for orphan pseudo radios. */
@@ -105,6 +126,14 @@ export interface WifiRadioConfig {
   up: boolean
   /** True for the pseudo radio that collects SSIDs without a `device`. */
   orphan: boolean
+  /** The channel the radio really uses right now (iwinfo), 0 when unknown. */
+  actualChannel: number
+  /** The frequency the radio really uses right now (iwinfo), 0 when unknown. */
+  actualFrequency: number
+  /** The bandwidth mode the radio really uses right now (iwinfo). */
+  actualBandwidth: string
+  /** The current PHY rate in Kbit/s (iwinfo), 0 when unknown. */
+  actualBitrate: number
   interfaces: WifiIfaceConfig[]
 }
 
@@ -137,6 +166,12 @@ export interface WifiIfaceConfig {
   up: boolean
   /** Number of associated clients. */
   clients: number
+  /** The clients that are associated right now. */
+  stations: WifiStation[]
+  /** The best signal of the associated clients in dBm, 0 when there is none. */
+  bestSignal: number
+  /** The average signal of the associated clients in dBm, 0 when there is none. */
+  averageSignal: number
 }
 
 export interface WirelessConfigModel {
@@ -224,21 +259,81 @@ function countStations(value: unknown): number {
   return toArray<unknown>(value).length
 }
 
+/** Reads a number out of the loosely typed iwinfo payload. */
+function iwinfoNumber(info: Record<string, unknown> | undefined, key: string): number {
+  const value = info?.[key]
+  if (typeof value === 'number' && Number.isFinite(value)) return value
+  if (typeof value === 'string' && value.trim()) {
+    const parsed = Number(value)
+    if (Number.isFinite(parsed)) return parsed
+  }
+  return 0
+}
+
+/**
+ * The bandwidth mode the radio really uses.
+ *
+ * Depending on the iwinfo build the mode is a single string (`HT40`) or a
+ * list of the supported modes (`["HT20", "HT40"]`).
+ */
+function iwinfoBandwidth(info: Record<string, unknown> | undefined): string {
+  const modes = info?.htmodes
+  if (Array.isArray(modes)) {
+    const list = modes.map((item) => String(item).trim()).filter(Boolean)
+    if (list.length) return list.join(' / ')
+  }
+  if (typeof modes === 'string' && modes.trim()) return modes.trim()
+  const single = info?.htmode
+  if (typeof single === 'string' && single.trim()) return single.trim()
+  return ''
+}
+
+/** Turns the raw station list of the CGI into the typed model. */
+function parseStations(value: unknown): WifiStation[] {
+  return toArray<Record<string, unknown>>(value)
+    .map((raw) => {
+      const rx = (raw?.rx ?? {}) as Record<string, unknown>
+      const tx = (raw?.tx ?? {}) as Record<string, unknown>
+      const number = (input: unknown): number => {
+        const parsed = Number(input)
+        return Number.isFinite(parsed) ? parsed : 0
+      }
+      return {
+        mac: String(raw?.mac ?? ''),
+        signal: number(raw?.signal),
+        signalAvg: number(raw?.signal_avg),
+        noise: number(raw?.noise),
+        inactive: number(raw?.inactive),
+        connectedTime: number(raw?.connected_time),
+        rxRate: number(rx.rate),
+        txRate: number(tx.rate)
+      }
+    })
+    .filter((station) => station.mac !== '')
+}
+
 /* ------------------------------------------------------------------ *
  * Reading
  * ------------------------------------------------------------------ */
 
 /**
  * Reads the wireless configuration and the matching runtime state.
+ *
+ * `values` may carry the effective configuration (the committed one plus the
+ * staged edits), so the page can show what will be applied.
+ *
  * Read-only: nothing is written to the router.
  */
-export async function readWirelessConfig(): Promise<WirelessConfigModel> {
-  const [wireless, networkRaw, runtimeRaw, stationsRaw] = await Promise.all([
-    uciGet('wireless'),
+export async function readWirelessConfig(
+  values?: Record<string, UciSection>
+): Promise<WirelessConfigModel> {
+  const [wirelessRaw, networkRaw, runtimeRaw, stationsRaw] = await Promise.all([
+    values ? Promise.resolve(values) : uciGet('wireless'),
     uciGet('network').catch(() => ({})),
     api.wireless().catch(() => ({})),
     api.stations().catch(() => ({}))
   ])
+  const wireless = wirelessRaw ?? {}
 
   const network = (networkRaw ?? {}) as Record<string, UciSection>
   const runtime = (runtimeRaw ?? {}) as unknown as Record<string, RuntimeRadio>
@@ -279,6 +374,9 @@ export async function readWirelessConfig(): Promise<WirelessConfigModel> {
       uciString(section, 'device') ||
       uciString(runtimeIface?.config as UciSection | undefined, 'device')
 
+    const stations = ifname ? parseStations(stationMap[ifname]) : []
+    const signals = stations.map((station) => station.signal).filter((value) => value !== 0)
+
     return {
       section: name,
       radio: device,
@@ -294,7 +392,12 @@ export async function readWirelessConfig(): Promise<WirelessConfigModel> {
       disabled: uciBool(section, 'disabled'),
       ifname,
       up: runtimeIface ? Boolean(runtimeIface.up ?? runtimeIface.iwinfo) : false,
-      clients: ifname ? countStations(stationMap[ifname]) : 0
+      clients: ifname ? countStations(stationMap[ifname]) : 0,
+      stations,
+      bestSignal: signals.length ? Math.max(...signals) : 0,
+      averageSignal: signals.length
+        ? Math.round(signals.reduce((sum, value) => sum + value, 0) / signals.length)
+        : 0
     }
   })
 
@@ -306,6 +409,18 @@ export async function readWirelessConfig(): Promise<WirelessConfigModel> {
     const name = sectionName(section, key)
     const runtimeRadio = runtimeRadios.get(name)
     const disabled = uciBool(section, 'disabled')
+    const ownIfaces = ifaces.filter((iface) => iface.radio === name)
+
+    // The iwinfo data of the first interface of the radio carries the values
+    // the radio really uses right now (channel, bandwidth, rate).
+    let info: Record<string, unknown> | undefined
+    for (const iface of ownIfaces) {
+      const runtimeIface = runtimeIfaces.get(iface.section)
+      if (runtimeIface?.iwinfo) {
+        info = runtimeIface.iwinfo
+        break
+      }
+    }
 
     return {
       section: name,
@@ -319,7 +434,11 @@ export async function readWirelessConfig(): Promise<WirelessConfigModel> {
       path: uciString(section, 'path'),
       up: runtimeRadio ? Boolean(runtimeRadio.up) : !disabled,
       orphan: false,
-      interfaces: ifaces.filter((iface) => iface.radio === name)
+      actualChannel: iwinfoNumber(info, 'channel'),
+      actualFrequency: iwinfoNumber(info, 'frequency'),
+      actualBandwidth: iwinfoBandwidth(info),
+      actualBitrate: iwinfoNumber(info, 'bitrate'),
+      interfaces: ownIfaces
     }
   })
 
@@ -339,6 +458,10 @@ export async function readWirelessConfig(): Promise<WirelessConfigModel> {
       path: '',
       up: orphans.some((iface) => iface.up),
       orphan: true,
+      actualChannel: 0,
+      actualFrequency: 0,
+      actualBandwidth: '',
+      actualBitrate: 0,
       interfaces: orphans
     })
   }
@@ -378,19 +501,54 @@ async function removeOption(section: string, option: string): Promise<void> {
 }
 
 /**
- * The write path every change of this page uses:
- * stage the options (`uci.set`), write them to disk (`uci.commit`) and apply
- * them by reloading the wireless service.
+ * Stages the changes of the wireless config in the UCI delta.
+ *
+ * Nothing is written to disk here — the page shows the staged changes and
+ * only commits them when the user presses "保存并应用".
  */
-export async function applyWirelessConfig(operations: WirelessWriteOperation[]): Promise<void> {
+export async function stageWirelessConfig(
+  operations: WirelessWriteOperation[]
+): Promise<{ edits: StagedEdit[] }> {
+  const edits: StagedEdit[] = []
+
   for (const operation of operations) {
     for (const option of operation.remove ?? []) {
       await removeOption(operation.section, option)
+      // Only a real option is worth a "deleted" entry in the change list.
+      const current = await uciGetSection('wireless', operation.section).catch(() => undefined)
+      if (optionText(current, option) !== '') {
+        edits.push({ op: 'delete', section: operation.section, option, before: '' })
+      }
     }
     if (operation.values && Object.keys(operation.values).length) {
       await uciSet('wireless', operation.section, operation.values)
+      for (const [key, value] of Object.entries(operation.values)) {
+        if (value === undefined || value === null) continue
+        edits.push({
+          op: 'set',
+          section: operation.section,
+          option: key,
+          value: String(value),
+          before: ''
+        })
+      }
     }
   }
+
+  return { edits }
+}
+
+/**
+ * The full write path: stage the options (`uci.set`), write them to disk
+ * (`uci.commit`) and apply them by reloading the wireless service.
+ */
+export async function applyWirelessConfig(operations: WirelessWriteOperation[]): Promise<void> {
+  await stageWirelessConfig(operations)
+  await commitWirelessConfig()
+}
+
+/** Writes the staged changes to disk and reloads the wireless service. */
+export async function commitWirelessConfig(): Promise<void> {
   await uciCommit('wireless')
   await systemOps.reloadWifi()
 }
@@ -400,14 +558,20 @@ export async function discardWirelessChanges(): Promise<void> {
   await systemOps.revertConfig('wireless')
 }
 
-/** Enables or disables a radio (`wifi-device` section). */
-export async function setRadioEnabled(section: string, enabled: boolean): Promise<void> {
-  await applyWirelessConfig([{ section, values: { disabled: enabled ? '0' : '1' } }])
+/** Stages the enabling or disabling of a radio (`wifi-device` section). */
+export async function stageRadioEnabled(
+  section: string,
+  enabled: boolean
+): Promise<{ edits: StagedEdit[] }> {
+  return stageWirelessConfig([{ section, values: { disabled: enabled ? '0' : '1' } }])
 }
 
-/** Enables or disables a single SSID (`wifi-iface` section). */
-export async function setIfaceEnabled(section: string, enabled: boolean): Promise<void> {
-  await applyWirelessConfig([{ section, values: { disabled: enabled ? '0' : '1' } }])
+/** Stages the enabling or disabling of a single SSID (`wifi-iface` section). */
+export async function stageIfaceEnabled(
+  section: string,
+  enabled: boolean
+): Promise<{ edits: StagedEdit[] }> {
+  return stageWirelessConfig([{ section, values: { disabled: enabled ? '0' : '1' } }])
 }
 
 /* ------------------------------------------------------------------ *

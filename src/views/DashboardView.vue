@@ -8,7 +8,7 @@
     <el-alert
       v-if="error"
       type="error"
-      :title="error.message"
+      :title="error?.message || '操作失败'"
       :closable="false"
       show-icon
       class="error-alert"
@@ -228,12 +228,20 @@
             </div>
             <dl class="kv-grid proxy-kv">
               <div class="kv">
-                <dt>当前节点</dt>
+                <dt>当前出口</dt>
                 <dd :title="proxy.node">{{ proxy.node || '—' }}</dd>
+              </div>
+              <div class="kv">
+                <dt>出口延迟</dt>
+                <dd class="num" :title="proxyDelayTitle">{{ proxyDelayText }}</dd>
               </div>
               <div class="kv">
                 <dt>活动连接</dt>
                 <dd class="num">{{ proxy.connections }}</dd>
+              </div>
+              <div class="kv">
+                <dt>策略组</dt>
+                <dd class="num">{{ proxy.groups }}</dd>
               </div>
               <div class="kv">
                 <dt>上传总量</dt>
@@ -252,10 +260,31 @@
             description="ShellCrash 未运行，或 API 端口不可达。"
           />
           <template #footer>
-            <span>{{ proxy.groups }} 个策略组</span>
+            <span>延迟每分钟探测一次</span>
             <span class="mono">API 127.0.0.1:9999</span>
           </template>
         </PanelCard>
+      </div>
+
+      <div class="grid grid-main">
+        <ProxyShellCrashCard :status="shellCrash.status" :crash="shellCrash.crash" />
+
+        <div class="side-stack">
+          <StatCard
+            label="核心运行时长"
+            :value="coreUptime"
+            :meta="coreVersion ? `核心 ${coreVersion}` : '未读取到核心版本'"
+            :icon="Timer"
+            tone="neutral"
+          />
+          <StatCard
+            label="开机自启"
+            :value="autostartText"
+            :meta="autostartMeta"
+            :icon="Power"
+            :tone="autostartTone"
+          />
+        </div>
       </div>
     </template>
 
@@ -275,9 +304,11 @@
     ChevronRight,
     HardDrive,
     MemoryStick,
+    Power,
     RefreshCw,
     Router as RouterIcon,
     ShieldOff,
+    Timer,
     Users
   } from 'lucide-vue-next'
   import type { EChartsCoreOption } from 'echarts/core'
@@ -288,10 +319,18 @@
   import SignalBars from '@/components/SignalBars.vue'
   import EmptyState from '@/components/EmptyState.vue'
   import BaseChart from '@/components/BaseChart.vue'
+  import ProxyShellCrashCard from '@/components/proxy-ShellCrashCard.vue'
   import { usePolling } from '@/composables/usePolling'
   import { useRefreshSignal } from '@/composables/useRefresh'
   import { useTheme } from '@/composables/useTheme'
   import { api } from '@/api/openwrt'
+  import { fetchProxyDelay } from '@/api/proxyActions'
+  import {
+    fetchShellCrashCrash,
+    fetchShellCrashStatus,
+    type ShellCrashCrashResult,
+    type ShellCrashStatus
+  } from '@/api/shellcrashConfig'
   import type {
     BoardInfo,
     DhcpLease,
@@ -342,13 +381,28 @@
     groups: 0,
     connections: 0,
     up: 0,
-    down: 0
+    down: 0,
+    /** The measured latency of the exit node, null when it is unknown. */
+    delay: null as number | null,
+    /** When the latency was measured the last time. */
+    delayAt: 0
+  })
+
+  /** The ShellCrash service and the guardian, read through the root CGI. */
+  const shellCrash = reactive({
+    status: null as ShellCrashStatus | null,
+    crash: null as ShellCrashCrashResult | null
   })
 
   const traffic = ref<Array<{ time: number; rx: number; tx: number }>>([])
   let previous: { rx: number; tx: number; at: number } | null = null
   let proxyTick = 0
   let seedTimer: number | undefined
+  let delayProbe = false
+  let shellCrashTick = 0
+
+  /** The latency probe of the overview runs at most once a minute. */
+  const DELAY_TTL = 60_000
 
   const wan = computed(() => interfaces.value.find((item) => item.interface === 'wan'))
   const wan6 = computed(() => interfaces.value.find((item) => item.interface === 'wan6'))
@@ -441,6 +495,43 @@
   const lastRx = computed(() => traffic.value[traffic.value.length - 1]?.rx ?? 0)
   const lastTx = computed(() => traffic.value[traffic.value.length - 1]?.tx ?? 0)
 
+  /** The measured latency of the exit node. */
+  const proxyDelayText = computed(() =>
+    typeof proxy.delay === 'number' ? `${proxy.delay} ms` : '—'
+  )
+
+  const proxyDelayTitle = computed(() =>
+    proxy.delay === null
+      ? '延迟尚未探测或节点没有响应'
+      : `出口节点 ${proxy.node || '—'} 的延迟`
+  )
+
+  /** The uptime of the mihomo core. */
+  const coreUptime = computed(() => {
+    const uptime = shellCrash.crash?.uptime
+    if (!uptime) return '—'
+    return formatUptime(uptime)
+  })
+
+  const coreVersion = computed(() => shellCrash.crash?.core_version || '')
+
+  const autostartText = computed(() => {
+    if (!shellCrash.status) return '—'
+    return shellCrash.status.autostart ? '已开启' : '已关闭'
+  })
+
+  const autostartMeta = computed(() => {
+    if (!shellCrash.status) return '未读取到 ShellCrash 状态'
+    return shellCrash.status.autostart
+      ? '路由器重启后自动启动核心'
+      : '需要手动启动 ShellCrash'
+  })
+
+  const autostartTone = computed<'brand' | 'success' | 'warning' | 'danger' | 'neutral'>(() => {
+    if (!shellCrash.status) return 'neutral'
+    return shellCrash.status.autostart ? 'success' : 'warning'
+  })
+
   function pushTraffic(rx: number, tx: number): void {
     const now = Date.now()
     if (previous) {
@@ -491,8 +582,47 @@
       const primary = pickPrimaryGroup(proxies)
       proxy.node = primary ? resolveNode(proxies, primary.now) : ''
       proxy.groups = Object.values(proxies).filter(isProxyGroup).length
+      probeProxyDelay(proxy.node)
     } catch {
       proxy.running = false
+    }
+  }
+
+  /**
+   * Measures the latency of the exit node.
+   *
+   * The probe keeps a mihomo request open for several seconds, so it runs at
+   * most once a minute and never in parallel with itself.
+   */
+  function probeProxyDelay(node: string): void {
+    if (!node || delayProbe) return
+    if (Date.now() - proxy.delayAt < DELAY_TTL) return
+    delayProbe = true
+    void fetchProxyDelay(node)
+      .then((delay) => {
+        proxy.delay = typeof delay === 'number' ? delay : null
+        proxy.delayAt = Date.now()
+      })
+      .catch(() => {
+        proxy.delay = null
+        proxy.delayAt = Date.now()
+      })
+      .finally(() => {
+        delayProbe = false
+      })
+  }
+
+  /** Reads the state of the ShellCrash service and of the guardian. */
+  async function loadShellCrash(): Promise<void> {
+    try {
+      const [status, crash] = await Promise.all([
+        fetchShellCrashStatus(),
+        fetchShellCrashCrash()
+      ])
+      shellCrash.status = status
+      shellCrash.crash = crash
+    } catch {
+      // The card shows the empty state, the next round retries.
     }
   }
 
@@ -533,11 +663,18 @@
 
     proxyTick += 1
     if (proxyTick === 1 || proxyTick % 3 === 0) await loadProxy()
+
+    // The ShellCrash state changes rarely, so it is read every 30 seconds.
+    shellCrashTick += 1
+    if (shellCrashTick === 1 || shellCrashTick % 6 === 0) await loadShellCrash()
   }, 5000)
 
   watch(refreshSignal, () => {
+    // A manual refresh also asks for a fresh latency measurement.
+    proxy.delayAt = 0
     void refresh()
     void loadProxy()
+    void loadShellCrash()
   })
 
   onBeforeUnmount(() => {
@@ -651,6 +788,12 @@
 </script>
 
 <style scoped>
+  /* Element Plus 给相邻按钮加了 12px 左边距，和外层 flex 的 gap 叠加后
+     同一行的按钮会被拉到 20px 间距；这里把间距统一交回给 gap 控制。 */
+  .el-button + .el-button {
+    margin-left: 0;
+  }
+
   .error-alert {
     border-radius: var(--radius-lg);
   }
@@ -1036,6 +1179,19 @@
 
   .proxy-kv {
     gap: 12px 18px;
+  }
+
+  /* The narrow column of the last row holds the two summary cards. */
+  .side-stack {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-4);
+    min-width: 0;
+  }
+
+  /* A long value inside the narrow column must not widen the track. */
+  .grid-main > * {
+    min-width: 0;
   }
 
   @media (max-width: 1180px) {

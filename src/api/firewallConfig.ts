@@ -15,6 +15,8 @@ import {
   type UciValues
 } from '@/api/uci'
 import { systemOps } from '@/api/systemOps'
+import { api } from '@/api/openwrt'
+import type { StagedEdit } from '@/api/configPending'
 
 /**
  * Writable firewall configuration (`/etc/config/firewall`).
@@ -114,6 +116,44 @@ export interface FirewallModel {
   forwardings: FwForwarding[]
   redirects: FwRedirect[]
   rules: FwRule[]
+}
+
+/* ------------------------------------------------------------------ *
+ * Runtime traffic
+ * ------------------------------------------------------------------ */
+
+/** One entry of the kernel connection tracking table. */
+export interface FwConntrackEntry {
+  /** Transport protocol in upper case (`TCP`, `UDP`, …). */
+  protocol: string
+  /** Source address, without the port. */
+  source: string
+  /** Destination address, without the port. */
+  destination: string
+  /** Destination port. */
+  destinationPort: number
+  /** Bytes that passed the connection. */
+  bytes: number
+  /** Packets that passed the connection. */
+  packets: number
+}
+
+/** The traffic of a security zone. */
+export interface FwZoneTraffic {
+  /** Connections whose source is inside the zone. */
+  connections: number
+  /** Connections whose destination is inside the zone. */
+  incoming: number
+  /** Bytes of the counted connections. */
+  bytes: number
+}
+
+/** The traffic that hit a port forwarding rule. */
+export interface FwRedirectTraffic {
+  /** Number of connections that matched the rule. */
+  connections: number
+  bytes: number
+  packets: number
 }
 
 /* ------------------------------------------------------------------ *
@@ -299,10 +339,19 @@ export function createEmptyFirewallModel(): FirewallModel {
  * Reading
  * ------------------------------------------------------------------ */
 
-/** Reads `/etc/config/firewall`. Read-only. */
-export async function fetchFirewallModel(): Promise<FirewallModel> {
-  const values = await uciGet('firewall')
-  return parseFirewallModel(values)
+/**
+ * Reads `/etc/config/firewall`.
+ *
+ * `values` may carry the effective configuration (the committed one plus the
+ * staged edits), so the page can show what will be applied.
+ *
+ * Read-only.
+ */
+export async function fetchFirewallModel(
+  values?: Record<string, UciSection>
+): Promise<FirewallModel> {
+  const raw = values ?? (await uciGet('firewall'))
+  return parseFirewallModel(raw)
 }
 
 /** Lists the interface names of the `network` config, used by the zone picker. */
@@ -338,13 +387,16 @@ function compact(values: Record<string, string | undefined>): UciValues {
 /**
  * Writes a set of options to a section. An option whose new value is empty
  * is removed from the section instead of being written as an empty string.
+ *
+ * Returns the staged edits.
  */
 async function applyOptions(
   section: string,
   values: Record<string, string | undefined>
-): Promise<void> {
+): Promise<StagedEdit[]> {
   const current = await uciGetSection('firewall', section)
   const payload: UciValues = {}
+  const edits: StagedEdit[] = []
 
   for (const [key, value] of Object.entries(values)) {
     const text = value === undefined || value === null ? '' : String(value).trim()
@@ -355,13 +407,23 @@ async function applyOptions(
         previous !== null &&
         !(Array.isArray(previous) && previous.length === 0) &&
         String(previous).trim() !== ''
-      if (existed) await uciDelete('firewall', section, key)
+      if (existed) {
+        await uciDelete('firewall', section, key)
+        edits.push({ op: 'delete', section, option: key, before: '' })
+      }
       continue
     }
     payload[key] = text
   }
 
-  if (Object.keys(payload).length) await uciSet('firewall', section, payload)
+  if (Object.keys(payload).length) {
+    await uciSet('firewall', section, payload)
+    for (const [key, value] of Object.entries(payload)) {
+      edits.push({ op: 'set', section, option: key, value: String(value), before: '' })
+    }
+  }
+
+  return edits
 }
 
 /**
@@ -379,7 +441,7 @@ async function applyOptions(
 async function writeNetworkList(
   section: string,
   networks: string[]
-): Promise<string | undefined> {
+): Promise<{ edits: StagedEdit[]; warning?: string }> {
   const list = networks.map((item) => item.trim()).filter(Boolean)
   const current = await uciGetSection('firewall', section)
   const previous = current?.network
@@ -389,9 +451,16 @@ async function writeNetworkList(
       ? []
       : String(previous).split(/\s+/).filter(Boolean)
 
+  const edits: StagedEdit[] = []
+
   // Start from a clean list so a removed network really disappears.
   if (previousList.length) await uciDelete('firewall', section, 'network')
-  if (!list.length) return undefined
+  if (!list.length) {
+    if (previousList.length) {
+      edits.push({ op: 'delete', section, option: 'network', before: previousList.join(' ') })
+    }
+    return { edits }
+  }
 
   try {
     await ubusCall('uci', 'set', {
@@ -399,12 +468,18 @@ async function writeNetworkList(
       section,
       values: { network: list }
     })
-    return undefined
+    edits.push({ op: 'set', section, option: 'network', value: list.join(' '), before: '' })
+    return { edits }
   } catch {
     // Older rpcd builds only understand strings — fall back to a space
     // separated option. fw3 still reads it, fw4 ignores it.
     await uciSet('firewall', section, { network: list.join(' ') })
-    return '路由器拒绝了列表写法，成员网络已按空格分隔保存，部分防火墙版本可能无法绑定这些网络'
+    edits.push({ op: 'set', section, option: 'network', value: list.join(' '), before: '' })
+    return {
+      edits,
+      warning:
+        '路由器拒绝了列表写法，成员网络已按空格分隔保存，部分防火墙版本可能无法绑定这些网络'
+    }
   }
 }
 
@@ -419,7 +494,9 @@ async function addSection(type: string, values: UciValues): Promise<string> {
 }
 
 /** Creates or updates a zone section. */
-export async function saveZone(draft: FwZoneDraft): Promise<{ id: string; warning?: string }> {
+export async function saveZone(
+  draft: FwZoneDraft
+): Promise<{ id: string; edits: StagedEdit[]; warning?: string }> {
   const values: Record<string, string | undefined> = {
     name: draft.name.trim(),
     input: draft.input,
@@ -431,24 +508,37 @@ export async function saveZone(draft: FwZoneDraft): Promise<{ id: string; warnin
   }
 
   let id = draft.id ?? ''
+  const edits: StagedEdit[] = []
+
   if (!id) {
     // No name is passed: rpcd generates an anonymous section name (cfgXXXXXX).
     id = await addSection('zone', compact(values))
+    edits.push({ op: 'add', section: id, type: 'zone', before: '' })
+    for (const [key, value] of Object.entries(compact(values))) {
+      edits.push({ op: 'set', section: id, option: key, value: String(value), before: '' })
+    }
   } else {
-    await applyOptions(id, values)
+    edits.push(...(await applyOptions(id, values)))
   }
 
-  const warning = await writeNetworkList(id, draft.networks)
-  return warning ? { id, warning } : { id }
+  const networks = await writeNetworkList(id, draft.networks)
+  edits.push(...networks.edits)
+
+  return networks.warning
+    ? { id, edits, warning: networks.warning }
+    : { id, edits }
 }
 
 /** Removes a zone section. */
-export async function deleteZoneSection(id: string): Promise<void> {
+export async function deleteZoneSection(id: string): Promise<{ edits: StagedEdit[] }> {
   await uciDelete('firewall', id)
+  return { edits: [{ op: 'delete', section: id, before: '' }] }
 }
 
 /** Creates or updates a redirect (port forwarding) section. */
-export async function saveRedirect(draft: FwRedirectDraft): Promise<string> {
+export async function saveRedirect(
+  draft: FwRedirectDraft
+): Promise<{ id: string; edits: StagedEdit[] }> {
   const values: Record<string, string | undefined> = {
     name: draft.name.trim(),
     src: draft.src.trim(),
@@ -461,18 +551,27 @@ export async function saveRedirect(draft: FwRedirectDraft): Promise<string> {
     enabled: draft.enabled ? '1' : '0'
   }
 
-  if (!draft.id) return addSection('redirect', compact(values))
-  await applyOptions(draft.id, values)
-  return draft.id
+  if (!draft.id) {
+    const id = await addSection('redirect', compact(values))
+    const edits: StagedEdit[] = [{ op: 'add', section: id, type: 'redirect', before: '' }]
+    for (const [key, value] of Object.entries(compact(values))) {
+      edits.push({ op: 'set', section: id, option: key, value: String(value), before: '' })
+    }
+    return { id, edits }
+  }
+
+  const edits = await applyOptions(draft.id, values)
+  return { id: draft.id, edits }
 }
 
 /** Removes a redirect section. */
-export async function deleteRedirectSection(id: string): Promise<void> {
+export async function deleteRedirectSection(id: string): Promise<{ edits: StagedEdit[] }> {
   await uciDelete('firewall', id)
+  return { edits: [{ op: 'delete', section: id, before: '' }] }
 }
 
 /** Creates or updates a rule (outbound traffic rule) section. */
-export async function saveRule(draft: FwRuleDraft): Promise<string> {
+export async function saveRule(draft: FwRuleDraft): Promise<{ id: string; edits: StagedEdit[] }> {
   const values: Record<string, string | undefined> = {
     name: draft.name.trim(),
     src: draft.src.trim(),
@@ -483,35 +582,60 @@ export async function saveRule(draft: FwRuleDraft): Promise<string> {
     family: draft.family.trim()
   }
 
-  if (!draft.id) return addSection('rule', compact(values))
-  await applyOptions(draft.id, values)
-  return draft.id
+  if (!draft.id) {
+    const id = await addSection('rule', compact(values))
+    const edits: StagedEdit[] = [{ op: 'add', section: id, type: 'rule', before: '' }]
+    for (const [key, value] of Object.entries(compact(values))) {
+      edits.push({ op: 'set', section: id, option: key, value: String(value), before: '' })
+    }
+    return { id, edits }
+  }
+
+  const edits = await applyOptions(draft.id, values)
+  return { id: draft.id, edits }
 }
 
 /** Removes a rule section. */
-export async function deleteRuleSection(id: string): Promise<void> {
+export async function deleteRuleSection(id: string): Promise<{ edits: StagedEdit[] }> {
   await uciDelete('firewall', id)
+  return { edits: [{ op: 'delete', section: id, before: '' }] }
 }
 
 /** Creates or updates a forwarding (zone to zone) section. */
-export async function saveForwarding(draft: FwForwardingDraft): Promise<string> {
+export async function saveForwarding(
+  draft: FwForwardingDraft
+): Promise<{ id: string; edits: StagedEdit[] }> {
   const values: Record<string, string | undefined> = {
     src: draft.src.trim(),
     dest: draft.dest.trim()
   }
 
-  if (!draft.id) return addSection('forwarding', compact(values))
-  await applyOptions(draft.id, values)
-  return draft.id
+  if (!draft.id) {
+    const id = await addSection('forwarding', compact(values))
+    const edits: StagedEdit[] = [{ op: 'add', section: id, type: 'forwarding', before: '' }]
+    for (const [key, value] of Object.entries(compact(values))) {
+      edits.push({ op: 'set', section: id, option: key, value: String(value), before: '' })
+    }
+    return { id, edits }
+  }
+
+  const edits = await applyOptions(draft.id, values)
+  return { id: draft.id, edits }
 }
 
 /** Removes a forwarding section. */
-export async function deleteForwardingSection(id: string): Promise<void> {
+export async function deleteForwardingSection(id: string): Promise<{ edits: StagedEdit[] }> {
   await uciDelete('firewall', id)
+  return { edits: [{ op: 'delete', section: id, before: '' }] }
 }
 
-/** Toggles the software / hardware flow offloading of the `defaults` section. */
-export async function setFlowOffloading(software: boolean, hardware: boolean): Promise<void> {
+/**
+ * Toggles the software / hardware flow offloading of the `defaults` section.
+ */
+export async function setFlowOffloading(
+  software: boolean,
+  hardware: boolean
+): Promise<{ edits: StagedEdit[] }> {
   const values = await uciGet('firewall')
   const entry = Object.entries(values).find(([, section]) => section['.type'] === 'defaults')
   if (!entry) throw new Error('防火墙配置中缺少 defaults 段，无法设置流量卸载')
@@ -520,6 +644,19 @@ export async function setFlowOffloading(software: boolean, hardware: boolean): P
     flow_offloading: software ? '1' : '0',
     flow_offloading_hw: hardware ? '1' : '0'
   })
+
+  return {
+    edits: [
+      { op: 'set', section: entry[0], option: 'flow_offloading', value: software ? '1' : '0', before: '' },
+      {
+        op: 'set',
+        section: entry[0],
+        option: 'flow_offloading_hw',
+        value: hardware ? '1' : '0',
+        before: ''
+      }
+    ]
+  }
 }
 
 /* ------------------------------------------------------------------ *
@@ -540,6 +677,199 @@ export async function applyFirewall(): Promise<void> {
 /** Discards every staged change of the firewall config (`uci revert`). */
 export async function revertFirewall(): Promise<void> {
   await systemOps.revertConfig('firewall')
+}
+
+/* ------------------------------------------------------------------ *
+ * Runtime traffic
+ * ------------------------------------------------------------------ */
+
+function asRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : {}
+}
+
+function pickArray(payload: unknown, keys: string[]): unknown[] {
+  if (Array.isArray(payload)) return payload
+  const record = asRecord(payload)
+  for (const key of keys) {
+    const value = record[key]
+    if (Array.isArray(value)) return value
+  }
+  return []
+}
+
+function textOf(record: Record<string, unknown>, keys: string[]): string {
+  for (const key of keys) {
+    const value = record[key]
+    if (typeof value === 'string' && value.trim()) return value.trim()
+    if (typeof value === 'number' && Number.isFinite(value)) return String(value)
+  }
+  return ''
+}
+
+function numberOf(record: Record<string, unknown>, keys: string[]): number {
+  for (const key of keys) {
+    const value = record[key]
+    if (typeof value === 'number' && Number.isFinite(value)) return value
+    if (typeof value === 'string' && value.trim()) {
+      const parsed = Number(value)
+      if (Number.isFinite(parsed)) return parsed
+    }
+  }
+  return 0
+}
+
+/**
+ * Reads the kernel connection tracking table (`luci getConntrackList`).
+ *
+ * The list methods of the `luci` object answer with `{ "result": [...] }`,
+ * older builds with a bare array — both are accepted.
+ */
+export async function fetchConntrackEntries(): Promise<FwConntrackEntry[]> {
+  let payload: unknown
+  try {
+    payload = await ubusCall<unknown>('luci', 'getConntrackList', {})
+  } catch {
+    return []
+  }
+
+  return pickArray(payload, ['result', 'conntrack']).map((item) => {
+    const row = asRecord(item)
+    const source = textOf(row, ['src', 'source'])
+    const destination = textOf(row, ['dst', 'destination', 'dest'])
+    return {
+      protocol: textOf(row, ['layer4', 'proto', 'protocol']).toUpperCase(),
+      source: source.replace(/:\d+$/, ''),
+      destination: destination.replace(/:\d+$/, ''),
+      destinationPort: numberOf(row, ['dport', 'dest_port']),
+      bytes: numberOf(row, ['bytes']),
+      packets: numberOf(row, ['packets'])
+    }
+  })
+}
+
+/**
+ * The IPv4 networks of the configured interfaces, keyed by the network name
+ * and by the device name.
+ */
+export async function fetchNetworkSubnets(): Promise<Record<string, string>> {
+  const [networkValues, interfaces] = await Promise.all([
+    uciGet('network').catch(() => ({}) as Record<string, UciSection>),
+    api.interfaces().catch(() => [])
+  ])
+
+  const subnets: Record<string, string> = {}
+  for (const item of interfaces) {
+    const address = item['ipv4-address']?.[0]
+    if (!address?.address) continue
+    subnets[item.interface] = `${address.address}/${address.mask ?? 24}`
+  }
+
+  for (const [key, section] of Object.entries(networkValues)) {
+    const device = uciString(section, 'device') || uciString(section, 'ifname')
+    const address = subnets[key]
+    if (device && address) subnets[device] = address
+  }
+
+  return subnets
+}
+
+/** Converts an IPv4 address into its numeric representation. */
+function ipToNumber(ip: string): number | null {
+  const parts = ip.trim().split('.')
+  if (parts.length !== 4) return null
+  let value = 0
+  for (const part of parts) {
+    const octet = Number.parseInt(part, 10)
+    if (!Number.isFinite(octet) || octet < 0 || octet > 255) return null
+    value = value * 256 + octet
+  }
+  return value
+}
+
+/** True when the address lies inside the CIDR block. */
+export function ipInCidr(ip: string, cidr: string): boolean {
+  const value = ipToNumber(ip)
+  if (value === null) return false
+  const [network, maskText] = cidr.split('/')
+  const base = ipToNumber(network ?? '')
+  const mask = Number(maskText ?? '24')
+  if (base === null || !Number.isFinite(mask)) return false
+  const bits = mask === 0 ? 0 : (0xffffffff << (32 - mask)) >>> 0
+  return ((value & bits) >>> 0) === ((base & bits) >>> 0)
+}
+
+/**
+ * Counts the connections of a zone.
+ *
+ * A connection belongs to the zone when its source address lies inside one
+ * of the networks the zone is bound to — that is the traffic the zone
+ * produces. Connections whose destination is inside the zone are counted as
+ * incoming traffic.
+ */
+export function zoneTraffic(
+  zone: FwZone,
+  subnets: Record<string, string>,
+  entries: FwConntrackEntry[]
+): FwZoneTraffic {
+  const cidrs = zone.networks.map((name) => subnets[name]).filter(Boolean)
+  if (!cidrs.length) return { connections: 0, incoming: 0, bytes: 0 }
+
+  let connections = 0
+  let incoming = 0
+  let bytes = 0
+
+  for (const entry of entries) {
+    const inside = (ip: string): boolean => cidrs.some((cidr) => ipInCidr(ip, cidr))
+    if (entry.source && inside(entry.source)) {
+      connections += 1
+      bytes += entry.bytes
+    } else if (entry.destination && inside(entry.destination)) {
+      incoming += 1
+    }
+  }
+
+  return { connections, incoming, bytes }
+}
+
+/** True when the protocol of a connection matches the protocol of a rule. */
+function protoMatches(rule: string, protocol: string): boolean {
+  const wanted = rule.trim().toLowerCase()
+  if (!wanted || wanted === 'all') return true
+  const actual = protocol.trim().toLowerCase()
+  if (!actual) return true
+  return wanted.split(/\s+/).includes(actual)
+}
+
+/**
+ * The traffic that hit a port forwarding rule.
+ *
+ * The connection tracking table keeps the original destination of a
+ * connection, so the external port of the rule is the one to match.
+ */
+export function redirectTraffic(
+  redirect: FwRedirect,
+  entries: FwConntrackEntry[]
+): FwRedirectTraffic {
+  const port = Number(redirect.destPort)
+  if (!Number.isFinite(port) || port <= 0) {
+    return { connections: 0, bytes: 0, packets: 0 }
+  }
+
+  let connections = 0
+  let bytes = 0
+  let packets = 0
+
+  for (const entry of entries) {
+    if (entry.destinationPort !== port) continue
+    if (!protoMatches(redirect.proto, entry.protocol)) continue
+    connections += 1
+    bytes += entry.bytes
+    packets += entry.packets
+  }
+
+  return { connections, bytes, packets }
 }
 
 /* ------------------------------------------------------------------ *

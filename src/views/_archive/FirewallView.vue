@@ -5,7 +5,7 @@
       <el-button type="primary" @click="goFirewallConfig">防火墙配置</el-button>
     </PageHeader>
 
-    <el-alert v-if="error" type="error" :title="error.message" :closable="false" show-icon />
+    <el-alert v-if="error" type="error" :title="error?.message || '操作失败'" :closable="false" show-icon />
 
     <template v-if="loaded">
       <div class="grid grid-4">

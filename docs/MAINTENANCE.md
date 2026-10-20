@@ -37,8 +37,11 @@ npm run build
 ### 1.2 一键部署
 
 ```bash
-ROUTER_HOST=root@10.0.0.1 ./deploy/deploy.sh
+ROUTER_HOST=root@<路由器IP> ./deploy/deploy.sh
 ```
+
+> `ROUTER_HOST` / `ROUTER_WEB` 都是环境变量；不设时默认 `root@10.0.0.1` 与 `/www/modern`
+> （`10.0.0.1` 只是默认网关的通行默认值，按你的设备地址替换）。
 
 脚本做三件事：
 
@@ -59,18 +62,18 @@ ROUTER_HOST=root@10.0.0.1 ./deploy/deploy.sh
 ```bash
 npm run build
 
-tar -czf - -C dist . | ssh root@10.0.0.1 \
+tar -czf - -C dist . | ssh root@<路由器IP> \
   'rm -rf /www/modern.new && mkdir -p /www/modern.new && tar -xzf - -C /www/modern.new &&
    mv /www/modern /www/modern.old && mv /www/modern.new /www/modern && rm -rf /www/modern.old'
 
 for f in modern-login modern-data modern-proxy modern-read modern-exec modern-uci \
          modern-pkg modern-sysupgrade modern-shellcrash; do
-  ssh root@10.0.0.1 \
+  ssh root@<路由器IP> \
     "cat > /www/cgi-bin/.$f.new && chmod +x /www/cgi-bin/.$f.new && mv /www/cgi-bin/.$f.new /www/cgi-bin/$f" \
     < "deploy/$f"
 done
 
-ssh root@10.0.0.1 'chown -R root:root /www/modern && chmod -R a+rX /www/modern'
+ssh root@<路由器IP> 'chown -R root:root /www/modern && chmod -R a+rX /www/modern'
 ```
 
 **注意**：手动部署**不做**世代保留（没有 `assets.manifest`），
@@ -80,9 +83,9 @@ ssh root@10.0.0.1 'chown -R root:root /www/modern && chmod -R a+rX /www/modern'
 ### 1.4 部署后自检
 
 ```bash
-ssh root@10.0.0.1 'ls /www/cgi-bin/modern-* | wc -l'      # 期望 9
-ssh root@10.0.0.1 'head -1 /www/cgi-bin/modern-uci | od -c | head -1'   # 期望无 \r
-curl -sk https://10.0.0.1/modern/ | head -5             # 期望能看到 <!doctype html>
+ssh root@<路由器IP> 'ls /www/cgi-bin/modern-* | wc -l'      # 期望 9
+ssh root@<路由器IP> 'head -1 /www/cgi-bin/modern-uci | od -c | head -1'   # 期望无 \r
+curl -sk https://<路由器IP>/modern/ | head -5             # 期望能看到 <!doctype html>
 ```
 
 浏览器里走一遍：登录 → 概览有数 → 无线页能列出终端 → 诊断页 ping 一下 →
@@ -101,7 +104,7 @@ curl -sk https://10.0.0.1/modern/ | head -5             # 期望能看到 <!doct
 | `install-remote.sh` | 解包新版本后，按**旧 manifest** 把上一代的文件**拷进新目录**；旧 manifest 里没有的文件不再保留 |
 
 于是 `/www/modern/assets/` 里最多有「当前代 + 上一代」，**每一代约 1.4 MB**。
-再多就会把路由器的 overlay（这台机器只有 57 MB）吃满。
+再多就会把路由器的 overlay（实测设备上只有 57 MB）吃满。
 
 > `assets.manifest` 是**部署产物**，不进版本库；它只在路由器上。
 > 手工部署（§1.3）不产生 manifest —— 想恢复世代保留，手工把上一代文件拷回去。
@@ -117,7 +120,7 @@ curl -sk https://10.0.0.1/modern/ | head -5             # 期望能看到 <!doct
 ### 3.1 整站回退
 
 ```bash
-ssh root@10.0.0.1 '
+ssh root@<路由器IP> '
   rm -rf /www/modern
   rm -f /www/cgi-bin/modern-login /www/cgi-bin/modern-data /www/cgi-bin/modern-proxy \
         /www/cgi-bin/modern-read /www/cgi-bin/modern-exec /www/cgi-bin/modern-uci \
@@ -130,12 +133,12 @@ ssh root@10.0.0.1 '
 
 - **不会影响 LuCI** —— 控制台只往 `/www/modern` 和 `/www/cgi-bin/modern-*` 写，
   不碰 `/etc/config/luci`、不碰 LuCI 的主题包。
-- 回退后 `https://10.0.0.1/` 回到 LuCI 应急入口（无样式但功能完整）。
+- 回退后 `https://<路由器IP>/` 回到 LuCI 应急入口（无样式但功能完整）。
 
 ### 3.2 只回退一个 CGI
 
 ```bash
-ssh root@10.0.0.1 'cat > /www/cgi-bin/.modern-uci.new && chmod +x /www/cgi-bin/.modern-uci.new &&
+ssh root@<路由器IP> 'cat > /www/cgi-bin/.modern-uci.new && chmod +x /www/cgi-bin/.modern-uci.new &&
   mv /www/cgi-bin/.modern-uci.new /www/cgi-bin/modern-uci' < deploy/modern-uci
 ```
 
@@ -199,7 +202,7 @@ ssh root@10.0.0.1 'cat > /www/cgi-bin/.modern-uci.new && chmod +x /www/cgi-bin/.
 
 ### 本仓的特殊情况：快照
 
-本仓是源目录（`F:\Project\Openwrt\frontend\`）的**快照**，两边不自动同步。
+本仓是上游 OpenWrt 运维仓的 `frontend/` 目录的**快照**，两边不自动同步。
 - 本仓的改动**不会**回流源目录；源目录的改动**不会**回流本仓。
 - 根 `DEPLOY.md` / `PROGRESS.md` / `DESIGN.md` / `docs/V2-CONTRACT.md` / `docs/V3-CONTRACT.md`
   仍是源目录副本 —— 它们有过期内容，但**刻意不在本仓修**（改了反而与源目录产生无谓偏差）。

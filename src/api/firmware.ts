@@ -41,6 +41,7 @@ export type FirmwareAction =
   | 'info'
   | 'upload'
   | 'upgrade'
+  | 'verify'
   | 'backup'
   | 'restore'
   | 'list-backups'
@@ -83,7 +84,7 @@ export interface UpdateCheck {
   latest_version: string
   /** The target platform, e.g. `mediatek/filogic`. */
   target: string
-  /** The hardware id, e.g. `xiaomi,mi-router-ax3000t`. */
+  /** The hardware id, e.g. `vendor,model-name`. */
   id: string
   /** The model name of the router. */
   model: string
@@ -134,6 +135,28 @@ export interface FirmwareUploadResult {
   path: string
   size: number
   filename: string
+}
+
+/** The state of the firmware image that is on the router. */
+export interface FirmwareVerification {
+  ok: boolean
+  /** True when an image is stored in /tmp. */
+  exists: boolean
+  path: string
+  size: number
+  /** The sha256 checksum of the image, empty when it could not be read. */
+  sha256: string
+}
+
+/** The state of one check of the pre-flash verification. */
+export type FirmwareCheckState = 'pass' | 'fail' | 'unknown'
+
+export interface FirmwareCheck {
+  /** What is checked, e.g. "文件大小". */
+  label: string
+  state: FirmwareCheckState
+  /** The values that were compared. */
+  detail: string
 }
 
 export interface FirmwareBackupResult {
@@ -517,6 +540,81 @@ export function uploadFirmwareImage(
 export async function startFirmwareUpgrade(token: string): Promise<FirmwareStartedResult> {
   const payload = await callCgi<Record<string, unknown>>('upgrade', { token })
   return { ok: true, started: payload.started === true }
+}
+
+/**
+ * Reads the size and the checksum of the firmware image that is on the
+ * router. The console compares them with the official ones before it lets
+ * the user flash.
+ */
+export async function verifyFirmwareImage(): Promise<FirmwareVerification> {
+  const payload = await callCgi<Record<string, unknown>>('verify')
+  return {
+    ok: true,
+    exists: payload.exists === true,
+    path: stringField(payload, 'path', FIRMWARE_PATH),
+    size: numberField(payload, 'size'),
+    sha256: stringField(payload, 'sha256')
+  }
+}
+
+/** The official release page of a version. */
+export function officialReleaseUrl(version: string): string {
+  if (!version) return ''
+  return `https://downloads.openwrt.org/releases/${encodeURIComponent(version)}/`
+}
+
+/** The official download page of the target platform of a version. */
+export function officialTargetUrl(version: string, target: string): string {
+  if (!version || !target) return ''
+  // The target is a path like "mediatek/filogic": the slash has to stay a
+  // slash, otherwise the download server does not find the directory.
+  const path = target
+    .split('/')
+    .map((part) => encodeURIComponent(part))
+    .join('/')
+  return `https://downloads.openwrt.org/releases/${encodeURIComponent(version)}/targets/${path}/`
+}
+
+/** A record of the last flash, kept in the browser. */
+export interface FlashRecord {
+  /** Epoch in milliseconds. */
+  at: number
+  /** The version that was flashed. */
+  version: string
+  /** Where the image came from. */
+  source: 'official' | 'manual'
+}
+
+const FLASH_KEY = 'owrt-firmware-flash'
+
+/** The last flash of this browser, null when there was none. */
+export function loadFlashRecord(): FlashRecord | null {
+  try {
+    const raw = localStorage.getItem(FLASH_KEY)
+    if (!raw) return null
+    const parsed = JSON.parse(raw) as unknown
+    if (!parsed || typeof parsed !== 'object') return null
+    const record = parsed as Record<string, unknown>
+    const at = Number(record.at)
+    if (!Number.isFinite(at) || at <= 0) return null
+    return {
+      at,
+      version: typeof record.version === 'string' ? record.version : '',
+      source: record.source === 'manual' ? 'manual' : 'official'
+    }
+  } catch {
+    return null
+  }
+}
+
+/** Remembers the last flash of this browser. */
+export function saveFlashRecord(record: FlashRecord): void {
+  try {
+    localStorage.setItem(FLASH_KEY, JSON.stringify(record))
+  } catch {
+    /* the record is a convenience, a full storage must not break the page */
+  }
 }
 
 /** Writes a configuration backup into /tmp. */

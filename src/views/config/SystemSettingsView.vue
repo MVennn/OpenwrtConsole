@@ -11,42 +11,41 @@
         :disabled="!pendingChanges.length"
         @click="saveEverything"
       >
-        保存并应用
+        保存并应用<template v-if="pendingChanges.length">（{{ pendingChanges.length }}）</template>
       </el-button>
     </PageHeader>
 
-    <el-alert v-if="error" type="error" :title="error.message" :closable="false" show-icon />
+    <DraftNotice :dirty="draftDirty" :saved-at="savedAt" @discard="discardChanges" />
+
+    <el-alert v-if="error" type="error" :title="error?.message || '操作失败'" :closable="false" show-icon />
     <el-alert v-if="warning" type="warning" :title="warning" :closable="false" show-icon />
 
-    <template v-if="loaded && draft">
-      <PanelCard
-        v-if="pendingChanges.length"
+    <template v-if="loaded && snapshot">
+      <ConfigPendingPanel
+        :entries="pendingEntries"
         title="待生效的改动"
         subtitle="保存并应用之后才会写入路由器"
+        empty-title="没有待保存的改动"
+        empty-description="当前表单与路由器上生效的配置一致，修改之后这里会列出「旧值 → 新值」。"
       >
         <template #actions>
-          <el-button size="small" :icon="Undo2" @click="discardChanges">放弃修改</el-button>
-        </template>
-
-        <ul class="change-list">
-          <li
-            v-for="(change, index) in pendingChanges"
-            :key="`${change.section}-${change.option}-${index}`"
-            class="change-row"
+          <el-button
+            v-if="pendingChanges.length"
+            link
+            size="small"
+            type="primary"
+            :icon="Undo2"
+            @click="discardChanges"
           >
-            <span class="change-config mono">{{ change.config }}</span>
-            <span class="change-label">{{ change.label }}</span>
-            <span class="change-value mono truncate">{{ change.before || '—' }}</span>
-            <ArrowRight :size="13" class="change-arrow" />
-            <span class="change-value mono truncate is-next">{{ change.after || '—' }}</span>
-          </li>
-        </ul>
-      </PanelCard>
+            放弃修改
+          </el-button>
+        </template>
+      </ConfigPendingPanel>
 
       <div class="grid grid-4 stats-row">
         <StatCard
           label="静态租约"
-          :value="draft.leases.length"
+          :value="snapshot.leases.length"
           suffix="条"
           meta="固定 MAC 与地址的绑定"
           :icon="KeyRound"
@@ -80,8 +79,9 @@
         <PanelCard title="主机名与时区" subtitle="设备名称、系统时区与时间同步">
           <template #actions>
             <el-button
-              size="small"
+              link
               type="primary"
+              size="small"
               :loading="savingSystem"
               :disabled="!systemDirty"
               @click="saveIdentity"
@@ -152,8 +152,9 @@
         <PanelCard title="DNS 服务器与缓存" subtitle="dnsmasq 的上游解析与本地解析策略">
           <template #actions>
             <el-button
-              size="small"
+              link
               type="primary"
+              size="small"
               :loading="savingDns"
               :disabled="!dnsDirty"
               @click="saveDnsmasq"
@@ -200,8 +201,9 @@
         <PanelCard title="地址池" subtitle="dnsmasq 下发的动态地址范围">
           <template #actions>
             <el-button
-              size="small"
+              link
               type="primary"
+              size="small"
               :loading="savingPool"
               :disabled="!poolDirty"
               @click="savePool"
@@ -330,6 +332,13 @@
             <span class="strength-hint">{{ strength.hint }}</span>
           </div>
 
+          <ul v-if="strength.suggestions.length" class="strength-list">
+            <li v-for="item in strength.suggestions" :key="item" class="strength-item">
+              <Lightbulb :size="12" />
+              {{ item }}
+            </li>
+          </ul>
+
           <p class="card-note">
             <Info :size="13" class="note-icon" />
             留空表示不修改密码。修改成功后需要使用新密码重新登录。
@@ -339,13 +348,13 @@
 
       <PanelCard title="静态租约" subtitle="固定 MAC 与地址的绑定关系" flush>
         <template #actions>
-          <span class="count-badge">{{ draft.leases.length }}</span>
-          <el-button size="small" type="primary" :icon="Plus" @click="openLeaseDialog(null)">
+          <span class="count-badge">{{ snapshot.leases.length }}</span>
+          <el-button link type="primary" size="small" :icon="Plus" @click="openLeaseDialog(null)">
             新增
           </el-button>
         </template>
 
-        <div v-if="draft.leases.length" class="desktop-only">
+        <div v-if="snapshot.leases.length" class="desktop-only">
           <el-table :data="leaseRows" style="width: 100%">
             <el-table-column label="主机名" min-width="180">
               <template #default="{ row }">
@@ -362,20 +371,40 @@
                 <span class="mono-value">{{ row.ip || '—' }}</span>
               </template>
             </el-table-column>
-            <el-table-column label="操作" width="170" align="right">
+            <el-table-column label="在线状态" min-width="150">
+              <template #default="{ row }">
+                <StatusBadge
+                  :label="leaseState(row).online ? '在线' : '离线'"
+                  :tone="leaseState(row).online ? 'success' : 'neutral'"
+                />
+                <div v-if="leaseState(row).device" class="table-sub">
+                  {{ leaseState(row).device?.hostname || leaseState(row).device?.ip }}
+                </div>
+              </template>
+            </el-table-column>
+            <el-table-column label="操作" width="220" align="right">
               <template #default="{ row }">
                 <div class="row-actions">
-                <el-button link size="small" :icon="Pencil" @click="openLeaseDialog(row)">编辑</el-button>
-                <el-button link size="small" type="danger" plain :icon="Trash2" @click="removeLease(row)">
-                  删除
-                </el-button>
-                              </div>
+                  <el-button
+                    link
+                    size="small"
+                    :icon="ExternalLink"
+                    :disabled="!row.ip"
+                    @click="openClient(row)"
+                  >
+                    查看客户端
+                  </el-button>
+                  <el-button link size="small" :icon="Pencil" @click="openLeaseDialog(row)">编辑</el-button>
+                  <el-button link size="small" type="danger" :icon="Trash2" @click="removeLease(row)">
+                    删除
+                  </el-button>
+                </div>
               </template>
             </el-table-column>
           </el-table>
         </div>
 
-        <div v-if="draft.leases.length" class="mobile-only mobile-list">
+        <div v-if="snapshot.leases.length" class="mobile-only mobile-list">
           <div v-for="row in leaseRows" :key="row.section" class="mobile-row">
             <div class="mobile-row-head">
               <strong class="truncate">{{ row.name || '未命名' }}</strong>
@@ -385,7 +414,19 @@
               <span>MAC</span>
               <span class="mono-value">{{ row.mac || '—' }}</span>
             </div>
+            <div class="mobile-line">
+              <span>在线状态</span>
+              <span>{{ leaseState(row).online ? '在线' : '离线' }}</span>
+            </div>
             <div class="mobile-actions">
+              <el-button
+                size="small"
+                :icon="ExternalLink"
+                :disabled="!row.ip"
+                @click="openClient(row)"
+              >
+                查看客户端
+              </el-button>
               <el-button size="small" :icon="Pencil" @click="openLeaseDialog(row)">编辑</el-button>
               <el-button size="small" type="danger" plain :icon="Trash2" @click="removeLease(row)">
                 删除
@@ -395,7 +436,7 @@
         </div>
 
         <EmptyState
-          v-if="!draft.leases.length"
+          v-if="!snapshot.leases.length"
           :icon="KeyRound"
           title="没有静态租约"
           description="点击右上角「新增」为设备绑定固定地址。"
@@ -405,7 +446,7 @@
       <PanelCard title="当前租约" subtitle="dnsmasq 正在下发的地址" flush>
         <template #actions>
           <span class="count-badge">{{ liveLeases.length }}</span>
-          <el-button size="small" :icon="RefreshCw" @click="refreshLeases">刷新</el-button>
+          <el-button link size="small" :icon="RefreshCw" @click="refreshLeases">刷新</el-button>
         </template>
 
         <div v-if="liveLeases.length" class="desktop-only">
@@ -471,7 +512,7 @@
       ref="leaseDialog"
       v-model="leaseDialogVisible"
       :lease="editingLease"
-      :leases="draft ? draft.leases : []"
+      :leases="snapshot ? snapshot.leases : []"
       :pools="resolvedPools"
       @submit="onLeaseSubmit"
     />
@@ -480,11 +521,13 @@
 
 <script setup lang="ts">
   import { computed, onMounted, ref } from 'vue'
+  import { useRouter } from 'vue-router'
   import {
-    ArrowRight,
     Clock,
+    ExternalLink,
     Info,
     KeyRound,
+    Lightbulb,
     Network,
     Pencil,
     Plus,
@@ -502,23 +545,37 @@
   import StatCard from '@/components/StatCard.vue'
   import StatusBadge from '@/components/StatusBadge.vue'
   import EmptyState from '@/components/EmptyState.vue'
+  import DraftNotice from '@/components/DraftNotice.vue'
+  import ConfigPendingPanel from '@/components/cfg-pending/ConfigPendingPanel.vue'
   import SysFormField from '@/components/config-sys/SysFormField.vue'
   import SysLeaseDialog from '@/components/config-sys/SysLeaseDialog.vue'
+  import { useDraft, useUnsavedGuard } from '@/composables/useDraft'
   import { usePolling } from '@/composables/usePolling'
+  import { uciChanges, type UciChange } from '@/api/uci'
+  import {
+    buildPendingEntries,
+    resetDraft,
+    type PendingEntry
+  } from '@/api/configPending'
   import {
     addDhcpPool,
     addStaticLease,
     changeAdminPassword,
-    cloneSnapshot,
+    cloneDraft,
     deleteStaticLease,
     diffDnsmasq,
     diffIdentity,
     diffPools,
     diffSnapshots,
+    draftFromSnapshot,
+    emptyDraft,
     isValidHostname,
+    matchLeaseOnline,
     readInterfaceAddresses,
     readLeases,
     readNetworkInterfaces,
+    readOnlineDevices,
+    readRawConfigs,
     readSnapshot,
     readTimezones,
     resolvePools,
@@ -527,8 +584,12 @@
     splitList,
     updateStaticLease,
     type SysChange,
+    type SysDraft,
     type SysInterfaceAddress,
     type SysLease,
+    type SysLeaseState,
+    type SysOnlineDevice,
+    type SysRawConfigs,
     type SysResolvedPool,
     type SysSnapshot,
     type SysStaticLease
@@ -540,12 +601,23 @@
 
   const LEASE_TIME_OPTIONS = ['1h', '2h', '4h', '6h', '12h', '24h', '48h', '168h']
 
+  const router = useRouter()
+
+  /** The state of the router — the reference of every diff. */
   const snapshot = ref<SysSnapshot | null>(null)
-  const draft = ref<SysSnapshot | null>(null)
+  /** The editable state; it survives a reload until it is saved or discarded. */
+  const draftStore = useDraft<SysDraft>('sys-config', emptyDraft())
+  const draft = draftStore.value
+  const savedAt = draftStore.savedAt
+
   const liveLeases = ref<SysLease[]>([])
+  const onlineDevices = ref<SysOnlineDevice[]>([])
   const timezones = ref<string[]>([])
   const addresses = ref<Record<string, SysInterfaceAddress>>({})
   const networkInterfaces = ref<string[]>([])
+  const rawConfigs = ref<SysRawConfigs>({ dhcp: {}, system: {} })
+  const dhcpChanges = ref<UciChange[]>([])
+  const systemChanges = ref<UciChange[]>([])
 
   const saving = ref(false)
   const reloading = ref(false)
@@ -573,30 +645,72 @@
 
   /* ------------------------------------------------------------ derived */
 
+  /** The draft as a snapshot, so the diff helpers can be reused. */
+  const draftSnapshot = computed<SysSnapshot>(() => ({
+    identity: draft.value.identity,
+    dnsmasq: draft.value.dnsmasq,
+    pools: draft.value.pools,
+    leases: snapshot.value?.leases ?? []
+  }))
+
   const pendingChanges = computed<SysChange[]>(() => {
-    if (!snapshot.value || !draft.value) return []
-    return diffSnapshots(draft.value, snapshot.value)
+    if (!snapshot.value) return []
+    return diffSnapshots(draftSnapshot.value, snapshot.value)
   })
 
+  /** The local changes plus the changes the router reports for its staging area. */
+  const pendingEntries = computed<PendingEntry[]>(() => {
+    const local = pendingChanges.value.map((change) => ({
+      op: 'set' as const,
+      section: change.section,
+      option: change.option,
+      type: '',
+      label: change.label,
+      before: change.before,
+      after: change.after,
+      target: `${change.config} · ${change.section}.${change.option}`
+    }))
+
+    const known = new Set(local.map((entry) => `${entry.section}.${entry.option}`))
+    const routerEntries: PendingEntry[] = []
+
+    const collect = (config: 'dhcp' | 'system', changes: UciChange[]): void => {
+      for (const entry of buildPendingEntries(rawConfigs.value[config], changes, [])) {
+        const key = `${entry.section}.${entry.option}`
+        if (known.has(key)) continue
+        known.add(key)
+        routerEntries.push({ ...entry, target: `${config} · ${entry.target}` })
+      }
+    }
+
+    collect('dhcp', dhcpChanges.value)
+    collect('system', systemChanges.value)
+
+    return [...local, ...routerEntries]
+  })
+
+  const draftDirty = computed(() => draftStore.dirty.value && pendingChanges.value.length > 0)
+
+  useUnsavedGuard(draftDirty, '系统设置有未保存的修改')
+
   const systemDirty = computed(() => {
-    if (!snapshot.value || !draft.value) return false
+    if (!snapshot.value) return false
     return diffIdentity(draft.value.identity, snapshot.value.identity).length > 0
   })
 
   const dnsDirty = computed(() => {
-    if (!snapshot.value || !draft.value) return false
+    if (!snapshot.value) return false
     return diffDnsmasq(draft.value.dnsmasq, snapshot.value.dnsmasq).length > 0
   })
 
   const poolDirty = computed(() => {
-    if (!snapshot.value || !draft.value) return false
+    if (!snapshot.value) return false
     return diffPools(draft.value.pools, snapshot.value.pools).length > 0
   })
 
-  const resolvedPools = computed<SysResolvedPool[]>(() => {
-    if (!draft.value) return []
-    return resolvePools(draft.value.pools, addresses.value)
-  })
+  const resolvedPools = computed<SysResolvedPool[]>(() =>
+    resolvePools(draft.value.pools, addresses.value)
+  )
 
   const poolOptions = computed(() =>
     resolvedPools.value.map((pool) => ({
@@ -608,16 +722,14 @@
   )
 
   const currentPool = computed(() => {
-    if (!draft.value) return null
+    const pools = draft.value.pools
     return (
-      draft.value.pools.find((pool) => pool.section === selectedPoolSection.value) ??
-      draft.value.pools[0] ??
-      null
+      pools.find((pool) => pool.section === selectedPoolSection.value) ?? pools[0] ?? null
     )
   })
 
   const poolCapacity = computed(() =>
-    draft.value ? draft.value.pools.reduce((total, pool) => total + pool.limit, 0) : 0
+    draft.value.pools.reduce((total, pool) => total + pool.limit, 0)
   )
 
   const poolMeta = computed(() => {
@@ -637,12 +749,21 @@
 
   const timezoneOptions = computed(() => {
     const options = new Set(timezones.value)
-    const current = draft.value?.identity.timezone
+    const current = draft.value.identity.timezone
     if (current) options.add(current)
     return [...options].sort((a, b) => a.localeCompare(b))
   })
 
-  const leaseRows = computed(() => draft.value?.leases ?? [])
+  const leaseRows = computed(() => snapshot.value?.leases ?? [])
+
+  /** The online state of every static lease. */
+  const leaseStates = computed(() => {
+    const map = new Map<string, SysLeaseState>()
+    for (const lease of leaseRows.value) {
+      map.set(lease.section, matchLeaseOnline(lease, onlineDevices.value))
+    }
+    return map
+  })
 
   const liveLeaseRows = computed(() =>
     liveLeases.value
@@ -670,65 +791,65 @@
   /* -------------------------------------------------------- form bindings */
 
   const hostname = computed({
-    get: () => draft.value?.identity.hostname ?? '',
+    get: () => draft.value.identity.hostname ?? '',
     set: (value: string) => {
-      if (draft.value) draft.value.identity.hostname = value
+      draft.value.identity.hostname = value
     }
   })
 
   const timezone = computed({
-    get: () => draft.value?.identity.timezone ?? '',
+    get: () => draft.value.identity.timezone ?? '',
     set: (value: string) => {
-      if (draft.value) draft.value.identity.timezone = value
+      draft.value.identity.timezone = value
     }
   })
 
   const logSize = computed({
-    get: () => draft.value?.identity.logSize ?? 64,
+    get: () => draft.value.identity.logSize ?? 64,
     set: (value: number | undefined) => {
-      if (draft.value) draft.value.identity.logSize = value ?? 64
+      draft.value.identity.logSize = value ?? 64
     }
   })
 
   const ttylogin = computed({
-    get: () => draft.value?.identity.ttylogin ?? true,
+    get: () => draft.value.identity.ttylogin ?? true,
     set: (value: boolean) => {
-      if (draft.value) draft.value.identity.ttylogin = value
+      draft.value.identity.ttylogin = value
     }
   })
 
   const ntpText = computed({
-    get: () => (draft.value?.identity.ntpServers ?? []).join(' '),
+    get: () => (draft.value.identity.ntpServers ?? []).join(' '),
     set: (value: string) => {
-      if (draft.value) draft.value.identity.ntpServers = splitList(value)
+      draft.value.identity.ntpServers = splitList(value)
     }
   })
 
   const dnsServersText = computed({
-    get: () => (draft.value?.dnsmasq.servers ?? []).join(' '),
+    get: () => (draft.value.dnsmasq.servers ?? []).join(' '),
     set: (value: string) => {
-      if (draft.value) draft.value.dnsmasq.servers = splitList(value)
+      draft.value.dnsmasq.servers = splitList(value)
     }
   })
 
   const cachesize = computed({
-    get: () => draft.value?.dnsmasq.cachesize ?? 0,
+    get: () => draft.value.dnsmasq.cachesize ?? 0,
     set: (value: number | undefined) => {
-      if (draft.value) draft.value.dnsmasq.cachesize = value ?? 0
+      draft.value.dnsmasq.cachesize = value ?? 0
     }
   })
 
   const noresolv = computed({
-    get: () => draft.value?.dnsmasq.noresolv ?? false,
+    get: () => draft.value.dnsmasq.noresolv ?? false,
     set: (value: boolean) => {
-      if (draft.value) draft.value.dnsmasq.noresolv = value
+      draft.value.dnsmasq.noresolv = value
     }
   })
 
   const localservice = computed({
-    get: () => draft.value?.dnsmasq.localservice ?? false,
+    get: () => draft.value.dnsmasq.localservice ?? false,
     set: (value: boolean) => {
-      if (draft.value) draft.value.dnsmasq.localservice = value
+      draft.value.dnsmasq.localservice = value
     }
   })
 
@@ -759,14 +880,37 @@
   /* ------------------------------------------------------------- loading */
 
   async function loadConfig(): Promise<void> {
-    const [next, nextAddresses] = await Promise.all([
+    const [next, nextAddresses, raw, dhcpDelta, systemDelta] = await Promise.all([
       readSnapshot(),
-      readInterfaceAddresses().catch(() => ({}) as Record<string, SysInterfaceAddress>)
+      readInterfaceAddresses().catch(() => ({}) as Record<string, SysInterfaceAddress>),
+      readRawConfigs().catch(() => ({ dhcp: {}, system: {} }) as SysRawConfigs),
+      uciChanges('dhcp').catch(() => [] as UciChange[]),
+      uciChanges('system').catch(() => [] as UciChange[])
     ])
+
     addresses.value = nextAddresses
     snapshot.value = next
-    draft.value = cloneSnapshot(next)
-    selectedPoolSection.value = next.pools[0]?.section ?? ''
+    rawConfigs.value = raw
+    dhcpChanges.value = dhcpDelta
+    systemChanges.value = systemDelta
+
+    // Without a restored draft the form starts with the state of the router.
+    if (!draftStore.dirty.value) {
+      draft.value = draftFromSnapshot(next)
+      await resetDraft(draftStore)
+    }
+
+    const pools = draft.value.pools
+    if (!selectedPoolSection.value || !pools.some((pool) => pool.section === selectedPoolSection.value)) {
+      selectedPoolSection.value = pools[0]?.section ?? ''
+    }
+  }
+
+  /** Writes the state of the router back into the draft and clears it. */
+  async function resetDraftToServer(): Promise<void> {
+    if (!snapshot.value) return
+    draft.value = draftFromSnapshot(snapshot.value)
+    await resetDraft(draftStore)
   }
 
   async function refreshLeases(): Promise<void> {
@@ -779,10 +923,18 @@
     }
   }
 
+  async function refreshOnlineDevices(): Promise<void> {
+    try {
+      onlineDevices.value = await readOnlineDevices()
+    } catch {
+      // The online list is an extra, the rest of the page still works.
+    }
+  }
+
   async function reloadAll(): Promise<void> {
     reloading.value = true
     try {
-      await Promise.all([loadConfig(), refreshLeases()])
+      await Promise.all([loadConfig(), refreshLeases(), refreshOnlineDevices()])
       ElMessage.success('已重新读取路由器配置')
     } catch (err) {
       ElMessage.error(err instanceof Error ? err.message : '读取配置失败')
@@ -793,7 +945,7 @@
 
   const { loaded, error, refreshing } = usePolling(async () => {
     if (!snapshot.value) await loadConfig()
-    await refreshLeases()
+    await Promise.all([refreshLeases(), refreshOnlineDevices()])
   }, 10000)
 
   onMounted(() => {
@@ -811,7 +963,7 @@
   /* --------------------------------------------------------------- saving */
 
   async function runSave(scope: 'system' | 'dns' | 'pool' | 'all', flag: typeof saving): Promise<void> {
-    if (!draft.value || !snapshot.value) return
+    if (!snapshot.value) return
 
     if (scope === 'system' || scope === 'all') {
       const host = draft.value.identity.hostname.trim()
@@ -830,9 +982,10 @@
 
     flag.value = true
     try {
-      const changed = await saveSettings(draft.value, snapshot.value, scope)
+      const changed = await saveSettings(draftSnapshot.value, snapshot.value, scope)
       // The router is the source of truth again after a successful apply.
       await loadConfig()
+      await resetDraftToServer()
       ElMessage.success(changed ? `已保存并应用 ${changed} 项改动` : '没有需要保存的改动')
     } catch (err) {
       ElMessage.error(err instanceof Error ? err.message : '保存失败，配置已回滚')
@@ -891,8 +1044,8 @@
       }
     }
 
-    draft.value = cloneSnapshot(snapshot.value)
-    selectedPoolSection.value = snapshot.value.pools[0]?.section ?? ''
+    await resetDraftToServer()
+    selectedPoolSection.value = draft.value.pools[0]?.section ?? ''
     ElMessage.info('已放弃未保存的修改')
   }
 
@@ -909,7 +1062,13 @@
         leasetime: '12h'
       })
       await loadConfig()
-      const pools = draft.value?.pools ?? []
+      // Keep the edits of the existing pools, add the new one.
+      const serverPools = snapshot.value?.pools ?? []
+      draft.value.pools = serverPools.map((pool) => {
+        const local = draft.value.pools.find((item) => item.section === pool.section)
+        return local ?? { ...pool }
+      })
+      const pools = draft.value.pools
       selectedPoolSection.value = pools.length ? pools[pools.length - 1].section : ''
       ElMessage.success('地址池已创建')
     } catch (err) {
@@ -926,6 +1085,17 @@
     leaseDialogVisible.value = true
   }
 
+  /** The online state of a static lease. */
+  function leaseState(lease: SysStaticLease): SysLeaseState {
+    return leaseStates.value.get(lease.section) ?? { online: false, device: null }
+  }
+
+  /** Opens the client list and points at the device of the lease. */
+  function openClient(lease: SysStaticLease): void {
+    void router.push({ name: 'clients', query: { ip: lease.ip, mac: lease.mac } })
+    ElMessage.info(`已跳转到客户端列表，可搜索 ${lease.ip || lease.mac} 查看这台设备`)
+  }
+
   async function onLeaseSubmit(value: { name: string; mac: string; ip: string }): Promise<void> {
     try {
       if (editingLease.value) {
@@ -937,6 +1107,7 @@
       }
       leaseDialogVisible.value = false
       await loadConfig()
+      await refreshOnlineDevices()
     } catch (err) {
       ElMessage.error(err instanceof Error ? err.message : '保存静态租约失败')
     } finally {
@@ -963,6 +1134,7 @@
     try {
       await deleteStaticLease(lease.section)
       await loadConfig()
+      await refreshOnlineDevices()
       ElMessage.success('静态租约已删除')
     } catch (err) {
       ElMessage.error(err instanceof Error ? err.message : '删除静态租约失败')
@@ -1030,6 +1202,12 @@
 </script>
 
 <style scoped>
+  /* Element Plus 给相邻按钮加了 12px 左边距，和外层 flex 的 gap 叠加后
+     同一行的按钮会被拉到 20px 间距；这里把间距统一交回给 gap 控制。 */
+  .el-button + .el-button {
+    margin-left: 0;
+  }
+
   .stats-row :deep(.stat-value) {
     overflow: hidden;
     text-overflow: ellipsis;
@@ -1191,6 +1369,30 @@
     flex-shrink: 0;
     color: var(--text-muted);
     font-size: 11.5px;
+  }
+
+  .strength-list {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    margin: 10px 0 0;
+    padding: 0;
+    list-style: none;
+  }
+
+  .strength-item {
+    display: flex;
+    align-items: flex-start;
+    gap: 6px;
+    color: var(--text-muted);
+    font-size: 11.5px;
+    line-height: 1.6;
+  }
+
+  .strength-item svg {
+    flex-shrink: 0;
+    margin-top: 2px;
+    color: var(--text-faint);
   }
 
   .count-badge {

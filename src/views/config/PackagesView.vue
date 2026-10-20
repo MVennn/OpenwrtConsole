@@ -70,15 +70,17 @@
 
       <PanelCard class="pkg-panel" :title="viewTitle" :subtitle="viewSubtitle" flush>
         <template #actions>
-          <el-radio-group
-            :model-value="activeView"
-            class="pkg-seg"
-            size="small"
-            @change="onViewChange"
-          >
-            <el-radio-button value="installed">已安装</el-radio-button>
-            <el-radio-button value="repo">仓库</el-radio-button>
-          </el-radio-group>
+          <div class="pkg-seg-wrap" @mousedown="captureScroll">
+            <el-radio-group
+              :model-value="activeView"
+              class="pkg-seg"
+              size="small"
+              @change="onViewChange"
+            >
+              <el-radio-button value="installed">已安装</el-radio-button>
+              <el-radio-button value="repo">仓库</el-radio-button>
+            </el-radio-group>
+          </div>
         </template>
 
         <div class="pkg-toolbar">
@@ -119,7 +121,21 @@
                   <span class="mono-value">{{ row.version }}</span>
                 </template>
               </el-table-column>
-              <el-table-column label="描述" min-width="260">
+              <el-table-column label="状态" width="120">
+                <template #default="{ row }">
+                  <el-tag
+                    v-if="upgradableVersion(row.name)"
+                    type="warning"
+                    size="small"
+                    effect="plain"
+                    class="pkg-tag-upgrade"
+                  >
+                    可升级
+                  </el-tag>
+                  <span v-else class="muted text-xs">—</span>
+                </template>
+              </el-table-column>
+              <el-table-column label="描述" min-width="240">
                 <template #default="{ row }">
                   <span class="pkg-desc" :title="row.description || ''">{{
                     row.description || '—'
@@ -131,18 +147,31 @@
                   <span class="num">{{ formatBytes(row.installedSize) }}</span>
                 </template>
               </el-table-column>
-              <el-table-column label="操作" width="100" align="right">
+              <el-table-column label="操作" width="170" align="right">
                 <template #default="{ row }">
-                  <el-button
-                    type="danger"
-                    plain
-                    size="small"
-                    :loading="busyWith(`remove:${row.name}`)"
-                    :disabled="busy !== '' && !busyWith(`remove:${row.name}`)"
-                    @click="onRemove(row)"
-                  >
-                    卸载
-                  </el-button>
+                  <div class="pkg-actions">
+                    <el-button
+                      v-if="upgradableVersion(row.name)"
+                      type="warning"
+                      plain
+                      size="small"
+                      :loading="busyWith(`upgrade:${row.name}`)"
+                      :disabled="busy !== '' && !busyWith(`upgrade:${row.name}`)"
+                      @click="onUpgradeOne(row)"
+                    >
+                      升级
+                    </el-button>
+                    <el-button
+                      type="danger"
+                      plain
+                      size="small"
+                      :loading="busyWith(`remove:${row.name}`)"
+                      :disabled="busy !== '' && !busyWith(`remove:${row.name}`)"
+                      @click="onRemove(row)"
+                    >
+                      卸载
+                    </el-button>
+                  </div>
                 </template>
               </el-table-column>
             </el-table>
@@ -162,7 +191,31 @@
                 <span>大小</span>
                 <span class="num">{{ formatBytes(row.installedSize) }}</span>
               </div>
+              <div class="mobile-line">
+                <span>状态</span>
+                <el-tag
+                  v-if="upgradableVersion(row.name)"
+                  type="warning"
+                  size="small"
+                  effect="plain"
+                  class="pkg-tag-upgrade"
+                >
+                  可升级到 {{ upgradableVersion(row.name) }}
+                </el-tag>
+                <span v-else class="muted">已是最新</span>
+              </div>
               <div class="mobile-actions">
+                <el-button
+                  v-if="upgradableVersion(row.name)"
+                  type="warning"
+                  plain
+                  size="small"
+                  :loading="busyWith(`upgrade:${row.name}`)"
+                  :disabled="busy !== '' && !busyWith(`upgrade:${row.name}`)"
+                  @click="onUpgradeOne(row)"
+                >
+                  升级
+                </el-button>
                 <el-button
                   type="danger"
                   plain
@@ -204,29 +257,47 @@
                     <div v-if="row.origin" class="pkg-sub truncate">{{ row.origin }}</div>
                   </template>
                 </el-table-column>
-                <el-table-column label="版本" min-width="150">
+                <el-table-column label="版本" min-width="170">
                   <template #default="{ row }">
                     <span class="mono-value">{{ row.version }}</span>
+                    <el-tag
+                      v-if="row.installed"
+                      type="info"
+                      size="small"
+                      effect="plain"
+                      class="pkg-tag"
+                    >
+                      已安装
+                    </el-tag>
                   </template>
                 </el-table-column>
-                <el-table-column label="描述" min-width="300">
+                <el-table-column label="依赖" width="90" align="right">
+                  <template #default="{ row }">
+                    <span class="num" :title="dependencyTitle(row)">{{
+                      dependencyText(row)
+                    }}</span>
+                  </template>
+                </el-table-column>
+                <el-table-column label="描述" min-width="280">
                   <template #default="{ row }">
                     <span class="pkg-desc" :title="row.description || ''">{{
                       row.description || '—'
                     }}</span>
                   </template>
                 </el-table-column>
-                <el-table-column label="操作" width="100" align="right">
+                <el-table-column label="操作" width="110" align="right">
                   <template #default="{ row }">
                     <el-button
                       type="primary"
                       plain
                       size="small"
                       :loading="busyWith(`install:${row.name}`)"
-                      :disabled="busy !== '' && !busyWith(`install:${row.name}`)"
+                      :disabled="
+                        row.installed || (busy !== '' && !busyWith(`install:${row.name}`))
+                      "
                       @click="onInstall(row)"
                     >
-                      安装
+                      {{ row.installed ? '已安装' : '安装' }}
                     </el-button>
                   </template>
                 </el-table-column>
@@ -243,16 +314,22 @@
                   <span>描述</span>
                   <span class="mobile-desc truncate">{{ row.description || '—' }}</span>
                 </div>
+                <div class="mobile-line">
+                  <span>依赖</span>
+                  <span class="num">{{ dependencyText(row) }}</span>
+                </div>
                 <div class="mobile-actions">
                   <el-button
                     type="primary"
                     plain
                     size="small"
                     :loading="busyWith(`install:${row.name}`)"
-                    :disabled="busy !== '' && !busyWith(`install:${row.name}`)"
+                    :disabled="
+                      row.installed || (busy !== '' && !busyWith(`install:${row.name}`))
+                    "
                     @click="onInstall(row)"
                   >
-                    安装
+                    {{ row.installed ? '已安装' : '安装' }}
                   </el-button>
                 </div>
               </div>
@@ -268,8 +345,19 @@
         </template>
       </PanelCard>
 
-      <PanelCard v-if="lastOutput" title="操作输出" subtitle="最近一次写操作的原始输出">
-        <pre class="pkg-output">{{ lastOutput }}</pre>
+      <PanelCard v-if="outputVisible" title="操作输出" subtitle="最近一次写操作的原始输出">
+        <template #actions>
+          <el-button size="small" :icon="Copy" :disabled="!lastOutput" @click="copyOutput">
+            复制
+          </el-button>
+        </template>
+        <pre v-if="lastOutput" class="pkg-output">{{ lastOutput }}</pre>
+        <EmptyState
+          v-else
+          :icon="Terminal"
+          title="没有输出"
+          description="路由器没有返回任何文本，请查看上方的错误提示后重试。"
+        />
       </PanelCard>
 
       <p class="page-note">
@@ -288,13 +376,24 @@
 
 <script setup lang="ts">
   import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
-  import { Activity, CircleArrowUp, Clock, Download, Package, RefreshCw, Search } from 'lucide-vue-next'
+  import {
+    Activity,
+    CircleArrowUp,
+    Clock,
+    Copy,
+    Download,
+    Package,
+    RefreshCw,
+    Search,
+    Terminal
+  } from 'lucide-vue-next'
   import { ElMessage, ElMessageBox } from 'element-plus'
   import PageHeader from '@/components/PageHeader.vue'
   import PanelCard from '@/components/PanelCard.vue'
   import StatCard from '@/components/StatCard.vue'
   import EmptyState from '@/components/EmptyState.vue'
   import {
+    dependencyCount,
     fetchInstalledPackages,
     fetchPackageStats,
     fetchRepositoryPackages,
@@ -318,6 +417,8 @@
   const repoMatchCount = ref(0)
   const upgradableCount = ref(0)
   const indexUpdatedAt = ref(0)
+  /** The packages a newer version exists for: name → new version. */
+  const upgradableVersions = ref<Record<string, string>>({})
 
   const installedSearch = ref('')
   const installedTerm = ref('')
@@ -335,6 +436,8 @@
 
   const lastAction = ref<{ label: string; ok: boolean; at: number } | null>(null)
   const lastOutput = ref('')
+  /** True once a write operation was started: the output card is shown then. */
+  const outputVisible = ref(false)
 
   const loaded = ref(false)
   const refreshing = ref(false)
@@ -344,6 +447,8 @@
 
   const pageRoot = ref<HTMLElement>()
   const scrollPositions: Record<PkgView, number> = { installed: 0, repo: 0 }
+  let scrollCapturedAt = 0
+  let scrollFrozenUntil = 0
 
   let elapsedTimer: number | undefined
   let installedTimer: number | undefined
@@ -375,10 +480,40 @@
     return scrollHost()?.scrollTop ?? 0
   }
 
-  function restoreScroll(view: PkgView): void {
+  /**
+   * Remembers the offset of the view that is on screen. Every scroll is
+   * recorded, so switching back returns to the place the user left.
+   */
+  function onHostScroll(event: Event): void {
+    // A click moves the focus to the segmented control and the browser
+    // scrolls that button into view — that is not the user's own scroll.
+    if (Date.now() < scrollFrozenUntil) return
+    const target = event.target
+    if (target instanceof HTMLElement && target !== scrollHost()) return
     const host = scrollHost()
-    if (!host) return
-    host.scrollTop = scrollPositions[view]
+    if (host) scrollPositions[activeView.value] = host.scrollTop
+  }
+
+  /**
+   * Puts the view back to the offset it had before the switch. The table
+   * grows over the next frames, so the offset is applied again until the
+   * content is tall enough to hold it — otherwise the browser clamps it.
+   * A timer is used instead of a frame callback, because frames do not run
+   * while the tab is in the background.
+   */
+  function restoreScroll(view: PkgView): void {
+    const target = scrollPositions[view]
+    let attempts = 0
+    const apply = (): void => {
+      const host = scrollHost()
+      if (!host) return
+      host.scrollTop = target
+      attempts += 1
+      if (target > 0 && attempts < 8 && host.scrollTop < target) {
+        window.setTimeout(apply, 32)
+      }
+    }
+    window.setTimeout(apply, 0)
   }
 
   // -------------------------------------------------------------- views ---
@@ -491,6 +626,30 @@
     installedCount.value = result.installedCount ?? installed.value.length
     upgradableCount.value = result.upgradableCount ?? upgradableCount.value
     indexUpdatedAt.value = result.indexUpdatedAt ?? indexUpdatedAt.value
+    // The router answers with the packages a newer version exists for.
+    const map: Record<string, string> = {}
+    for (const item of result.upgradable ?? []) {
+      if (item?.name) map[item.name] = item.version
+    }
+    upgradableVersions.value = map
+  }
+
+  /** The version a package can be upgraded to, empty when it is up to date. */
+  function upgradableVersion(name: string): string {
+    return upgradableVersions.value[name] ?? ''
+  }
+
+  /** The number of dependencies of a repository entry. */
+  function dependencyText(pkg: PackageInfo): string {
+    const count = dependencyCount(pkg)
+    return count === null ? '—' : String(count)
+  }
+
+  /** The dependencies of a repository entry, for the tooltip. */
+  function dependencyTitle(pkg: PackageInfo): string {
+    const list = pkg.depends ?? []
+    if (!list.length) return '没有依赖'
+    return `依赖：${list.join('、')}`
   }
 
   /**
@@ -532,7 +691,7 @@
       const result = await fetchRepositoryPackages(repoTerm.value)
       if (id !== repoRequestId) return
       repoPackages.value = result.packages ?? []
-      repoMatchCount.value = result.availableCount ?? repoPackages.value.length
+      repoMatchCount.value = result.matchedCount ?? result.availableCount ?? repoPackages.value.length
       repoLoaded.value = true
       repoStale.value = false
     } catch (err) {
@@ -603,13 +762,26 @@
   function onViewChange(next: unknown): void {
     const target: PkgView = next === 'repo' ? 'repo' : 'installed'
     if (target === activeView.value) return
-    // Every view keeps its own scroll position.
-    scrollPositions[activeView.value] = currentScroll()
+    // A mouse click moves the focus to the button, and the browser scrolls
+    // the focused button into view before the change is reported — so the
+    // position of the view we are leaving was captured on mousedown.
+    if (Date.now() - scrollCapturedAt > 500) {
+      scrollPositions[activeView.value] = currentScroll()
+    }
     activeView.value = target
     void nextTick(() => {
       restoreScroll(target)
       void ensureViewData(target)
     })
+  }
+
+  /** Remembers where the active view is scrolled to before a click moves it. */
+  function captureScroll(): void {
+    scrollPositions[activeView.value] = currentScroll()
+    scrollCapturedAt = Date.now()
+    // The click scrolls the focused button into view; that scroll is not
+    // the user's own one and must not become the new position.
+    scrollFrozenUntil = Date.now() + 500
   }
 
   watch(installedSearch, (value) => {
@@ -663,6 +835,7 @@
     jobElapsed.value = 0
     startElapsedTimer()
     lastOutput.value = ''
+    outputVisible.value = true
 
     try {
       const job = await startPackageJob(action, params)
@@ -687,7 +860,13 @@
       }
     } catch (err) {
       lastAction.value = { label: `${label}失败`, ok: false, at: Date.now() }
-      ElMessage.error(messageOf(err))
+      const message = messageOf(err)
+      // The raw output of apk is kept; the reason of the failure is added,
+      // so that the card is never empty.
+      lastOutput.value = lastOutput.value
+        ? `${lastOutput.value}\n[控制台] ${message}`
+        : `[控制台] ${message}`
+      ElMessage.error(message)
     } finally {
       busy.value = ''
       stopElapsedTimer()
@@ -697,6 +876,32 @@
       } catch (err) {
         error.value = messageOf(err)
       }
+    }
+  }
+
+  /** Copies the raw output of the last operation to the clipboard. */
+  async function copyOutput(): Promise<void> {
+    const text = lastOutput.value
+    if (!text) return
+    try {
+      if (navigator.clipboard && window.isSecureContext) {
+        await navigator.clipboard.writeText(text)
+      } else {
+        const area = document.createElement('textarea')
+        area.value = text
+        area.setAttribute('readonly', '')
+        area.style.position = 'fixed'
+        area.style.top = '-1000px'
+        area.style.opacity = '0'
+        document.body.appendChild(area)
+        area.select()
+        const copied = document.execCommand('copy')
+        document.body.removeChild(area)
+        if (!copied) throw new Error('copy failed')
+      }
+      ElMessage.success('输出已复制到剪贴板')
+    } catch {
+      ElMessage.warning('复制失败，请手动选择输出内容复制')
     }
   }
 
@@ -720,15 +925,44 @@
 
   async function onInstall(pkg: PackageInfo): Promise<void> {
     if (busy.value) return
+    if (pkg.installed) {
+      ElMessage.info(`${pkg.name} 已经安装，无需重复安装`)
+      return
+    }
+    // The dependencies come from the repository index, so the user knows how
+    // much the installation pulls in.
+    const deps = dependencyCount(pkg)
+    const depText =
+      deps === null ? '仓库索引中没有这个包的依赖信息。' : `该包有 ${deps} 个依赖，会一并安装。`
     const confirmed = await confirmDanger(
       `安装 ${pkg.name}`,
       `确定安装 ${pkg.name} ${pkg.version} 吗？\n\n` +
+        `${depText}\n\n` +
         '安装会改动系统依赖关系，可能引入新的软件包并占用存储空间，' +
         '个别服务可能需要重启，依赖冲突时甚至会导致服务异常。',
       '确认安装'
     )
     if (!confirmed) return
     await runJob('install', { name: pkg.name }, `正在安装 ${pkg.name}`, `安装 ${pkg.name}`)
+  }
+
+  async function onUpgradeOne(pkg: PackageInfo): Promise<void> {
+    if (busy.value) return
+    const version = upgradableVersion(pkg.name)
+    const confirmed = await confirmDanger(
+      `升级 ${pkg.name}`,
+      `确定把 ${pkg.name} 从 ${pkg.version} 升级到 ${version} 吗？\n\n` +
+        '升级会替换这个软件包的文件，可能带来新的依赖，' +
+        '个别服务需要重启，升级失败时该软件包可能无法使用。',
+      '确认升级'
+    )
+    if (!confirmed) return
+    await runJob(
+      'upgrade',
+      { name: pkg.name },
+      `正在升级 ${pkg.name}`,
+      `升级 ${pkg.name}`
+    )
   }
 
   async function onRemove(pkg: PackageInfo): Promise<void> {
@@ -780,6 +1014,9 @@
 
   onMounted(() => {
     void bootstrap()
+    // A scroll event does not bubble, so the capture phase is the only way
+    // to hear it — and it works no matter when the styles were applied.
+    window.addEventListener('scroll', onHostScroll, true)
   })
 
   onUnmounted(() => {
@@ -787,10 +1024,36 @@
     if (installedTimer) window.clearTimeout(installedTimer)
     if (repoTimer) window.clearTimeout(repoTimer)
     cancelJob?.()
+    window.removeEventListener('scroll', onHostScroll, true)
   })
 </script>
 
 <style scoped>
+  /* Element Plus 给相邻按钮加了 12px 左边距，和外层 flex 的 gap 叠加后
+     同一行的按钮会被拉到 20px 间距；这里把间距统一交回给 gap 控制。 */
+  .el-button + .el-button {
+    margin-left: 0;
+  }
+
+  /* 表格里的操作按钮：同一行、高度一致、间距 8px */
+  .pkg-actions {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: var(--space-2);
+  }
+
+  .pkg-tag {
+    margin-left: 6px;
+    color: var(--text-secondary);
+    background: var(--surface-2);
+  }
+
+  .pkg-tag-upgrade {
+    color: var(--warning-text);
+    background: var(--warning-soft);
+  }
+
   .count-badge {
     display: inline-flex;
     align-items: center;
@@ -806,6 +1069,10 @@
   }
 
   /* The segmented control: two views of the same card, never two tabs. */
+  .pkg-seg-wrap {
+    display: inline-flex;
+  }
+
   .pkg-seg {
     display: inline-flex;
     align-items: center;
@@ -945,6 +1212,7 @@
   .mobile-actions {
     display: flex;
     justify-content: flex-end;
+    gap: var(--space-2);
     margin-top: 8px;
   }
 
@@ -976,6 +1244,10 @@
     }
 
     .pkg-panel :deep(.card-actions) {
+      width: 100%;
+    }
+
+    .pkg-seg-wrap {
       width: 100%;
     }
 

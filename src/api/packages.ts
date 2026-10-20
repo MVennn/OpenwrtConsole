@@ -18,6 +18,10 @@ export interface PackageInfo {
   installedSize?: number
   /** Size of the downloaded package file, in bytes. */
   fileSize?: number
+  /** True when the package is already installed on the router. */
+  installed?: boolean
+  /** The packages the repository entry depends on. */
+  depends?: string[]
 }
 
 export type PackageAction =
@@ -46,7 +50,11 @@ export interface PackageListResult {
   packages?: PackageInfo[]
   installedCount?: number
   availableCount?: number
+  /** The number of packages the keyword matched, installed ones included. */
+  matchedCount?: number
   upgradableCount?: number
+  /** The packages a newer version exists for, with the new version. */
+  upgradable?: PackageInfo[]
   /** Epoch of the newest repository index, 0 when it was never downloaded. */
   indexUpdatedAt?: number
   jobId?: string
@@ -55,6 +63,16 @@ export interface PackageListResult {
   error?: string
   /** Machine readable error code, e.g. "unsupported_action". */
   code?: string
+}
+
+/**
+ * The number of packages the entry depends on. The dependencies come from the
+ * repository index, so an installed package (which the index does not know)
+ * has no number.
+ */
+export function dependencyCount(pkg: PackageInfo | undefined): number | null {
+  if (!pkg || !Array.isArray(pkg.depends)) return null
+  return pkg.depends.length
 }
 
 export class PackageError extends Error {
@@ -135,7 +153,10 @@ export async function runPackageAction(
   return result ?? { ok: true }
 }
 
-/** The packages that are installed on the router. */
+/**
+ * The packages that are installed on the router. The answer also carries the
+ * packages a newer version exists for.
+ */
 export async function fetchInstalledPackages(): Promise<PackageListResult> {
   return runPackageAction('list')
 }
@@ -176,7 +197,7 @@ export async function fetchPackageStats(): Promise<PackageListResult> {
 function isUnsupportedAction(err: PackageError): boolean {
   if (err.code === 'unsupported_action') return true
   // An older CGI only sends the message, not a machine readable code.
-  return err.status === 400 && /不支持|unsupported|unknown action/i.test(err.message)
+  return err?.status === 400 && /不支持|unsupported|unknown action/i.test(err?.message || '')
 }
 
 /**

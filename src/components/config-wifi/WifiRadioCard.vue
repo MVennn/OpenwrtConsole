@@ -26,10 +26,14 @@
       <div>
         <dt>信道</dt>
         <dd class="num">{{ channelText }}</dd>
+        <dd v-if="actualChannelText" class="radio-sub mono">实际 {{ actualChannelText }}</dd>
       </div>
       <div>
         <dt>带宽</dt>
         <dd>{{ radio.htmode || '—' }}</dd>
+        <dd v-if="radio.actualBandwidth" class="radio-sub mono">
+          实际 {{ radio.actualBandwidth }}
+        </dd>
       </div>
       <div>
         <dt>国家码</dt>
@@ -40,8 +44,8 @@
         <dd class="num">{{ txpowerText }}</dd>
       </div>
       <div>
-        <dt>SSID</dt>
-        <dd class="num">{{ radio.interfaces.length }} 个</dd>
+        <dt>当前速率</dt>
+        <dd class="num">{{ bitrateText }}</dd>
       </div>
       <div>
         <dt>关联终端</dt>
@@ -67,6 +71,12 @@
             网络 {{ iface.network || '—' }}
             <span class="ssid-sep">·</span>
             <span class="num">{{ iface.clients }} 台客户端</span>
+            <template v-if="iface.clients">
+              <span class="ssid-sep">·</span>
+              <span class="num">
+                信号 {{ iface.bestSignal }} dBm（{{ signalLabel(iface.bestSignal) }}）
+              </span>
+            </template>
           </p>
         </div>
         <div class="ssid-actions">
@@ -104,6 +114,7 @@
   import { Lock, Settings2, Wifi } from 'lucide-vue-next'
   import StatusBadge from '@/components/StatusBadge.vue'
   import { bandText, encryptionText, modeText, type WifiRadioConfig } from '@/api/wirelessConfig'
+  import { formatLinkRate, signalLabel } from '@/utils/format'
 
   const props = defineProps<{
     radio: WifiRadioConfig
@@ -156,6 +167,21 @@
   const clients = computed(() =>
     props.radio.interfaces.reduce((sum, iface) => sum + iface.clients, 0)
   )
+
+  /** The channel the radio really uses right now (iwinfo). */
+  const actualChannelText = computed(() => {
+    const radio = props.radio
+    if (!radio.actualChannel) return ''
+    if (radio.actualFrequency) return `信道 ${radio.actualChannel} · ${radio.actualFrequency} MHz`
+    return `信道 ${radio.actualChannel}`
+  })
+
+  /** The current PHY rate of the radio (iwinfo). */
+  const bitrateText = computed(() => {
+    const rate = props.radio.actualBitrate
+    if (!rate) return '—'
+    return formatLinkRate(rate)
+  })
 
   function isPending(section: string): boolean {
     return (props.pending ?? []).includes(section)
@@ -270,6 +296,13 @@
     font-weight: 500;
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+
+  .radio-grid dd.radio-sub {
+    margin-top: 2px;
+    color: var(--text-muted);
+    font-size: 11px;
+    font-weight: 400;
   }
 
   .ssid-list {

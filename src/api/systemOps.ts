@@ -13,7 +13,6 @@ export type SystemOpAction =
   | 'uci-revert'
   | 'uci-commit'
   | 'uci-apply'
-  | 'uci-changes'
   | 'svc-list'
   | 'svc-action'
   | 'net-reload'

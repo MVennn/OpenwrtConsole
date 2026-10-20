@@ -41,7 +41,7 @@ Release 说明只写用户**已经能拿到**的东西。
 
 ---
 
-需要路由器 root 密码，以 root 身份访问 <https://10.0.0.1/modern/>。
+需要路由器 root 密码，以 root 身份访问 <https://<路由器IP>/modern/>（多数路由器的地址是 `10.0.0.1`）。
 部署步骤见 [README](../../README.md)。
 
 ---

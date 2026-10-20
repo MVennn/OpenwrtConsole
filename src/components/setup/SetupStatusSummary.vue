@@ -25,7 +25,6 @@
           :label="status?.configured ? '已配置' : '未配置'"
           :tone="status?.configured ? 'success' : 'warning'"
         />
-        <el-button size="small" text type="primary" @click="$emit('skip')">跳过向导</el-button>
       </div>
     </header>
 
@@ -51,10 +50,6 @@
 
   defineProps<{
     status: SetupStatus | null
-  }>()
-
-  defineEmits<{
-    (event: 'skip'): void
   }>()
 </script>
 

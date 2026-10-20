@@ -7,6 +7,16 @@
     <el-alert v-if="error" type="error" :title="error" :closable="false" show-icon />
     <el-alert v-if="notice" type="warning" :title="notice" :closable="false" show-icon />
 
+    <div class="fw-record">
+      <History :size="15" class="fw-record-icon" />
+      <span class="fw-record-label">上次刷写</span>
+      <span class="fw-record-value num">{{ flashRecordText }}</span>
+      <span v-if="flashRecord" class="fw-record-meta">
+        来源：{{ flashRecord.source === 'official' ? '官方镜像' : '手动上传' }}
+        <template v-if="flashRecord.version"> · 版本 {{ flashRecord.version }}</template>
+      </span>
+    </div>
+
     <template v-if="loaded">
       <div class="grid grid-4">
         <StatCard
@@ -96,20 +106,56 @@
               <dt class="fw-meta-label">目标平台</dt>
               <dd class="fw-meta-value mono-value">{{ update.target || '—' }}</dd>
             </div>
+            <div class="fw-meta-row">
+              <dt class="fw-meta-label">检查时间</dt>
+              <dd class="fw-meta-value num">{{ checkedAtText }}</dd>
+            </div>
           </dl>
           <p v-if="update.notes.length" class="fw-subtle">当前版本的更新日志：</p>
           <ul v-if="update.notes.length" class="fw-notes">
             <li v-for="(note, index) in update.notes" :key="index">{{ note }}</li>
           </ul>
-          <a
-            v-if="update.changelog_url"
-            class="fw-link"
-            :href="update.changelog_url"
-            target="_blank"
-            rel="noopener"
-          >
-            查看完整更新日志
-          </a>
+          <div class="fw-links">
+            <a
+              v-if="releasePageUrl"
+              class="fw-link"
+              :href="releasePageUrl"
+              target="_blank"
+              rel="noopener"
+            >
+              官方发布页
+            </a>
+            <a
+              v-if="targetPageUrl"
+              class="fw-link"
+              :href="targetPageUrl"
+              target="_blank"
+              rel="noopener"
+            >
+              官方下载目录
+            </a>
+            <a
+              v-if="update.download_url"
+              class="fw-link"
+              :href="update.download_url"
+              target="_blank"
+              rel="noopener"
+            >
+              官方镜像
+            </a>
+            <a
+              v-if="update.changelog_url"
+              class="fw-link"
+              :href="update.changelog_url"
+              target="_blank"
+              rel="noopener"
+            >
+              完整更新日志
+            </a>
+          </div>
+          <p class="fw-subtle">
+            上次检查：{{ checkedAtText }}。官方源暂未提供比当前版本更新的固件，可在上面的链接查看官方发布说明。
+          </p>
         </div>
 
         <!-- 检测到新版本 -->
@@ -202,6 +248,23 @@
             </p>
           </div>
 
+          <div v-if="downloaded || firmwareFile" class="fw-verify">
+            <div class="row-between">
+              <span class="meta-label">刷写前校验</span>
+              <el-button size="small" :loading="verifying" @click="refreshVerification">
+                重新校验
+              </el-button>
+            </div>
+            <FwVerifyChecks :checks="checks" />
+            <el-alert
+              v-if="blockingReason"
+              type="error"
+              :title="`校验未通过，已禁止刷写：${blockingReason}`"
+              :closable="false"
+              show-icon
+            />
+          </div>
+
           <div class="fw-actions">
             <el-button
               v-if="!downloaded"
@@ -219,11 +282,17 @@
               plain
               :icon="UploadCloud"
               :loading="flashing"
+              :disabled="blockingReason !== ''"
               @click="handleFlashUpdate"
             >
               校验并刷写
             </el-button>
-            <el-button :icon="RefreshCw" :loading="downloading" @click="handleDownload">
+            <el-button
+              :icon="RefreshCw"
+              :loading="downloading"
+              :disabled="flashing"
+              @click="handleDownload"
+            >
               重新下载
             </el-button>
           </div>
@@ -315,6 +384,14 @@
               <span class="muted">{{ formatBytes(uploaded.size) }}</span>
             </p>
             <p v-if="verifyNote" class="fw-verify-note">{{ verifyNote }}</p>
+            <FwVerifyChecks :checks="checks" />
+            <el-alert
+              v-if="blockingReason"
+              type="error"
+              :title="`校验未通过，已禁止刷写：${blockingReason}`"
+              :closable="false"
+              show-icon
+            />
           </div>
 
           <div class="fw-confirm">
@@ -343,6 +420,9 @@
             >
               校验并刷写
             </el-button>
+            <p v-if="uploaded && blockingReason" class="fw-block-note">
+              校验未通过，无法刷写：{{ blockingReason }}
+            </p>
           </div>
 
           <p class="fw-danger-note">
@@ -531,6 +611,7 @@
     Download,
     FileDown,
     HardDrive,
+    History,
     Package,
     RefreshCw,
     RotateCcw,
@@ -544,6 +625,7 @@
   import StatCard from '@/components/StatCard.vue'
   import EmptyState from '@/components/EmptyState.vue'
   import SysFormField from '@/components/config-sys/SysFormField.vue'
+  import FwVerifyChecks from '@/components/fw-verify/FwVerifyChecks.vue'
   import { useRefreshSignal } from '@/composables/useRefresh'
   import { requestToken } from '@/api/systemOps'
   import { formatBytes, formatClock } from '@/utils/format'
@@ -558,16 +640,23 @@
     fetchFirmwareInfo,
     fetchJobStatus,
     isValidFirmwareName,
+    loadFlashRecord,
+    officialReleaseUrl,
+    officialTargetUrl,
     parseDownloadResult,
     parseUpdateCheck,
     restoreConfigurationBackup,
+    saveFlashRecord,
     startFirmwareUpgrade,
     uploadFirmwareImage,
+    verifyFirmwareImage,
     type FirmwareBoard,
+    type FirmwareCheck,
     type FirmwareDownloadResult,
     type FirmwareFile,
     type FirmwareInfo,
     type FirmwareRelease,
+    type FirmwareVerification,
     type UpdateCheck
   } from '@/api/firmware'
 
@@ -609,6 +698,14 @@
   const verifyNote = ref('')
   const upgradeWord = ref('')
   const upgradeWordError = ref('')
+
+  // ---- verification before the flash ------------------------------------
+  /** The size and the checksum of the image that is on the router. */
+  const verification = ref<FirmwareVerification | null>(null)
+  /** Where the image on the router came from. */
+  const imageSource = ref<'official' | 'manual' | null>(null)
+  /** The last flash of this browser. */
+  const flashRecord = ref(loadFlashRecord())
 
   // ---- backup and restore ------------------------------------------------
   const backingUp = ref(false)
@@ -728,6 +825,7 @@
     () =>
       Boolean(uploaded.value) &&
       verified.value &&
+      blockingReason.value === '' &&
       upgradeWord.value.trim() === UPGRADE_WORD &&
       !flashing.value &&
       !uploading.value
@@ -740,6 +838,143 @@
       !restoring.value &&
       !rebooting.value
   )
+
+  // ------------------------------------------------------- verification ---
+
+  /** The official page of the release and of the target directory. */
+  const releasePageUrl = computed(() => officialReleaseUrl(update.value?.latest_version ?? ''))
+  const targetPageUrl = computed(() =>
+    officialTargetUrl(update.value?.latest_version ?? '', update.value?.target ?? '')
+  )
+
+  const flashRecordText = computed(() => {
+    const record = flashRecord.value
+    if (!record) return '本页还没有刷写记录'
+    return new Date(record.at).toLocaleString('zh-CN', {
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: false
+    })
+  })
+
+  /** The device identifier of the router, e.g. `vendor_model-name`. */
+  const deviceId = computed(() => (board.value?.board_name ?? '').replace(/,/g, '_'))
+
+  /**
+   * The checks that have to pass before the router may be flashed: the size
+   * of the image, its checksum, the device and the target platform.
+   */
+  const checks = computed<FirmwareCheck[]>(() => {
+    const current = update.value
+    const file = verification.value
+    const boardName = board.value?.board_name ?? ''
+    const target = release.value?.target ?? ''
+    const officialSize = current?.size ?? 0
+    const officialSha = (current?.sha256 ?? '').toLowerCase()
+    const fileSha = (file?.sha256 ?? '').toLowerCase()
+    const list: FirmwareCheck[] = []
+
+    // 1. the size of the image
+    if (file && file.size > 0 && officialSize > 0) {
+      const same = file.size === officialSize
+      list.push({
+        label: '文件大小',
+        state: same ? 'pass' : 'fail',
+        detail: `${formatBytes(file.size)} / 官方 ${formatBytes(officialSize)}`
+      })
+    } else {
+      list.push({
+        label: '文件大小',
+        state: 'unknown',
+        detail: officialSize > 0 ? '路由器上还没有固件文件' : '没有官方镜像可比对'
+      })
+    }
+
+    // 2. the checksum of the image
+    if (fileSha && officialSha) {
+      const same = fileSha === officialSha
+      list.push({
+        label: 'SHA-256',
+        state: same ? 'pass' : 'fail',
+        detail: same
+          ? `与官方一致（${fileSha.slice(0, 16)}…）`
+          : `不一致：${fileSha.slice(0, 16)}… / 官方 ${officialSha.slice(0, 16)}…`
+      })
+    } else {
+      list.push({
+        label: 'SHA-256',
+        state: 'unknown',
+        detail: officialSha ? '路由器上还没有固件文件' : '没有官方校验值可比对'
+      })
+    }
+
+    // 3. the device: a manual upload carries the model in its file name,
+    //    the official image is checked against the board of the router
+    if (imageSource.value === 'manual' && uploaded.value) {
+      const name = uploaded.value.filename.toLowerCase()
+      const device = deviceId.value.toLowerCase()
+      if (device && name.includes(device)) {
+        list.push({
+          label: '设备型号',
+          state: 'pass',
+          detail: `文件名与本机一致（${boardName}）`
+        })
+      } else if (name.includes('-sysupgrade')) {
+        list.push({
+          label: '设备型号',
+          state: 'fail',
+          detail: `文件名中的机型与本机（${boardName}）不符`
+        })
+      } else {
+        list.push({
+          label: '设备型号',
+          state: 'unknown',
+          detail: `无法从文件名判断机型（本机 ${boardName || '未知'}）`
+        })
+      }
+    } else if (current?.id && boardName) {
+      const same = current.id === boardName
+      list.push({
+        label: '设备型号',
+        state: same ? 'pass' : 'fail',
+        detail: `${boardName} / 官方镜像 ${current.id}`
+      })
+    } else {
+      list.push({
+        label: '设备型号',
+        state: 'unknown',
+        detail: boardName || '—'
+      })
+    }
+
+    // 4. the target platform
+    if (current?.target && target) {
+      const same = current.target === target
+      list.push({
+        label: '目标平台',
+        state: same ? 'pass' : 'fail',
+        detail: `${target} / 官方镜像 ${current.target}`
+      })
+    } else {
+      list.push({
+        label: '目标平台',
+        state: 'unknown',
+        detail: target || '—'
+      })
+    }
+
+    return list
+  })
+
+  /** A check that failed keeps the flash button disabled. */
+  const blockingReason = computed(() => {
+    const failed = checks.value.filter((check) => check.state === 'fail')
+    if (!failed.length) return ''
+    return failed.map((check) => `${check.label}${check.detail}`).join('；')
+  })
 
   const systemRows = computed(() => [
     { label: '固件版本', value: release.value?.version || '—' },
@@ -830,6 +1065,11 @@
         checkedAt.value = payload.update_checked_at
       }
       if (uploaded.value) verifyAgainst(payload)
+      // An image on the router is checked against the official values, so
+      // that the flash can be blocked before it happens.
+      if (payload.files.some((file) => file.path === FIRMWARE_PATH)) {
+        await refreshVerification()
+      }
       if (rebooting.value) notice.value = ''
     } catch (err) {
       if (rebooting.value) {
@@ -891,6 +1131,7 @@
         : (outcome.result ?? {})
       const result = parseDownloadResult(payload)
       downloaded.value = result
+      imageSource.value = 'official'
       if (!result.verified) {
         downloadError.value = '未能取得官方校验值，固件未经校验，请自行确认来源。'
         ElMessage.warning('固件已下载，但未通过官方校验值验证')
@@ -905,6 +1146,22 @@
     }
   }
 
+  /**
+   * Reads the size and the checksum of the image that is on the router, so
+   * that they can be compared with the official ones.
+   */
+  async function refreshVerification(): Promise<void> {
+    verifying.value = true
+    try {
+      verification.value = await verifyFirmwareImage()
+    } catch (err) {
+      verification.value = null
+      verifyNote.value = messageOf(err)
+    } finally {
+      verifying.value = false
+    }
+  }
+
   /** Flashes the downloaded official image. */
   async function handleFlashUpdate(): Promise<void> {
     const current = update.value
@@ -912,6 +1169,10 @@
     if (!current || !result) return
     if (!result.verified) {
       ElMessage.warning('固件未通过校验，请重新下载后再刷写')
+      return
+    }
+    if (blockingReason.value) {
+      ElMessage.error(`校验未通过，无法刷写：${blockingReason.value}`)
       return
     }
 
@@ -936,6 +1197,7 @@
       const token = await requestToken('firmware-upgrade')
       await startFirmwareUpgrade(token)
       rebooting.value = true
+      rememberFlash(current.latest_version, 'official')
       ElMessage.success('刷写指令已发送，路由器将重启')
       notice.value = '固件正在刷写，路由器随后会重启，通常需要 1–2 分钟恢复联网。'
     } catch (err) {
@@ -943,6 +1205,13 @@
     } finally {
       flashing.value = false
     }
+  }
+
+  /** Remembers the flash in the browser, so that the page can show it. */
+  function rememberFlash(version: string, source: 'official' | 'manual'): void {
+    const record = { at: Date.now(), version, source }
+    saveFlashRecord(record)
+    flashRecord.value = record
   }
 
   function pickFile(): void {
@@ -993,6 +1262,7 @@
       })
       uploadPercent.value = 100
       uploaded.value = { path: result.path, size: result.size, filename: result.filename }
+      imageSource.value = 'manual'
       ElMessage.success('固件已上传到路由器')
       await verifyUploaded()
     } catch (err) {
@@ -1011,6 +1281,8 @@
       info.value = payload
       backups.value = payload.backups
       verifyAgainst(payload)
+      // The checksum of the image on the router, compared with the official one
+      verification.value = await verifyFirmwareImage()
     } catch (err) {
       verifyNote.value = messageOf(err)
     } finally {
@@ -1026,6 +1298,10 @@
     }
     if (!verified.value) {
       ElMessage.warning('请先完成固件校验')
+      return
+    }
+    if (blockingReason.value) {
+      ElMessage.error(`校验未通过，无法刷写：${blockingReason.value}`)
       return
     }
 
@@ -1050,6 +1326,7 @@
       const token = await requestToken('firmware-upgrade')
       await startFirmwareUpgrade(token)
       rebooting.value = true
+      rememberFlash(update.value?.latest_version || release.value?.version || '', 'manual')
       ElMessage.success('刷写指令已发送，路由器将重启')
       notice.value = '固件正在刷写，路由器随后会重启，通常需要 1–2 分钟恢复联网。'
     } catch (err) {
@@ -1131,6 +1408,54 @@
 </script>
 
 <style scoped>
+  /* Element Plus 给相邻按钮加了 12px 左边距，和外层 flex 的 gap 叠加后
+     同一行的按钮会被拉到 20px 间距；这里把间距统一交回给 gap 控制。 */
+  .el-button + .el-button {
+    margin-left: 0;
+  }
+
+  .fw-record {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 10px 14px;
+    color: var(--text-secondary);
+    font-size: var(--text-xs);
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+  }
+
+  .fw-record-icon {
+    flex-shrink: 0;
+    color: var(--text-faint);
+  }
+
+  .fw-record-label {
+    color: var(--text-muted);
+  }
+
+  .fw-record-value {
+    color: var(--text);
+    font-weight: 500;
+  }
+
+  .fw-record-meta {
+    color: var(--text-muted);
+  }
+
+  .fw-links {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--space-3);
+  }
+
+  .fw-block-note {
+    color: var(--danger-text);
+    font-size: var(--text-xs);
+    line-height: 1.6;
+  }
+
   .fw-state {
     display: flex;
     flex-direction: column;

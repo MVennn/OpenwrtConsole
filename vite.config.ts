@@ -4,6 +4,11 @@ import Components from 'unplugin-vue-components/vite'
 import { ElementPlusResolver } from 'unplugin-vue-components/resolvers'
 import { fileURLToPath, URL } from 'node:url'
 
+// The router the dev server talks to. Point it at your own device with
+//   ROUTER_URL=https://192.168.1.1 npm run dev
+// The default is the address most routers use for their LAN interface.
+const ROUTER_URL = process.env.ROUTER_URL || 'https://10.0.0.1'
+
 // The console is served from /modern/ on the router, so every asset URL must
 // be prefixed accordingly. During local development the same relative calls
 // are proxied to the router over HTTPS (self-signed certificate).
@@ -33,12 +38,12 @@ export default defineConfig({
   server: {
     proxy: {
       '/ubus': {
-        target: 'https://10.0.0.1',
+        target: ROUTER_URL,
         changeOrigin: true,
         secure: false
       },
       '/cgi-bin': {
-        target: 'https://10.0.0.1',
+        target: ROUTER_URL,
         changeOrigin: true,
         secure: false
       }

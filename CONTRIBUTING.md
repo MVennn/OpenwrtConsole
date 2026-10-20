@@ -1,0 +1,60 @@
+# 参与贡献
+
+> **一句话**：怎么把代码跑起来、改代码要守哪些规矩、提交前跑什么。
+
+## 把它跑起来
+
+```bash
+npm ci
+ROUTER_URL=https://192.168.1.1 npm run dev   # 指向你自己的路由器
+```
+
+打开 <http://localhost:5173/modern/>。`ROUTER_URL` 不设时默认 `https://10.0.0.1`
+（默认网关的通行默认值）。开发时 Vite 会把 `/ubus` 与 `/cgi-bin` 代理到路由器。
+
+## 组件规范
+
+- 视图文件统一 `XxxView.vue`，并在里面写 `defineOptions({ name: 'XxxView' })` ——
+  名字要和文件名一致，否则 Element Plus 的 `keep-alive` 与 devtools 标签会串。
+- 视图按**功能域**分目录：`src/views/config/` `src/views/diagnostics/` …，
+  不要同时存在"按可读/可写"和"按功能域"两套分法。
+- 数据获取一律走 `src/api/` 里的封装，不要在组件里直接 `fetch('/ubus')`。
+- 路由与侧栏菜单要**成对**加 —— 只加路由会出现进不去的孤儿页面（这个坑踩过）。
+- 样式：Element Plus 按需引入。**新增组件必须把它的样式加进 `src/plugins/element.ts`**，
+  否则样式会落在视图 chunk 里、晚于 `src/styles/element.css` 加载而失效。
+
+## 改路由器端 CGI
+
+`deploy/modern-*` 是 ucode / busybox sh，跑在路由器上。
+
+- **必须用 LF 换行** —— CRLF 会让 shebang 直接报 `No such file or directory`。
+- 改完先 `sh -n`（sh 脚本）/ 让 ucode 语法检查器过一遍。
+- 新增 CGI 要同时加进 `deploy/deploy.sh` 的循环列表**和** `DEPLOY.md` 的清单表 ——
+  这两处历史上各写各的，漏一处就等于没部署。
+
+## 文档
+
+文档规则见 [docs/DOC-RULES.md](docs/DOC-RULES.md)（单一正本、每篇开头一句话引言块、
+索引唯一、孤儿零容忍）。改文档后跑：
+
+```bash
+python tools/check-docs.py
+```
+
+## 提交前自检
+
+```bash
+npx vue-tsc --noEmit        # 类型
+npm run build               # 构建
+python tools/check-docs.py   # 文档链接 / 锚点 / 引言块 / 孤儿
+```
+
+## 提交信息
+
+按 Conventional Commits：`feat:` `fix:` `docs:` `chore:` `refactor:` `test:`
+`perf:`。涉及多个改动的**按对象拆行**（一行一个对象），不要打包成"代码整理"。
+
+## 不要改的地方
+
+- `third-party/` —— vendored 的上游，一个字节都不动。
+- `docs/` 里的历史归档（`archive/`）。

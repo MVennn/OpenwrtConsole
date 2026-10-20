@@ -65,11 +65,37 @@ interface JsonRpcResponse {
 }
 
 /**
+ * Checks whether the session is still usable by calling `system.info`, which
+ * every session may call. It tells a dead session apart from a single method
+ * the session simply has no ACL for.
+ */
+async function sessionAlive(): Promise<boolean> {
+  const sid = getSessionId()
+  if (!sid) return false
+  try {
+    const response = await timedFetch('/ubus', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        jsonrpc: '2.0',
+        id: Date.now(),
+        method: 'call',
+        params: [sid, 'system', 'info', {}]
+      })
+    })
+    if (!response.ok) return false
+    const data = (await response.json()) as JsonRpcResponse
+    return !data.error && Array.isArray(data.result)
+  } catch {
+    return false
+  }
+}
+
+/**
  * Calls a ubus object over uhttpd's /ubus endpoint using the LuCI session id.
  * The session id is created by /cgi-bin/modern-login and kept in sessionStorage.
  */
-export async function ubusCall<T = unknown>(
-  object: string,
+export async function ubusCall<T = unknown>(  object: string,
   method: string,
   params: Record<string, unknown> = {}
 ): Promise<T> {
@@ -100,8 +126,14 @@ export async function ubusCall<T = unknown>(
   const data = (await response.json()) as JsonRpcResponse
 
   if (data.error) {
-    if (data.error.code === -32002) sessionExpired()
-    throw new UbusError(data.error.message || 'ubus 调用失败', data.error.code)
+    if (data.error.code === -32002) {
+      // rpcd answers "Access denied" both for a dead session and for a method
+      // the session has no ACL for. Only the first case may end the session,
+      // otherwise a single restricted call would log the user out.
+      if (!(await sessionAlive())) sessionExpired()
+      throw new UbusError('当前会话没有执行该操作的权限', -32002)
+    }
+    throw new UbusError(data.error?.message || 'ubus 调用失败', data.error?.code)
   }
 
   const result = data.result

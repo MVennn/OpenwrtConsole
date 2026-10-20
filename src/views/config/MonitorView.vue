@@ -1,22 +1,25 @@
 <template>
   <div class="page">
     <PageHeader title="监控与流量" description="资源曲线、接口速率与在线客户端的实时采样">
-      <div class="range-switch" role="group" aria-label="时间范围">
-        <button
-          v-for="option in MONITOR_RANGES"
-          :key="option.key"
-          type="button"
-          class="range-chip"
-          :class="{ active: range === option.key }"
-          @click="range = option.key"
-        >
-          {{ option.label }}
-        </button>
+      <div class="range-group">
+        <span class="range-label">历史窗口</span>
+        <div class="range-switch" role="group" aria-label="历史窗口">
+          <button
+            v-for="option in MONITOR_RANGES"
+            :key="option.key"
+            type="button"
+            class="range-chip"
+            :class="{ active: range === option.key }"
+            @click="range = option.key"
+          >
+            {{ option.label }}
+          </button>
+        </div>
       </div>
       <el-button :icon="RefreshCw" :loading="refreshing" @click="refresh">刷新</el-button>
     </PageHeader>
 
-    <el-alert v-if="error" type="error" :title="error.message" :closable="false" show-icon />
+    <el-alert v-if="error" type="error" :title="error?.message || '操作失败'" :closable="false" show-icon />
 
     <template v-if="loaded">
       <div class="grid grid-4">
@@ -55,23 +58,50 @@
         />
       </div>
 
-      <PanelCard title="资源曲线" :subtitle="`${rangeLabel}窗口 · 每 ${SAMPLE_INTERVAL / 1000} 秒采样一次`">
+      <PanelCard
+        title="资源曲线"
+        :subtitle="`${rangeLabel}窗口 · 每 ${SAMPLE_INTERVAL / 1000} 秒采样一次`"
+      >
         <template #actions>
-          <div class="series-legend">
-            <span class="legend-item">
-              <i class="legend-dot cpu" />
-              CPU 占用 <strong class="num">{{ cpuNow }}%</strong>
-            </span>
-            <span class="legend-item">
-              <i class="legend-dot mem" />
-              内存 <strong class="num">{{ memory.percent }}%</strong>
-            </span>
-            <span class="legend-item">
-              <i class="legend-dot load" />
-              负载 <strong class="num">{{ load1.toFixed(2) }}</strong>
-            </span>
+          <div class="metric-switch" role="group" aria-label="指标">
+            <button
+              v-for="option in MONITOR_METRICS"
+              :key="option.key"
+              type="button"
+              class="metric-chip"
+              :class="{ active: metric === option.key }"
+              @click="metric = option.key"
+            >
+              {{ option.label }}
+            </button>
           </div>
         </template>
+
+        <div class="series-legend">
+          <span v-if="metric === 'cpu'" class="legend-item">
+            <i class="legend-dot cpu" />
+            CPU 占用（1 分钟负载折算）
+            <strong class="num">{{ cpuNow }}%</strong>
+          </span>
+          <span v-else-if="metric === 'memory'" class="legend-item">
+            <i class="legend-dot mem" />
+            内存使用
+            <strong class="num">{{ memory.percent }}%</strong>
+          </span>
+          <template v-else>
+            <span class="legend-item">
+              <i class="legend-dot rx" />
+              下行
+              <strong class="num">{{ formatBitrate(netRate.rx) }}</strong>
+            </span>
+            <span class="legend-item">
+              <i class="legend-dot tx" />
+              上行
+              <strong class="num">{{ formatBitrate(netRate.tx) }}</strong>
+            </span>
+          </template>
+          <span class="legend-hint">{{ metricHint }}</span>
+        </div>
 
         <BaseChart v-if="resourcePoints.length > 1" :option="resourceOption" :height="280" />
         <div v-else class="chart-placeholder">
@@ -82,7 +112,7 @@
 
         <template #footer>
           <span>{{ resourcePoints.length }} 个采样点</span>
-          <span>CPU 由 1 分钟负载折算，路由器未开放 CPU 占用接口</span>
+          <span>{{ metricHint }}</span>
         </template>
       </PanelCard>
 
@@ -132,6 +162,22 @@
         </template>
       </PanelCard>
 
+      <PanelCard
+        title="接口历史速率"
+        :subtitle="`${rangeLabel}窗口 · 收发速率曲线`"
+      >
+        <template #actions>
+          <span class="meta-label">{{ interfaceRows.length }} 个接口</span>
+        </template>
+
+        <MonitorInterfaceRateChart :rows="interfaceStats" :window-ms="rangeMs" />
+
+        <template #footer>
+          <span>样本来自浏览器本地采样，切换页面会重新开始</span>
+          <span>纵轴为比特每秒</span>
+        </template>
+      </PanelCard>
+
       <PanelCard title="客户端" subtitle="点击设备查看该设备的速率曲线">
         <template #actions>
           <span class="count-badge">{{ clients.length }}</span>
@@ -172,6 +218,14 @@
                 <span v-else class="muted">—</span>
               </template>
             </el-table-column>
+            <el-table-column label="在线时长" min-width="110">
+              <template #default="{ row }">
+                <span v-if="row.wireless && row.connected" class="num rate-text">
+                  {{ formatUptime(row.connected) }}
+                </span>
+                <span v-else class="muted">—</span>
+              </template>
+            </el-table-column>
             <el-table-column label="实时速率" min-width="170">
               <template #default="{ row }">
                 <span v-if="row.wireless" class="num rate-text">
@@ -180,9 +234,11 @@
                 <span v-else class="muted">—</span>
               </template>
             </el-table-column>
-            <el-table-column label="累计流量" min-width="140" align="right">
+            <el-table-column label="累计收发" min-width="170" align="right">
               <template #default="{ row }">
-                <span v-if="row.wireless" class="num">{{ formatBytes(row.rxBytes + row.txBytes) }}</span>
+                <span v-if="row.wireless" class="num rate-text">
+                  ↓ {{ formatBytes(row.rxBytes) }} · ↑ {{ formatBytes(row.txBytes) }}
+                </span>
                 <span v-else class="muted">—</span>
               </template>
             </el-table-column>
@@ -218,10 +274,20 @@
                 <span class="num">{{ row.signal }} dBm</span>
               </span>
             </div>
+            <div v-if="row.wireless && row.connected" class="mobile-line">
+              <span>在线时长</span>
+              <span class="num">{{ formatUptime(row.connected) }}</span>
+            </div>
             <div v-if="row.wireless" class="mobile-line">
               <span>速率</span>
               <span class="num">
                 ↓ {{ formatBitrate(row.rxRate) }} · ↑ {{ formatBitrate(row.txRate) }}
+              </span>
+            </div>
+            <div v-if="row.wireless" class="mobile-line">
+              <span>累计收发</span>
+              <span class="num">
+                ↓ {{ formatBytes(row.rxBytes) }} · ↑ {{ formatBytes(row.txBytes) }}
               </span>
             </div>
           </button>
@@ -237,6 +303,7 @@
         <template #footer>
           <span>无线 {{ wirelessCount }} 台</span>
           <span>有线 {{ wiredCount }} 台</span>
+          <span>有线设备没有逐机计数器，收发显示为 —</span>
         </template>
       </PanelCard>
     </template>
@@ -263,6 +330,7 @@
   import BaseChart from '@/components/BaseChart.vue'
   import MonSparkline from '@/components/config-mon/MonSparkline.vue'
   import MonClientDialog from '@/components/config-mon/MonClientDialog.vue'
+  import MonitorInterfaceRateChart from '@/components/monitor-InterfaceRateChart.vue'
   import { useRefreshSignal } from '@/composables/useRefresh'
   import { useTheme } from '@/composables/useTheme'
   import type {
@@ -276,10 +344,12 @@
   } from '@/api/types'
   import {
     MAX_CHART_POINTS,
+    MONITOR_METRICS,
     MONITOR_RANGES,
     SAMPLE_INTERVAL,
     SPARK_POINTS,
     cpuEstimate,
+    externalRate,
     fetchCounters,
     fetchStations,
     fetchTopology,
@@ -291,11 +361,19 @@
     windowSamples,
     type ClientStat,
     type InterfaceStat,
+    type MonitorMetric,
     type MonitorRange,
     type RateSample,
     type ResourceSample
   } from '@/api/monitor'
-  import { formatBitrate, formatBytes, ipv4Of, signalLevel, withAlpha } from '@/utils/format'
+  import {
+    formatBitrate,
+    formatBytes,
+    formatUptime,
+    ipv4Of,
+    signalLevel,
+    withAlpha
+  } from '@/utils/format'
   import { buildWifiMeta, mergeClients } from '@/utils/clients'
 
   defineOptions({ name: 'MonitorView' })
@@ -304,6 +382,8 @@
   const refreshSignal = useRefreshSignal()
 
   const range = ref<MonitorRange>('1m')
+  /** The metric the resource curve shows. */
+  const metric = ref<MonitorMetric>('cpu')
   const loaded = ref(false)
   const refreshing = ref(false)
   const error = ref<Error | null>(null)
@@ -361,6 +441,14 @@
   const resourcePoints = computed(() =>
     windowSamples(resourceSamples.value, rangeMs.value, MAX_CHART_POINTS)
   )
+
+  /** The hint of the active metric, shown in the legend and the footer. */
+  const metricHint = computed(
+    () => MONITOR_METRICS.find((option) => option.key === metric.value)?.hint ?? ''
+  )
+
+  /** The current rate of the external traffic. */
+  const netRate = computed(() => externalRate(interfaceStats.value))
 
   const interfaceRows = computed(() =>
     interfaceStats.value.map((row) => ({
@@ -508,13 +596,18 @@
       devices.value = counters.devices
 
       const load = loadAverages(counters.info)
+      // The interface counters are read first: the network rate of the
+      // sample comes from them.
+      updateInterfaces(counters.devices, now)
+      const net = externalRate(interfaceStats.value)
       pushSample(resourceSamples.value, {
         time: now,
         load: load[0] ?? 0,
         memory: memoryUsage(counters.info).percent,
-        cpu: cpuEstimate(load[0] ?? 0)
+        cpu: cpuEstimate(load[0] ?? 0),
+        netRx: net.rx,
+        netTx: net.tx
       })
-      updateInterfaces(counters.devices, now)
 
       tick += 1
       let stationsRead = false
@@ -617,7 +710,8 @@
     const styles = getComputedStyle(document.documentElement)
     const cpuColor = styles.getPropertyValue('--chart-rx').trim()
     const memColor = styles.getPropertyValue('--chart-tx').trim()
-    const loadColor = styles.getPropertyValue('--warning').trim()
+    const rxColor = styles.getPropertyValue('--chart-rx').trim()
+    const txColor = styles.getPropertyValue('--chart-tx').trim()
     const gridColor = styles.getPropertyValue('--chart-grid').trim()
     const textColor = styles.getPropertyValue('--text-muted').trim()
     const surface = styles.getPropertyValue('--surface').trim()
@@ -625,6 +719,7 @@
     void isDark.value
 
     const points = resourcePoints.value
+    const isNetwork = metric.value === 'network'
 
     function gradient(color: string, alpha: number) {
       return {
@@ -640,6 +735,82 @@
       }
     }
 
+    const yAxis = isNetwork
+      ? [
+          {
+            type: 'value' as const,
+            splitNumber: 4,
+            axisLabel: {
+              color: textColor,
+              fontSize: 11,
+              formatter: (value: number) => formatBitrate(value)
+            },
+            splitLine: { lineStyle: { color: gridColor } }
+          }
+        ]
+      : [
+          {
+            type: 'value' as const,
+            max: 100,
+            splitNumber: 4,
+            axisLabel: {
+              color: textColor,
+              fontSize: 11,
+              formatter: (value: number) => `${value}%`
+            },
+            splitLine: { lineStyle: { color: gridColor } }
+          }
+        ]
+
+    const series = isNetwork
+      ? [
+          {
+            name: '下行',
+            type: 'line' as const,
+            yAxisIndex: 0,
+            smooth: 0.3,
+            symbol: 'none',
+            data: points.map((point) => point.netRx),
+            lineStyle: { width: 2, color: rxColor },
+            areaStyle: { color: gradient(rxColor, 0.22) }
+          },
+          {
+            name: '上行',
+            type: 'line' as const,
+            yAxisIndex: 0,
+            smooth: 0.3,
+            symbol: 'none',
+            data: points.map((point) => point.netTx),
+            lineStyle: { width: 2, color: txColor },
+            areaStyle: { color: gradient(txColor, 0.16) }
+          }
+        ]
+      : metric.value === 'memory'
+        ? [
+            {
+              name: '内存使用',
+              type: 'line' as const,
+              yAxisIndex: 0,
+              smooth: 0.3,
+              symbol: 'none',
+              data: points.map((point) => point.memory),
+              lineStyle: { width: 2, color: memColor },
+              areaStyle: { color: gradient(memColor, 0.14) }
+            }
+          ]
+        : [
+            {
+              name: 'CPU 占用（1 分钟负载折算）',
+              type: 'line' as const,
+              yAxisIndex: 0,
+              smooth: 0.3,
+              symbol: 'none',
+              data: points.map((point) => point.cpu),
+              lineStyle: { width: 2, color: cpuColor },
+              areaStyle: { color: gradient(cpuColor, 0.12) }
+            }
+          ]
+
     return {
       animation: false,
       grid: { top: 18, right: 46, bottom: 6, left: 6, containLabel: true },
@@ -649,7 +820,10 @@
         borderColor: border,
         borderWidth: 1,
         padding: [8, 10],
-        textStyle: { color: styles.getPropertyValue('--text').trim(), fontSize: 12 }
+        textStyle: { color: styles.getPropertyValue('--text').trim(), fontSize: 12 },
+        valueFormatter: isNetwork
+          ? (value: unknown) => formatBitrate(Number(value))
+          : (value: unknown) => `${Number(value)}%`
       },
       xAxis: {
         type: 'category',
@@ -666,72 +840,36 @@
         axisTick: { show: false },
         axisLabel: { color: textColor, fontSize: 11, hideOverlap: true }
       },
-      yAxis: [
-        {
-          type: 'value',
-          max: 100,
-          splitNumber: 4,
-          axisLabel: { color: textColor, fontSize: 11, formatter: (value: number) => `${value}%` },
-          splitLine: { lineStyle: { color: gridColor } }
-        },
-        {
-          type: 'value',
-          splitNumber: 4,
-          axisLabel: {
-            color: textColor,
-            fontSize: 11,
-            formatter: (value: number) => value.toFixed(1)
-          },
-          splitLine: { show: false }
-        }
-      ],
-      series: [
-        {
-          name: 'CPU 占用',
-          type: 'line',
-          yAxisIndex: 0,
-          smooth: 0.3,
-          symbol: 'none',
-          data: points.map((point) => point.cpu),
-          lineStyle: { width: 2, color: cpuColor },
-          areaStyle: { color: gradient(cpuColor, 0.12) }
-        },
-        {
-          name: '内存使用',
-          type: 'line',
-          yAxisIndex: 0,
-          smooth: 0.3,
-          symbol: 'none',
-          data: points.map((point) => point.memory),
-          lineStyle: { width: 2, color: memColor },
-          areaStyle: { color: gradient(memColor, 0.14) }
-        },
-        {
-          name: '1 分钟负载',
-          type: 'line',
-          yAxisIndex: 1,
-          smooth: 0.3,
-          symbol: 'none',
-          data: points.map((point) => point.load),
-          lineStyle: { width: 2, color: loadColor, type: 'dashed' },
-          areaStyle: { color: gradient(loadColor, 0.1) }
-        }
-      ]
+      yAxis,
+      series
     }
   })
 </script>
 
 <style scoped>
+  .range-group {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .range-label {
+    color: var(--text-muted);
+    font-size: 11.5px;
+    white-space: nowrap;
+  }
+
   .range-switch {
     display: flex;
     gap: 2px;
-    padding: 2px;
+    padding: 3px;
     background: var(--surface-2);
     border-radius: var(--radius);
   }
 
+  /* 30px 的胶囊加 3px 内边距 = 36px，和同一行的「刷新」按钮等高。 */
   .range-chip {
-    height: 28px;
+    height: 30px;
     padding: 0 11px;
     color: var(--text-muted);
     font-size: 11.5px;
@@ -755,12 +893,51 @@
     box-shadow: var(--shadow-xs);
   }
 
+  .metric-switch {
+    display: flex;
+    gap: 2px;
+    padding: 3px;
+    background: var(--surface-2);
+    border-radius: var(--radius);
+  }
+
+  .metric-chip {
+    height: 26px;
+    padding: 0 11px;
+    color: var(--text-muted);
+    font-size: 11.5px;
+    font-weight: 500;
+    cursor: pointer;
+    background: transparent;
+    border: 0;
+    border-radius: var(--radius-sm);
+    transition:
+      color 0.15s ease,
+      background-color 0.15s ease;
+  }
+
+  .metric-chip:hover {
+    color: var(--text);
+  }
+
+  .metric-chip.active {
+    color: var(--text);
+    background: var(--surface);
+    box-shadow: var(--shadow-xs);
+  }
+
   .series-legend {
     display: flex;
     align-items: center;
     gap: 14px;
+    margin-bottom: 10px;
     color: var(--text-muted);
     font-size: 11.5px;
+  }
+
+  .legend-hint {
+    color: var(--text-faint);
+    font-size: 11px;
   }
 
   .legend-item {
@@ -791,6 +968,14 @@
 
   .legend-dot.load {
     background: var(--warning);
+  }
+
+  .legend-dot.rx {
+    background: var(--chart-rx);
+  }
+
+  .legend-dot.tx {
+    background: var(--chart-tx);
   }
 
   .chart-placeholder {
@@ -1042,11 +1227,24 @@
   }
 
   @media (max-width: 640px) {
-    .range-switch {
+    .range-group {
+      flex-wrap: wrap;
       width: 100%;
     }
 
+    .range-switch {
+      flex: 1 1 auto;
+    }
+
     .range-chip {
+      flex: 1;
+    }
+
+    .metric-switch {
+      width: 100%;
+    }
+
+    .metric-chip {
       flex: 1;
     }
 

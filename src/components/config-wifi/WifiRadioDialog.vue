@@ -89,7 +89,7 @@
             <span class="change-to">{{ change.to }}</span>
           </li>
         </ul>
-        <p class="change-note">保存后无线服务会重新加载，连接会短暂中断。</p>
+        <p class="change-note">改动先写入暂存区，点击「保存并应用」后无线服务才会重新加载，连接会短暂中断。</p>
       </div>
       <p v-else class="change-empty">尚未修改任何内容。</p>
     </template>
@@ -97,7 +97,7 @@
     <template #footer>
       <el-button @click="emit('update:modelValue', false)">取消</el-button>
       <el-button type="primary" :loading="saving" :disabled="!changes.length" @click="save">
-        保存并应用
+        暂存改动
       </el-button>
     </template>
   </el-dialog>
@@ -108,13 +108,13 @@
   import { ElMessage } from 'element-plus'
   import { useMediaQuery } from '@/composables/useMediaQuery'
   import {
-    applyWirelessConfig,
+    stageWirelessConfig,
     bandText,
     channelsForBand,
-    discardWirelessChanges,
     HTMODE_OPTIONS,
     type WifiRadioConfig
   } from '@/api/wirelessConfig'
+  import type { StagedEdit } from '@/api/configPending'
 
   interface PendingChange {
     option: string
@@ -130,7 +130,8 @@
 
   const emit = defineEmits<{
     'update:modelValue': [value: boolean]
-    saved: []
+    /** The changes that were staged in the UCI delta. */
+    saved: [edits: StagedEdit[]]
   }>()
 
   const form = reactive({
@@ -318,12 +319,11 @@
 
     saving.value = true
     try {
-      await applyWirelessConfig([{ section: radio.section, values, remove }])
-      ElMessage.success('射频配置已保存并应用')
-      emit('saved')
+      const result = await stageWirelessConfig([{ section: radio.section, values, remove }])
+      ElMessage.success('射频配置已暂存，点击「保存并应用」后生效')
+      emit('saved', result.edits)
       emit('update:modelValue', false)
     } catch (err) {
-      await discardWirelessChanges().catch(() => undefined)
       ElMessage.error(err instanceof Error ? err.message : '保存失败')
     } finally {
       saving.value = false

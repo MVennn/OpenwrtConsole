@@ -1,21 +1,31 @@
 <template>
   <div class="page">
-    <PageHeader title="无线配置" description="编辑射频与 SSID，保存后立即生效">
+    <PageHeader title="无线配置" description="编辑射频与 SSID，暂存后一键应用">
       <el-button :icon="RefreshCw" :loading="refreshing" @click="refresh">刷新</el-button>
-      <el-button type="primary" :icon="RotateCw" :loading="reloading" @click="reloadWifi">
-        重载无线服务
+      <el-button
+        v-if="hasPending"
+        :icon="RotateCcw"
+        :loading="discarding"
+        @click="discardChanges"
+      >
+        放弃修改
+      </el-button>
+      <el-button type="primary" :icon="Save" :loading="applying" @click="saveAndApply">
+        保存并应用<template v-if="pendingEntries.length">（{{ pendingEntries.length }}）</template>
       </el-button>
     </PageHeader>
+
+    <DraftNotice :dirty="draftDirty" :saved-at="savedAt" @discard="discardChanges" />
 
     <el-alert
       type="warning"
       show-icon
       :closable="false"
       title="保存会短暂中断无线连接"
-      description="每次保存或切换开关都会重新加载无线服务，已连接的设备需要重新连接（约 10–30 秒）。远程操作时请勿关闭当前使用的无线网络。"
+      description="点击「保存并应用」后无线服务会重新加载，已连接的设备需要重新连接（约 10–30 秒）。远程操作时请勿关闭当前使用的无线网络。"
     />
 
-    <el-alert v-if="error" type="error" :title="error.message" :closable="false" show-icon />
+    <el-alert v-if="error" type="error" :title="error?.message || '操作失败'" :closable="false" show-icon />
 
     <template v-if="loaded">
       <div class="grid grid-4">
@@ -69,9 +79,38 @@
         description="这台设备可能没有可用的无线硬件，或者 /etc/config/wireless 为空。"
       />
 
-      <p class="page-note">
-        需要更高级的无线选项（例如 802.11r / 802.11k 漫游、多个 VAP）？
-      </p>
+      <ConfigPendingPanel
+        :entries="pendingEntries"
+        title="待生效的改动"
+        subtitle="暂存在 UCI 暂存区，还没有写入 /etc/config/wireless"
+      >
+        <template #actions>
+          <el-button
+            v-if="hasPending"
+            size="small"
+            type="danger"
+            plain
+            :icon="RotateCcw"
+            :loading="discarding"
+            @click="discardChanges"
+          >
+            放弃修改
+          </el-button>
+        </template>
+      </ConfigPendingPanel>
+
+      <PanelCard title="无线服务" subtitle="重新加载无线服务，让已经生效的配置再次下发">
+        <template #actions>
+          <el-button :icon="RotateCw" :loading="reloading" @click="reloadWifi">
+            重载无线服务
+          </el-button>
+        </template>
+        <p class="card-note">
+          <Info :size="13" class="note-icon" />
+          「重载无线服务」会重新应用 /etc/config/wireless 中已经生效的配置，不会提交暂存区里的改动；
+          所有无线连接会短暂中断，需要重新连接。
+        </p>
+      </PanelCard>
     </template>
 
     <div v-else class="card">
@@ -96,22 +135,48 @@
 </template>
 
 <script setup lang="ts">
-  import { computed, ref, watch } from 'vue'
-  import { Antenna, Radio, RefreshCw, RotateCw, Users, Wifi, WifiOff } from 'lucide-vue-next'
+  import { computed, onMounted, reactive, ref, watch } from 'vue'
+  import {
+    Antenna,
+    Info,
+    Radio,
+    RefreshCw,
+    RotateCcw,
+    RotateCw,
+    Save,
+    Users,
+    Wifi,
+    WifiOff
+  } from 'lucide-vue-next'
   import { ElMessage, ElMessageBox } from 'element-plus'
   import PageHeader from '@/components/PageHeader.vue'
+  import PanelCard from '@/components/PanelCard.vue'
   import StatCard from '@/components/StatCard.vue'
   import EmptyState from '@/components/EmptyState.vue'
+  import DraftNotice from '@/components/DraftNotice.vue'
+  import ConfigPendingPanel from '@/components/cfg-pending/ConfigPendingPanel.vue'
   import WifiRadioCard from '@/components/config-wifi/WifiRadioCard.vue'
   import WifiSsidDialog from '@/components/config-wifi/WifiSsidDialog.vue'
   import WifiRadioDialog from '@/components/config-wifi/WifiRadioDialog.vue'
+  import { useDraft, useUnsavedGuard } from '@/composables/useDraft'
   import { usePolling } from '@/composables/usePolling'
   import { useRefreshSignal } from '@/composables/useRefresh'
   import { systemOps } from '@/api/systemOps'
+  import { uciChanges, uciGet, type UciChange, type UciSection } from '@/api/uci'
   import {
+    applyEdits,
+    buildPendingEntries,
+    resetDraft,
+    stageEdits,
+    type PendingEntry,
+    type StagedEdit
+  } from '@/api/configPending'
+  import {
+    commitWirelessConfig,
+    discardWirelessChanges,
     readWirelessConfig,
-    setIfaceEnabled,
-    setRadioEnabled,
+    stageIfaceEnabled,
+    stageRadioEnabled,
     type WifiIfaceConfig,
     type WifiRadioConfig,
     type WirelessConfigModel
@@ -119,14 +184,75 @@
 
   defineOptions({ name: 'WirelessConfigView' })
 
+  interface WifiDraft {
+    edits: StagedEdit[]
+  }
+
+  const draft = useDraft<WifiDraft>('wifi-config', { edits: [] })
+  const savedAt = draft.savedAt
+
   const model = ref<WirelessConfigModel>({ radios: [], networks: [], clients: 0 })
+  const baseline = ref<Record<string, UciSection>>({})
+  /** True once the committed configuration has been read. */
+  const baselineReady = ref(false)
+  const routerChanges = ref<UciChange[]>([])
   const pending = ref<string[]>([])
   const ssidDialogOpen = ref(false)
   const radioDialogOpen = ref(false)
   const activeIface = ref<WifiIfaceConfig | null>(null)
   const activeRadio = ref<WifiRadioConfig | null>(null)
   const reloading = ref(false)
+  const applying = ref(false)
+  const discarding = ref(false)
   const refreshSignal = useRefreshSignal()
+
+  /* ------------------------------------------------------------ derived */
+
+  /** The changes the router reports but the console did not stage itself. */
+  const foreignEdits = computed<StagedEdit[]>(() => {
+    const known = new Set(
+      draft.value.value.edits.map((edit) => `${edit.section}.${edit.option ?? ''}`)
+    )
+    const edits: StagedEdit[] = []
+    for (const change of routerChanges.value) {
+      const key = `${change.section}.${change.option ?? ''}`
+      if (known.has(key)) continue
+      known.add(key)
+      if (change.op === 'delete' && !change.option) {
+        edits.push({ op: 'delete', section: change.section, before: '' })
+      } else if (change.op === 'add') {
+        edits.push({ op: 'add', section: change.section, type: change.type, before: '' })
+      } else if (change.option) {
+        edits.push({
+          op: 'set',
+          section: change.section,
+          option: change.option,
+          value: change.value ?? '',
+          before: ''
+        })
+      }
+    }
+    return edits
+  })
+
+  const effectiveValues = computed(() =>
+    applyEdits(baseline.value, [...draft.value.value.edits, ...foreignEdits.value])
+  )
+
+  const pendingEntries = computed<PendingEntry[]>(() =>
+    buildPendingEntries(baseline.value, routerChanges.value, [
+      ...draft.value.value.edits,
+      ...foreignEdits.value
+    ])
+  )
+
+  const hasPending = computed(() => pendingEntries.value.length > 0)
+
+  const draftEdits = computed(() => draft.value.value.edits)
+
+  const draftDirty = computed(() => draft.dirty.value && draftEdits.value.length > 0)
+
+  useUnsavedGuard(draftDirty, '无线配置有未保存的修改')
 
   const realRadios = computed(() => model.value.radios.filter((radio) => !radio.orphan))
   const radioCount = computed(() => realRadios.value.length)
@@ -141,8 +267,32 @@
     () => allIfaces.value.filter((iface) => !iface.disabled && iface.ssid).length
   )
 
+  /* --------------------------------------------------------------- data */
+
   async function loadModel(): Promise<void> {
-    model.value = await readWirelessConfig()
+    const [values, changes] = await Promise.all([uciGet('wireless'), uciChanges('wireless')])
+
+    // The committed configuration is the base of the change list. It is only
+    // refreshed while the router has no staged changes — otherwise the
+    // staged values would be mistaken for the old ones.
+    if (!baselineReady.value || !changes.length) {
+      baseline.value = values
+      baselineReady.value = true
+    }
+    routerChanges.value = changes
+
+    // The staging area of the router is empty — the recorded changes were
+    // applied or discarded somewhere else.
+    if (!changes.length && draftEdits.value.length) {
+      setDraftEdits([])
+      await resetDraft(draft)
+    }
+
+    model.value = await readWirelessConfig(effectiveValues.value)
+  }
+
+  function setDraftEdits(next: StagedEdit[]): void {
+    draft.value.value.edits = next
   }
 
   function delay(ms: number): Promise<void> {
@@ -173,26 +323,22 @@
       : pending.value.filter((item) => item !== section)
   }
 
+  /* -------------------------------------------------------------- edits */
+
   async function toggleRadio(payload: { section: string; enabled: boolean }): Promise<void> {
     const radio = findRadio(payload.section)
     if (!radio) return
 
-    const previous = radio.disabled
-    radio.disabled = !payload.enabled
     markPending(payload.section, true)
-
     try {
-      await setRadioEnabled(payload.section, payload.enabled)
-      ElMessage.success(`${payload.section} 已${payload.enabled ? '启用' : '禁用'}`)
-      await reloadModel(1500)
-    } catch (err) {
-      // Roll the switch back and, best effort, write the old value to the
-      // router as well so that the router and the UI agree again.
-      radio.disabled = previous
-      await setRadioEnabled(payload.section, !previous).catch(() => undefined)
-      ElMessage.error(
-        `${err instanceof Error ? err.message : '操作失败'}，开关状态已回滚`
+      const result = await stageRadioEnabled(payload.section, payload.enabled)
+      setDraftEdits(stageEdits(baseline.value, draftEdits.value, result.edits))
+      await loadModel()
+      ElMessage.success(
+        `射频 ${payload.section} 已暂存为${payload.enabled ? '启用' : '禁用'}，点击「保存并应用」后生效`
       )
+    } catch (err) {
+      ElMessage.error(`操作失败：${err instanceof Error ? err.message : String(err)}`)
       await reloadModel()
     } finally {
       markPending(payload.section, false)
@@ -203,20 +349,16 @@
     const iface = findIface(payload.section)
     if (!iface) return
 
-    const previous = iface.disabled
-    iface.disabled = !payload.enabled
     markPending(payload.section, true)
-
     try {
-      await setIfaceEnabled(payload.section, payload.enabled)
-      ElMessage.success(`${iface.ssid || 'SSID'} 已${payload.enabled ? '启用' : '禁用'}`)
-      await reloadModel(1500)
-    } catch (err) {
-      iface.disabled = previous
-      await setIfaceEnabled(payload.section, !previous).catch(() => undefined)
-      ElMessage.error(
-        `${err instanceof Error ? err.message : '操作失败'}，开关状态已回滚`
+      const result = await stageIfaceEnabled(payload.section, payload.enabled)
+      setDraftEdits(stageEdits(baseline.value, draftEdits.value, result.edits))
+      await loadModel()
+      ElMessage.success(
+        `${iface.ssid || 'SSID'} 已暂存为${payload.enabled ? '启用' : '禁用'}，点击「保存并应用」后生效`
       )
+    } catch (err) {
+      ElMessage.error(`操作失败：${err instanceof Error ? err.message : String(err)}`)
       await reloadModel()
     } finally {
       markPending(payload.section, false)
@@ -235,8 +377,81 @@
     radioDialogOpen.value = true
   }
 
-  async function onSaved(): Promise<void> {
-    await reloadModel(1500)
+  async function onSaved(edits: StagedEdit[]): Promise<void> {
+    setDraftEdits(stageEdits(baseline.value, draftEdits.value, edits))
+    await reloadModel()
+  }
+
+  /* --------------------------------------------------------- apply/revert */
+
+  async function saveAndApply(): Promise<void> {
+    if (!hasPending.value) {
+      ElMessage.info('没有待应用的改动')
+      return
+    }
+
+    const ok = await ElMessageBox.confirm(
+      `即将提交 ${pendingEntries.value.length} 项无线改动并重新加载无线服务。` +
+        '所有无线连接会短暂中断，已连接的设备需要重新连接。是否继续？',
+      '确认保存并应用',
+      {
+        type: 'warning',
+        confirmButtonText: '继续',
+        cancelButtonText: '取消',
+        distinguishCancelAndClose: true
+      }
+    ).then(() => true)
+      .catch(() => false)
+
+    if (!ok) return
+
+    applying.value = true
+    try {
+      await commitWirelessConfig()
+      setDraftEdits([])
+      await resetDraft(draft)
+      ElMessage.success('无线配置已保存并应用，正在重新读取状态…')
+      await delay(2000)
+      await loadModel()
+    } catch (err) {
+      ElMessage.error(
+        `应用无线配置失败：${err instanceof Error ? err.message : String(err)}。` +
+          '如果你是通过无线访问本页面，无线服务重载期间连接可能中断，' +
+          '请刷新页面确认配置是否已经生效。'
+      )
+    } finally {
+      applying.value = false
+    }
+  }
+
+  async function discardChanges(): Promise<void> {
+    const ok = await ElMessageBox.confirm(
+      '放弃所有尚未提交的无线改动？路由器上已经生效的配置不会被修改，' +
+        'UCI 暂存区会恢复成当前生效的内容。',
+      '确认放弃修改',
+      {
+        type: 'warning',
+        confirmButtonText: '继续',
+        cancelButtonText: '取消',
+        distinguishCancelAndClose: true
+      }
+    ).then(() => true)
+      .catch(() => false)
+
+    if (!ok) return
+
+    discarding.value = true
+    try {
+      await discardWirelessChanges()
+      setDraftEdits([])
+      await resetDraft(draft)
+      await loadModel()
+      ElMessage.success('已放弃未提交的改动')
+    } catch (err) {
+      ElMessage.error(`放弃改动失败：${err instanceof Error ? err.message : String(err)}`)
+    } finally {
+      discarding.value = false
+    }
   }
 
   async function reloadWifi(): Promise<void> {
@@ -272,24 +487,36 @@
     await loadModel()
   }, 15000)
 
+  onMounted(() => void refresh())
   watch(refreshSignal, () => void refresh())
 </script>
 
 <style scoped>
+  /* Element Plus 给相邻按钮加了 12px 左边距，和外层 flex 的 gap 叠加后
+     同一行的按钮会被拉到 20px 间距；这里把间距统一交回给 gap 控制。 */
+  .el-button + .el-button {
+    margin-left: 0;
+  }
+
   .radio-grid {
     display: flex;
     flex-direction: column;
     gap: var(--space-4);
   }
 
-  .page-note {
-    padding: 0 4px;
+  .card-note {
+    display: flex;
+    align-items: flex-start;
+    gap: 6px;
+    margin: 0;
     color: var(--text-muted);
     font-size: var(--text-xs);
+    line-height: 1.6;
   }
 
-  .page-note a {
-    color: var(--brand-text);
+  .note-icon {
+    flex-shrink: 0;
+    margin-top: 2px;
   }
 </style>
 

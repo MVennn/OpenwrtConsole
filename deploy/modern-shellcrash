@@ -14,6 +14,10 @@
 #   subs             subscription overview without the tokens
 #   log              tail of the ShellCrash / guardian log
 #   crash            CrashCore and guardian state
+#   ports            who listens on the five ShellCrash ports
+#   heal             the self healing history (guardian log + state files)
+#   sub-update       hot update of the online subscription (requires confirm=yes)
+#   sub-update-state state of the running subscription update
 #
 # Safety rules enforced here:
 #   * the session is validated against rpcd before anything is executed
@@ -42,6 +46,13 @@ SERVERS_LIST="/etc/ShellCrash/configs/servers.list"
 VERSION_FILE="/etc/ShellCrash/version"
 INITD_DIR="/etc/rc.d"
 ACTION_RC_FILE="/tmp/ShellCrash/modern-shellcrash.last"
+TASK_SH="/etc/ShellCrash/task/task.sh"
+SUB_UPDATE_STATE="/tmp/ShellCrash/modern-shellcrash.subupdate"
+SUB_UPDATE_LOG="/tmp/ShellCrash/modern-shellcrash.subupdate.log"
+
+# The ports the console asks about. They are the ShellCrash defaults, the
+# runtime configuration may use other ones - that is shown next to them.
+TRACKED_PORTS="7890 7892 7893 1053 9999"
 
 # The keys the console may read and write. Everything else in the file
 # (secret, Url, custcorelink, dns_nameserver, ...) is never returned and
@@ -70,21 +81,55 @@ deny() {
 	exit 0
 }
 
+# Sends the body of a reply. The body is validated before it leaves the
+# router: a malformed answer only shows up in the browser as "cannot parse"
+# and hides the real cause, so a body that does not survive jsonfilter is
+# replaced by a readable error.
+send_json() {
+	__sj_body="$1"
+	__sj_out="$WORK/resp.json"
+	if [ -d "$WORK" ]; then
+		printf '%s' "$__sj_body" > "$__sj_out" 2>/dev/null
+		__sj_size=$(wc -c < "$__sj_out" 2>/dev/null | tr -d ' ')
+		if [ "${__sj_size:-0}" -gt "$MAX_OUTPUT" ]; then
+			head -c "$MAX_OUTPUT" "$__sj_out" > "$__sj_out.trim" 2>/dev/null &&
+				mv "$__sj_out.trim" "$__sj_out"
+		fi
+		if [ -n "$HAVE_JSONFILTER" ] &&
+			! jsonfilter -i "$__sj_out" -e '@' >/dev/null 2>&1; then
+			printf '%s' '{"ok":false,"error":"路由器生成了无效的响应，请查看系统日志"}' > "$__sj_out"
+		fi
+		cat "$__sj_out"
+		return 0
+	fi
+	printf '%s' "$__sj_body" | head -c "$MAX_OUTPUT"
+}
+
 fail() {
-	printf 'Status: %s\r\n' "$1"
-	printf 'Content-Type: application/json; charset=utf-8\r\n'
-	printf 'Cache-Control: no-store\r\n'
-	printf 'X-Content-Type-Options: nosniff\r\n\r\n'
-	printf '%s' "$2"
+	printf 'Status: %s
+' "$1"
+	printf 'Content-Type: application/json; charset=utf-8
+'
+	printf 'Cache-Control: no-store
+'
+	printf 'X-Content-Type-Options: nosniff
+
+'
+	send_json "$2"
 	exit 0
 }
 
 ok() {
-	printf 'Status: 200 OK\r\n'
-	printf 'Content-Type: application/json; charset=utf-8\r\n'
-	printf 'Cache-Control: no-store\r\n'
-	printf 'X-Content-Type-Options: nosniff\r\n\r\n'
-	printf '%s' "$1" | head -c "$MAX_OUTPUT"
+	printf 'Status: 200 OK
+'
+	printf 'Content-Type: application/json; charset=utf-8
+'
+	printf 'Cache-Control: no-store
+'
+	printf 'X-Content-Type-Options: nosniff
+
+'
+	send_json "$1"
 	exit 0
 }
 
@@ -425,11 +470,15 @@ action_config_write() {
 		cfg_set "$_k" "$(cfg_quote "$_v")" || exit 1
 	done || fail "500 Internal Server Error" '{"error":"写入配置失败"}'
 
+	# "changed" is a list of "key=value" strings. It has to be a list of
+	# strings - a bare "key":"value" pair inside the brackets is not valid
+	# JSON and the browser refuses to read the whole answer.
 	_applied=""
 	for _k in $CFG_KEYS; do
 		_v=$(param "$_k")
 		[ -n "$_v" ] || continue
-		_applied="$_applied$(jstr "$_k"):$(jstr "$_v"),"
+		_pair="$_k=$_v"
+		_applied="$_applied$(jstr "$_pair"),"
 	done
 	_applied=${_applied%,}
 
@@ -514,6 +563,33 @@ else
 	wait "$_p" 2>/dev/null
 	_rcv=$?
 fi
+
+# The start script returns before the core is up and the stop script returns
+# before the process is gone. The completion record is only written once the
+# router really shows the new state, so the console never has to guess - a
+# restart used to be reported as done while the core was still starting, and
+# the page showed "not running" until somebody hit refresh.
+case "$_act" in
+	start | restart)
+		_i=0
+		while [ "$_i" -lt 60 ]; do
+			pidof CrashCore >/dev/null 2>&1 && break
+			sleep 1
+			_i=$((_i + 1))
+		done
+		pidof CrashCore >/dev/null 2>&1 || _rcv=1
+		;;
+	stop)
+		_i=0
+		while [ "$_i" -lt 30 ]; do
+			pidof CrashCore >/dev/null 2>&1 || break
+			sleep 1
+			_i=$((_i + 1))
+		done
+		pidof CrashCore >/dev/null 2>&1 && _rcv=1
+		;;
+esac
+
 printf '%s %s %s\n' "$_act" "$_rcv" "$(date +%s)" > "$_rc" 2>/dev/null
 rm -f "$0" 2>/dev/null
 RUNNER_EOF
@@ -546,6 +622,24 @@ override_description() {
 	printf '%s' "$_desc"
 }
 
+# The first comment line of the file: the short summary of its purpose.
+override_summary() {
+	_sum=$(sed -n '1,12p' "$1" 2>/dev/null |
+		grep '^[[:space:]]*#' |
+		sed 's/^[[:space:]]*#[[:space:]]*//' |
+		grep -v '^$' |
+		grep -v '^[[:space:]=*_-]\{3,\}[[:space:]]*$' |
+		head -n 1)
+	printf '%s' "$_sum"
+}
+
+# The number of lines of one file.
+file_lines() {
+	_l=$(wc -l < "$1" 2>/dev/null | tr -d ' ')
+	[ -n "$_l" ] || _l=0
+	printf '%s' "$_l"
+}
+
 # The size and the modification time of one file.
 file_size() {
 	_sz=$(wc -c < "$1" 2>/dev/null | tr -d ' ')
@@ -570,12 +664,15 @@ action_overrides() {
 		if [ -f "$YAMLS_DIR/$_f" ]; then
 			_enabled=true
 			_path="$YAMLS_DIR/$_f"
+			_state="active"
 		elif [ -f "$YAMLS_DIR/$_f.bak" ]; then
 			_enabled=false
 			_path="$YAMLS_DIR/$_f.bak"
+			_state="disabled"
 		else
 			_enabled=false
 			_path=""
+			_state="missing"
 		fi
 
 		if [ -n "$_path" ]; then
@@ -583,15 +680,19 @@ action_overrides() {
 			_mtime=$(file_mtime "$_path")
 			_epoch=$(file_mtime_epoch "$_path")
 			_desc=$(override_description "$_path")
+			_sum=$(override_summary "$_path")
+			_lines=$(file_lines "$_path")
 		else
 			_size=0
 			_mtime=""
 			_epoch=0
 			_desc=""
+			_sum=""
+			_lines=0
 		fi
 
 		[ -z "$_items" ] || _items="$_items,"
-		_items="$_items{\"name\":$(jstr "$_f"),\"enabled\":$(jbool "$_enabled"),\"size\":$(jnum "$_size"),\"mtime\":$(jstr "$_mtime"),\"mtime_epoch\":$(jnum "$_epoch"),\"description\":$(jstr "$_desc")}"
+		_items="$_items{\"name\":$(jstr "$_f"),\"enabled\":$(jbool "$_enabled"),\"state\":$(jstr "$_state"),\"size\":$(jnum "$_size"),\"mtime\":$(jstr "$_mtime"),\"mtime_epoch\":$(jnum "$_epoch"),\"description\":$(jstr "$_desc"),\"summary\":$(jstr "$_sum"),\"lines\":$(jnum "$_lines")}"
 	done
 
 	_global=$(cfg_get disoverride)
@@ -630,6 +731,12 @@ action_override_toggle() {
 	fi
 
 	[ -f "$YAMLS_DIR/$_file" ] || fail "404 Not Found" '{"error":"找不到覆写文件"}'
+	# A backup that is already there must not be overwritten, it is kept as
+	# .bak.old so that no file gets lost when the switch is used twice.
+	if [ -f "$YAMLS_DIR/$_file.bak" ]; then
+		mv -f "$YAMLS_DIR/$_file.bak" "$YAMLS_DIR/$_file.bak.old" 2>/dev/null ||
+			fail "500 Internal Server Error" '{"error":"保留旧备份失败"}'
+	fi
 	mv -f "$YAMLS_DIR/$_file" "$YAMLS_DIR/$_file.bak" 2>/dev/null ||
 		fail "500 Internal Server Error" '{"error":"停用覆写文件失败"}'
 	ok "{\"ok\":true,\"file\":$(jstr "$_file"),\"enabled\":false,\"message\":\"覆写文件已停用，需重启 ShellCrash 生效\"}"
@@ -637,33 +744,61 @@ action_override_toggle() {
 
 # ------------------------------------------------------------------ subs ---
 
+# The nodes the running configuration carries. The subscription and the
+# providers are merged into one pool, so the count is the size of the pool.
+runtime_node_count() {
+	_n=$(awk '/^proxies:/{f=1;next} /^[A-Za-z_-]+:/{f=0} f && /^ *- /{c++} END{print c+0}' "$RUNTIME_CONFIG" 2>/dev/null)
+	[ -n "$_n" ] || _n=0
+	printf '%s' "$_n"
+}
+
+# The nodes the user added by hand in /etc/ShellCrash/yamls/proxies.yaml.
+custom_node_count() {
+	_n=$(grep -c '^ *- ' "$YAMLS_DIR/proxies.yaml" 2>/dev/null | tr -d ' ')
+	[ -n "$_n" ] || _n=0
+	printf '%s' "$_n"
+}
+
 action_subs() {
 	_url_id=$(cfg_get url_id)
 	_alias=$(cfg_get my_alias)
 
 	_update=""
+	_update_url=""
 	if [ -n "$_url_id" ] && [ -f "$SERVERS_LIST" ]; then
-		_update=$(grep "^$_url_id[[:space:]]" "$SERVERS_LIST" 2>/dev/null | head -n 1 | awk '{print $2}')
+		_row=$(grep "^$_url_id[[:space:]]" "$SERVERS_LIST" 2>/dev/null | head -n 1)
+		_update=$(printf '%s' "$_row" | awk '{print $2}')
+		_update_url=$(printf '%s' "$_row" | awk '{print $3}')
 	fi
 	[ -n "$_update" ] || _update="自定义源"
+
+	_nodes=$(runtime_node_count)
+	_custom=$(custom_node_count)
+	_entries=$((_nodes - _custom))
+	[ "$_entries" -lt 0 ] && _entries=0
 
 	_subs=""
 	_index=0
 	while IFS= read -r _line; do
 		case "$_line" in
-			Url=*) ;;
+			Url=* | \#Url=*) ;;
 			*) continue ;;
 		esac
+		# A commented out link is kept in the config but not used.
+		_enabled=true
+		case "$_line" in
+			\#Url=*) _enabled=false ;;
+		esac
 		_index=$((_index + 1))
-		_raw=${_line#Url=}
+		_raw=${_line#*=}
 		case "$_raw" in
 			\'*\') _raw=${_raw#\'}; _raw=${_raw%\'} ;;
 		esac
 		_host=$(url_host "$_raw")
 		[ -z "$_subs" ] || _subs="$_subs,"
-		_subs="$_subs{\"index\":$_index,\"alias\":$(jstr "$_update"),\"url_id\":$(jstr "$_url_id"),\"host\":$(jstr "$_host"),\"masked\":$(jstr "$_host/***")}"
+		_subs="$_subs{\"index\":$_index,\"alias\":$(jstr "$_update"),\"source\":$(jstr "$_update"),\"source_url\":$(jstr "$_update_url"),\"url_id\":$(jstr "$_url_id"),\"host\":$(jstr "$_host"),\"masked\":$(jstr "$_host/***"),\"enabled\":$(jbool "$_enabled"),\"entries\":$(jnum "$_entries")}"
 	done << EOF
-$(grep '^Url=' "$CFG_FILE" 2>/dev/null)
+$(grep -E '^#?Url=' "$CFG_FILE" 2>/dev/null)
 EOF
 
 	_providers=""
@@ -677,15 +812,16 @@ EOF
 			_provider_count=$((_provider_count + 1))
 			_host=$(url_host "$_url")
 			[ -z "$_providers" ] || _providers="$_providers,"
-			_providers="$_providers{\"name\":$(jstr "$_name"),\"host\":$(jstr "$_host"),\"masked\":$(jstr "$_host/***")}"
+			_providers="$_providers{\"name\":$(jstr "$_name"),\"host\":$(jstr "$_host"),\"masked\":$(jstr "$_host/***"),\"entries\":$(jnum "$_entries"),\"enabled\":true}"
 		done < "$PROVIDERS_FILE"
 	fi
 
 	_url_count=$_index
 	_total=$((_url_count + _provider_count))
 
-	ok "{\"ok\":true,\"count\":$(jnum "$_total"),\"url_count\":$(jnum "$_url_count"),\"provider_count\":$(jnum "$_provider_count"),\"url_id\":$(jstr "$_url_id"),\"update_source\":$(jstr "$_update"),\"alias\":$(jstr "$_alias"),\"subs\":[$_subs],\"providers\":[$_providers]}"
+	ok "{\"ok\":true,\"count\":$(jnum "$_total"),\"url_count\":$(jnum "$_url_count"),\"provider_count\":$(jnum "$_provider_count"),\"url_id\":$(jstr "$_url_id"),\"update_source\":$(jstr "$_update"),\"update_url\":$(jstr "$_update_url"),\"alias\":$(jstr "$_alias"),\"node_count\":$(jnum "$_nodes"),\"custom_count\":$(jnum "$_custom"),\"subs\":[$_subs],\"providers\":[$_providers]}"
 }
+
 
 # ------------------------------------------------------------------- log ---
 
@@ -778,6 +914,230 @@ EOF
 	ok "{\"ok\":true,\"running\":$(jbool "$_running"),\"pid\":$(jnum "$_pid"),\"core_version\":$(jstr "$(cfg_get core_v)"),\"start_time\":$(jnum "$_start"),\"uptime\":$(jnum "$_uptime"),\"alive_ts\":$(jnum "$_alive"),\"alive_age\":$(jnum "$_alive_age"),\"probe_ts\":$(jnum "$_probe"),\"last_fallback_heal\":$(jnum "$_heal"),\"start_error\":$(jbool "$_start_error"),\"guardian_cron\":$(jstr "$_cron"),\"guardian_log\":[$_glines]}"
 }
 
+# ----------------------------------------------------------------- ports ---
+# The router has no `ss`, so netstat is the only source for the listening
+# sockets. A line looks like
+#   tcp 0 0 :::7890 :::* LISTEN 9998/CrashCore
+# The port is the last field of the local address.
+
+port_owners() {
+	# $1 = port. Prints "pid program" for every process on that port.
+	printf '%s\n' "$_netstat" | awk -v want="$1" '
+		{
+			addr = $4
+			n = split(addr, part, ":")
+			if (part[n] != want) next
+			prog = ""
+			for (i = 1; i <= NF; i++) {
+				if ($i ~ /^[0-9]+\/[A-Za-z0-9_.-]+$/) prog = $i
+			}
+			if (prog == "") next
+			split(prog, owner, "/")
+			if (owner[2] in seen) next
+			seen[owner[2]] = 1
+			print owner[1] " " owner[2]
+		}
+	'
+}
+
+action_ports() {
+	_netstat=$(netstat -lntp 2>/dev/null)
+	_items=""
+	for _p in $TRACKED_PORTS; do
+		_first=$(port_owners "$_p" | head -n 1)
+		if [ -n "$_first" ]; then
+			_listening=true
+			_pid=${_first%% *}
+			_proc=${_first#* }
+		else
+			_listening=false
+			_pid=0
+			_proc=""
+		fi
+		[ -z "$_items" ] || _items="$_items,"
+		_items="$_items{\"port\":$(jnum "$_p"),\"listening\":$(jbool "$_listening"),\"pid\":$(jnum "$_pid"),\"process\":$(jstr "$_proc")}"
+	done
+	ok "{\"ok\":true,\"ports\":[$_items]}"
+}
+
+# ------------------------------------------------------------------ heal ---
+# The self healing history: the guardian log plus the state files the
+# guardian and the legacy watchdog write into /tmp/ShellCrash.
+
+heal_add() {
+	# $1 = epoch, $2 = level, $3 = message, $4 = source
+	printf '%s\t%s\n' "$1" "{\"time\":$(jnum "$1"),\"level\":$(jstr "$2"),\"message\":$(jstr "$3"),\"source\":$(jstr "$4")}" >> "$WORK/heal"
+}
+
+action_heal() {
+	: > "$WORK/heal"
+
+	# 1) the guardian log: "2026-10-20 21:25:12 INFO: message"
+	if [ -f "$SC_DIR/guardian.log" ]; then
+		while IFS= read -r _line; do
+			[ -n "$_line" ] || continue
+			_stamp=$(printf '%s' "$_line" | awk '{print $1" "$2}')
+			_rest=$(printf '%s' "$_line" | sed 's/^[0-9][0-9-]* [0-9][0-9:]* //')
+			_epoch=$(date -d "$_stamp" +%s 2>/dev/null | tr -cd '0-9')
+			[ -n "$_epoch" ] || _epoch=0
+			_level="info"
+			case "$_rest" in
+				FIX:* | ALERT:* | WARN:*) _level="warning" ;;
+				ERROR:*) _level="error" ;;
+			esac
+			_msg=$(printf '%s' "$_rest" | sed 's/^[A-Z][A-Z]*: //' | mask_secrets)
+			heal_add "$_epoch" "$_level" "$_msg" "guardian.log"
+		done << EOF
+$(tail -n 40 "$SC_DIR/guardian.log" 2>/dev/null)
+EOF
+	fi
+
+	# 2) the state files of the guardian and of the legacy watchdog
+	_start=$(head -n 1 "$SC_DIR/crash_start_time" 2>/dev/null | tr -cd '0-9')
+	[ -n "$_start" ] &&
+		heal_add "$_start" "success" "CrashCore 核心拉起（当前实例的启动时间）" "crash_start_time"
+
+	_heal=$(head -n 1 "$SC_DIR/.last_fallback_heal" 2>/dev/null | tr -cd '0-9')
+	[ -n "$_heal" ] &&
+		heal_add "$_heal" "warning" "运行配置缺少策略组，守护重跑 hotupdate 修复了静默回退" ".last_fallback_heal"
+
+	_probe=$(head -n 1 "$SC_DIR/.cc_probe_ts" 2>/dev/null | tr -cd '0-9')
+	[ -n "$_probe" ] &&
+		heal_add "$_probe" "info" "出口地区探测（Google 侧 cc 判定）" ".cc_probe_ts"
+
+	_alive=$(head -n 1 "$SC_DIR/.proxy_alive" 2>/dev/null | tr -cd '0-9')
+	[ -n "$_alive" ] &&
+		heal_add "$_alive" "info" "核心探活记录（控制 API 可达）" ".proxy_alive"
+
+	if [ -f "/etc/ShellCrash/.start_error" ]; then
+		_err_epoch=$(file_mtime_epoch "/etc/ShellCrash/.start_error")
+		heal_add "${_err_epoch:-0}" "error" "存在自启失败标记，核心上次没有正常拉起" ".start_error"
+	fi
+
+	# 3) the last service action of the console
+	if [ -f "$ACTION_RC_FILE" ]; then
+		_line=$(head -n 1 "$ACTION_RC_FILE" 2>/dev/null)
+		_act=${_line%% *}
+		_rest=${_line#* }
+		_rc=${_rest%% *}
+		_ts=$(printf '%s' "$_rest" | awk '{print $2}')
+		[ -n "$_ts" ] || _ts=0
+		_level="info"
+		[ "$_rc" = "0" ] || _level="error"
+		heal_add "$_ts" "$_level" "服务动作 $_act 执行结束（退出码 $_rc）" "modern-shellcrash.last"
+	fi
+
+	_items=""
+	while IFS= read -r _json; do
+		[ -n "$_json" ] || continue
+		[ -z "$_items" ] || _items="$_items,"
+		_items="$_items$_json"
+	done << EOF
+$(sort -rn -k1,1 "$WORK/heal" 2>/dev/null | cut -f2- | head -n 40)
+EOF
+
+	ok "{\"ok\":true,\"entries\":[$_items]}"
+}
+
+# ------------------------------------------------------------ sub-update ---
+# "立即更新订阅" runs the hot update task of ShellCrash: it downloads the
+# subscription, rebuilds the runtime configuration and pushes it into the
+# running core. The task takes a while (the download can need a minute), so
+# it runs in the background and the browser polls the state file.
+
+action_sub_update() {
+	_confirm=$(param confirm)
+	[ "$_confirm" = "yes" ] || fail "403 Forbidden" '{"error":"需要 confirm=yes 确认"}'
+
+	# The hot update pushes the new configuration into the running core, so
+	# a stopped core cannot be updated this way.
+	_pid=$(running_pid)
+	[ -n "$_pid" ] ||
+		fail "409 Conflict" '{"error":"核心未运行，无法热更新订阅（热更新要把新配置推送给正在运行的核心）"}'
+	[ -x "$TASK_SH" ] || fail "404 Not Found" '{"error":"找不到 ShellCrash 任务脚本"}'
+
+	if [ -f "$SUB_UPDATE_STATE" ]; then
+		_state=$(head -n 1 "$SUB_UPDATE_STATE" 2>/dev/null)
+		case "$_state" in
+			running*) fail "409 Conflict" '{"error":"已有订阅更新任务在执行"}' ;;
+		esac
+	fi
+
+	rm -f "$SUB_UPDATE_LOG"
+	printf 'running %s\n' "$(date +%s)" > "$SUB_UPDATE_STATE"
+
+	cat > "$RUNNER" <<'RUNNER_EOF'
+#!/bin/sh
+_task="$1"
+_log="$2"
+_state="$3"
+"$_task" hotupdate > "$_log" 2>&1 &
+_p=$!
+_i=0
+while [ "$_i" -lt 300 ]; do
+	kill -0 "$_p" 2>/dev/null || break
+	sleep 1
+	_i=$((_i + 1))
+done
+if kill -0 "$_p" 2>/dev/null; then
+	kill -9 "$_p" 2>/dev/null
+	_rc=124
+else
+	wait "$_p" 2>/dev/null
+	_rc=$?
+fi
+printf 'done %s %s\n' "$_rc" "$(date +%s)" > "$_state"
+rm -f "$0" 2>/dev/null
+RUNNER_EOF
+	chmod +x "$RUNNER" 2>/dev/null
+
+	if command -v setsid >/dev/null 2>&1; then
+		setsid "$RUNNER" "$TASK_SH" "$SUB_UPDATE_LOG" "$SUB_UPDATE_STATE" >/dev/null 2>&1 &
+	else
+		"$RUNNER" "$TASK_SH" "$SUB_UPDATE_LOG" "$SUB_UPDATE_STATE" >/dev/null 2>&1 &
+	fi
+
+	ok "{\"ok\":true,\"started\":true,\"message\":\"订阅更新已提交，路由器正在执行\"}"
+}
+
+action_sub_update_state() {
+	_running=false
+	_done=false
+	_success=false
+	_rc=0
+	_started=0
+	_finished=0
+	if [ -f "$SUB_UPDATE_STATE" ]; then
+		_line=$(head -n 1 "$SUB_UPDATE_STATE" 2>/dev/null)
+		case "$_line" in
+			running*)
+				_running=true
+				_started=$(printf '%s' "$_line" | awk '{print $2}')
+				;;
+			done*)
+				_done=true
+				_rc=$(printf '%s' "$_line" | awk '{print $2}')
+				_finished=$(printf '%s' "$_line" | awk '{print $3}')
+				[ "$_rc" = "0" ] && _success=true
+				;;
+		esac
+	fi
+	[ -n "$_rc" ] || _rc=0
+	[ -n "$_started" ] || _started=0
+	[ -n "$_finished" ] || _finished=0
+
+	_lines=""
+	while IFS= read -r _line; do
+		[ -n "$_line" ] || continue
+		[ -z "$_lines" ] || _lines="$_lines,"
+		_lines="$_lines$(jstr "$(printf '%s' "$_line" | mask_secrets)")"
+	done << EOF
+$(tail -n 30 "$SUB_UPDATE_LOG" 2>/dev/null)
+EOF
+
+	ok "{\"ok\":true,\"running\":$(jbool "$_running"),\"done\":$(jbool "$_done"),\"success\":$(jbool "$_success"),\"rc\":$(jnum "$_rc"),\"started\":$(jnum "$_started"),\"finished\":$(jnum "$_finished"),\"lines\":[$_lines]}"
+}
+
 # --------------------------------------------------------------- actions ---
 
 case "$action" in
@@ -790,5 +1150,9 @@ case "$action" in
 	subs) action_subs ;;
 	log) action_log ;;
 	crash) action_crash ;;
+	ports) action_ports ;;
+	heal) action_heal ;;
+	sub-update) action_sub_update ;;
+	sub-update-state) action_sub_update_state ;;
 	*) fail "400 Bad Request" '{"error":"不支持的操作"}' ;;
 esac

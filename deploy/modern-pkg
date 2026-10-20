@@ -12,6 +12,10 @@
 #   search     the same lists filtered by a keyword
 #   stats      counters only (installed/installable/upgradable/index time)
 #
+# Every package of a list carries two extra fields:
+#   "installed"    true when the package is already on the router
+#   "dependencies" number of packages the repository entry depends on
+#
 # Write actions never run inside the request. They start a background job that
 # the console polls with the "status" action, because `apk upgrade` may run for
 # minutes while uhttpd would otherwise drop the connection:
@@ -28,7 +32,7 @@
 MAX_BODY=8192
 MAX_OUTPUT=204800
 MAX_INSTALLED=600
-MAX_AVAILABLE=300
+MAX_AVAILABLE=400
 
 JOB_ROOT="/tmp/modern-pkg-jobs"
 STATE_DIR="/tmp/modern-pkg"
@@ -42,11 +46,27 @@ T_UPGRADE=900
 
 APK_FIELDS="name,version,description,installed-size,file-size,arch,license,origin"
 # The repository holds more than ten thousand packages. The available list
-# only needs the four fields the table shows, and every field makes the JSON
-# that has to be parsed on the router bigger.
-APK_FIELDS_AVAIL="name,version,description,installed-size"
+# only needs the fields the table shows, and every field makes the JSON
+# that has to be parsed on the router bigger. The "depends" field carries the
+# dependencies of the entry, which the console shows before an install.
+APK_FIELDS_AVAIL="name,version,description,installed-size,depends"
 
 CACHE_DIR="/tmp/modern-pkg-cache"
+# apk 的索引放在独立缓存目录（/tmp 是内存盘，不占 overlay）。
+# 不指定时 apk 用 /var/cache/apk，那里的索引会被后续查询清掉，
+# 仓库列表刚更新完又会变空。
+APK_CACHE_DIR="/tmp/modern-pkg-cache/apk"
+APK_PROXY="http://127.0.0.1:7890"
+
+# 准备 apk 缓存目录；ShellCrash 混合端口在时让 apk 走代理出网。
+apk_env() {
+	mkdir -p "$APK_CACHE_DIR" 2>/dev/null
+	if netstat -lnt 2>/dev/null | grep -q '127.0.0.1:7890'; then
+		http_proxy="$APK_PROXY"
+		https_proxy="$APK_PROXY"
+		export http_proxy https_proxy
+	fi
+}
 
 deny() {
 	printf 'Status: 401 Unauthorized\r\n'
@@ -57,12 +77,29 @@ deny() {
 	exit 0
 }
 
+# Sends the body of a reply. The body is validated before it leaves the
+# router: a malformed answer only shows up in the browser as "cannot parse"
+# and hides the real cause, so a body that does not survive jsonfilter is
+# replaced by a readable error.
+send_json() {
+	__sj_body="$1"
+	__sj_out="/tmp/.modern-resp.$$"
+	printf '%s' "$__sj_body" > "$__sj_out" 2>/dev/null
+	if command -v jsonfilter >/dev/null 2>&1; then
+		if ! jsonfilter -i "$__sj_out" -e '@' >/dev/null 2>&1; then
+			printf '%s' '{"ok":false,"error":"路由器生成了无效的响应，请查看系统日志"}' > "$__sj_out"
+		fi
+	fi
+	cat "$__sj_out"
+	rm -f "$__sj_out" 2>/dev/null
+}
+
 fail() {
 	printf 'Status: %s\r\n' "$1"
 	printf 'Content-Type: application/json; charset=utf-8\r\n'
 	printf 'Cache-Control: no-store\r\n'
 	printf 'X-Content-Type-Options: nosniff\r\n\r\n'
-	printf '%s' "$2"
+	send_json "$2"
 	exit 0
 }
 
@@ -71,7 +108,7 @@ ok() {
 	printf 'Content-Type: application/json; charset=utf-8\r\n'
 	printf 'Cache-Control: no-store\r\n'
 	printf 'X-Content-Type-Options: nosniff\r\n\r\n'
-	printf '%s' "$1"
+	send_json "$1"
 	exit 0
 }
 
@@ -145,7 +182,6 @@ trap cleanup EXIT INT TERM
 mkdir -p "$WORK" 2>/dev/null || fail "500 Internal Server Error" '{"error":"无法创建临时目录"}'
 
 # --------------------------------------------------------------- helpers ---
-
 # Runs a command with a watchdog. The router has no coreutils timeout, so the
 # command is started in its own session and killed with SIGKILL when it
 # overruns. stdout goes to $2, stderr to $2.err.
@@ -208,28 +244,37 @@ esc_json() {
 
 # awk program that turns the JSON array produced by `apk query --format json`
 # back into a JSON array. The objects are passed through unchanged (only the
-# field names are normalised), so the descriptions keep their escaping.
+# field names are normalised), so the descriptions keep their escaping. One
+# field is added to every object:
+#
+#   "installed"    true when the name is in the list of installed packages
+#
+# The "depends" array of the repository entry is part of the object, so the
+# console can count the dependencies of a package itself.
 #
 #   -v limit      maximum number of objects to emit (0 = no limit)
 #   -v keyword    case insensitive filter, matched against name and body
-#   -v exclude   file with package names that must be skipped
+#   -v installed  file with the names of the installed packages
 #   -v countfile  file that receives the number of matching objects
+#   -v freefile   file that receives the number of matching objects that are
+#                 not installed yet
 #
 # Every match is counted, but only the first `limit` objects are emitted, so
 # the caller learns the real size of the repository while the answer stays
 # small.
 PARSE_PROG='
 BEGIN {
-	if (exclude != "") {
-		while ((getline line < exclude) > 0) {
-			if (line != "") skip[line] = 1
+	if (installed != "") {
+		while ((getline line < installed) > 0) {
+			if (line != "") inst[line] = 1
 		}
-		close(exclude)
+		close(installed)
 	}
 	kw = tolower(keyword)
 	have_kw = (kw != "")
 	first = 1
 	count = 0
+	free_count = 0
 	printf "[\n"
 }
 {
@@ -240,16 +285,24 @@ BEGIN {
 	}
 	if (line == "]") next
 	head = substr(line, 1, 3)
-	if (head == "  {") { body = ""; n = 0; nm = ""; next }
+	if (head == "  {") {
+		body = ""; n = 0; nm = ""
+		# The body is only needed for the packages that are sent to the
+		# console and for the keyword search. Building it for the other ten
+		# thousand packages of the repository would cost seconds.
+		want_body = (have_kw || limit <= 0 || count < limit)
+		next
+	}
 	if (head == "  }") {
 		keep = 1
-		if (nm != "" && (nm in skip)) keep = 0
-		if (keep && have_kw) {
+		if (have_kw) {
 			if (index(tolower(nm), kw) == 0 && index(tolower(body), kw) == 0) keep = 0
 		}
 		if (keep) {
 			count++
-			if (limit <= 0 || count <= limit) emit(body)
+			is_inst = (nm in inst) ? 1 : 0
+			if (!is_inst) free_count++
+			if (limit <= 0 || count <= limit) emit(body, is_inst)
 		}
 		# The line "  }, {" closes one object and opens the next one, so the
 		# state has to be cleared here as well.
@@ -258,18 +311,20 @@ BEGIN {
 		nm = ""
 		next
 	}
+	if (n == 0) nm = name_of(line)
 	n++
-	body = (body == "") ? line : body "\n" line
-	if (n == 1) nm = name_of(line)
+	if (want_body) body = (body == "") ? line : body "\n" line
 }
 END {
 	printf "]\n"
 	if (countfile != "") printf "%d", count > countfile
+	if (freefile != "") printf "%d", free_count > freefile
 }
-function emit(b,   i, cnt, parts, ln) {
+function emit(b, inst_flag,   i, cnt, parts, ln) {
 	if (!first) printf ",\n"
 	first = 0
 	printf "  {\n"
+	printf "    \"installed\": %s,\n", (inst_flag ? "true" : "false")
 	cnt = split(b, parts, "\n")
 	for (i = 1; i <= cnt; i++) {
 		ln = parts[i]
@@ -296,17 +351,19 @@ function name_of(ln,   p, rest, q, r) {
 }
 '
 
-# Splits the apk JSON into the packages array and a count file.
-#   $1 json file, $2 array file, $3 count file, $4 limit, $5 keyword, $6 exclude
+# Splits the apk JSON into the packages array and the count files.
+#   $1 json file, $2 array file, $3 count file, $4 free file,
+#   $5 limit, $6 keyword, $7 installed names file
 parse_packages() {
-	awk -v limit="$4" -v keyword="$5" -v exclude="$6" -v countfile="$3" \
+	awk -v limit="$5" -v keyword="$6" -v installed="$7" \
+		-v countfile="$3" -v freefile="$4" \
 		"$PARSE_PROG" "$1" > "$2" 2>/dev/null
 }
 
 # Prints the epoch of the newest repository index, or 0 when it is missing.
 index_updated_at() {
 	_f=""
-	for _d in /var/cache/apk /var/cache/apk/*; do
+	for _d in "$APK_CACHE_DIR" "$APK_CACHE_DIR"/* /var/cache/apk /var/cache/apk/*; do
 		[ -d "$_d" ] || continue
 		_c="$(ls -t "$_d"/APKINDEX.* 2>/dev/null | head -n 1)"
 		if [ -n "$_c" ]; then
@@ -358,8 +415,9 @@ load_installed() {
 
 # Fills $WORK/available.json with the packages offered by the repositories.
 load_available() {
+	apk_env
 	run_bg "$T_READ" "$WORK/available.json" \
-		apk query --available --format json --fields "$APK_FIELDS_AVAIL" "*"
+		apk --cache-dir "$APK_CACHE_DIR" query --available --format json --fields "$APK_FIELDS_AVAIL" "*"
 }
 
 # The parsed answer is cached, because building it needs a full pass over the
@@ -374,6 +432,7 @@ cache_key() {
 cache_get() {
 	[ -f "$CACHE_DIR/$1.json" ] || return 1
 	[ -f "$CACHE_DIR/$1.count" ] || return 1
+	[ -f "$CACHE_DIR/$1.free" ] || return 1
 	return 0
 }
 
@@ -383,6 +442,8 @@ cache_put() {
 		mv "$CACHE_DIR/$1.json.tmp" "$CACHE_DIR/$1.json" 2>/dev/null
 	cp "$3" "$CACHE_DIR/$1.count.tmp" 2>/dev/null &&
 		mv "$CACHE_DIR/$1.count.tmp" "$CACHE_DIR/$1.count" 2>/dev/null
+	cp "$4" "$CACHE_DIR/$1.free.tmp" 2>/dev/null &&
+		mv "$CACHE_DIR/$1.free.tmp" "$CACHE_DIR/$1.free" 2>/dev/null
 	# Keep the cache small: only the newest few entries survive.
 	for _f in "$CACHE_DIR"/*.json; do
 		[ -f "$_f" ] || continue
@@ -401,6 +462,18 @@ upgradable_count() {
 	printf '%s' "$_n"
 }
 
+# The packages that a newer version exists for, with the new version. The
+# JSON of apk is passed through unchanged, so the console can read it as it
+# is. An answer that is not an array becomes an empty one.
+upgradable_list() {
+	_ug="$(head -c 200000 "$WORK/upgradable.json" 2>/dev/null | tr -d '\r')"
+	case "$_ug" in
+		'['*) ;;
+		*) _ug="[]" ;;
+	esac
+	printf '%s' "$_ug"
+}
+
 # $1 = keyword. The installed packages, optionally filtered.
 action_installed() {
 	_kw="$(safe_keyword "$1")"
@@ -408,13 +481,14 @@ action_installed() {
 	load_installed
 	installed_names "$WORK/installed.json" "$WORK/installed.names"
 
-	parse_packages "$WORK/installed.json" "$WORK/packages.json" "$WORK/count" \
-		"$MAX_INSTALLED" "$_kw" ""
+	parse_packages "$WORK/installed.json" "$WORK/packages.json" "$WORK/count" "$WORK/free" \
+		"$MAX_INSTALLED" "$_kw" "$WORK/installed.names"
 
 	_cnt="$(cat "$WORK/count" 2>/dev/null)"
 	case "$_cnt" in ''|*[!0-9]*) _cnt=0 ;; esac
 
 	_uc="$(upgradable_count)"
+	_ug="$(upgradable_list)"
 	_it="$(index_updated_at)"
 
 	_out="已安装 $_cnt 个软件包"
@@ -423,11 +497,12 @@ action_installed() {
 	[ -n "$_note" ] && _out="$_out
 $_note"
 
-	ok "{\"ok\":true,\"output\":\"$(printf '%s' "$_out" | esc_json)\",\"packages\":$(cat "$WORK/packages.json"),\"installedCount\":$_cnt,\"upgradableCount\":$_uc,\"indexUpdatedAt\":$_it}"
+	ok "{\"ok\":true,\"output\":\"$(printf '%s' "$_out" | esc_json)\",\"packages\":$(cat "$WORK/packages.json"),\"installedCount\":$_cnt,\"upgradableCount\":$_uc,\"upgradable\":$_ug,\"indexUpdatedAt\":$_it}"
 }
 
-# $1 = keyword. The packages offered by the repositories, minus the ones that
-# are already installed.
+# $1 = keyword. The packages offered by the repositories. The packages that
+# are already installed are part of the list and are marked as such, so the
+# console can tell the user that there is nothing to install.
 action_available() {
 	_kw="$(safe_keyword "$1")"
 
@@ -449,23 +524,26 @@ action_available() {
 	if cache_get "$_key"; then
 		cp "$CACHE_DIR/$_key.json" "$WORK/packages.json" 2>/dev/null
 		cp "$CACHE_DIR/$_key.count" "$WORK/count" 2>/dev/null
+		cp "$CACHE_DIR/$_key.free" "$WORK/free" 2>/dev/null
 	else
 		load_available
-		parse_packages "$WORK/available.json" "$WORK/packages.json" "$WORK/count" \
+		parse_packages "$WORK/available.json" "$WORK/packages.json" "$WORK/count" "$WORK/free" \
 			"$_lim" "$_kw" "$WORK/installed.names"
-		cache_put "$_key" "$WORK/packages.json" "$WORK/count"
+		cache_put "$_key" "$WORK/packages.json" "$WORK/count" "$WORK/free"
 	fi
 
 	_cnt="$(cat "$WORK/count" 2>/dev/null)"
 	case "$_cnt" in ''|*[!0-9]*) _cnt=0 ;; esac
+	_free="$(cat "$WORK/free" 2>/dev/null)"
+	case "$_free" in ''|*[!0-9]*) _free=0 ;; esac
 
-	_out="仓库中可安装 $_cnt 个软件包"
-	[ -n "$_kw" ] && _out="仓库中匹配「$_kw」的软件包 $_cnt 个"
+	_out="仓库中可安装 $_free 个软件包"
+	[ -n "$_kw" ] && _out="仓库中匹配「$_kw」的软件包 $_cnt 个（可安装 $_free 个）"
 	_note="$(stderr_note "$WORK/available.json.err")"
 	[ -n "$_note" ] && _out="$_out
 $_note"
 
-	ok "{\"ok\":true,\"output\":\"$(printf '%s' "$_out" | esc_json)\",\"packages\":$(cat "$WORK/packages.json"),\"availableCount\":$_cnt,\"installedCount\":$_ic,\"indexUpdatedAt\":$_it}"
+	ok "{\"ok\":true,\"output\":\"$(printf '%s' "$_out" | esc_json)\",\"packages\":$(cat "$WORK/packages.json"),\"availableCount\":$_free,\"matchedCount\":$_cnt,\"installedCount\":$_ic,\"indexUpdatedAt\":$_it}"
 }
 
 # The counters of the page. The number of installable packages can only be
@@ -484,23 +562,25 @@ action_stats() {
 	_key="$(cache_key "$_it--$MAX_AVAILABLE" "$WORK/installed.names")"
 	if cache_get "$_key"; then
 		cp "$CACHE_DIR/$_key.count" "$WORK/count" 2>/dev/null
+		cp "$CACHE_DIR/$_key.free" "$WORK/free" 2>/dev/null
 	else
 		load_available
-		parse_packages "$WORK/available.json" "$WORK/packages.json" "$WORK/count" \
+		parse_packages "$WORK/available.json" "$WORK/packages.json" "$WORK/count" "$WORK/free" \
 			"$MAX_AVAILABLE" "" "$WORK/installed.names"
-		cache_put "$_key" "$WORK/packages.json" "$WORK/count"
+		cache_put "$_key" "$WORK/packages.json" "$WORK/count" "$WORK/free"
 	fi
 
 	_cnt="$(cat "$WORK/count" 2>/dev/null)"
 	case "$_cnt" in ''|*[!0-9]*) _cnt=0 ;; esac
+	_free="$(cat "$WORK/free" 2>/dev/null)"
+	case "$_free" in ''|*[!0-9]*) _free=0 ;; esac
 
 	_uc="$(upgradable_count)"
 
-	ok "{\"ok\":true,\"installedCount\":$_ic,\"availableCount\":$_cnt,\"upgradableCount\":$_uc,\"indexUpdatedAt\":$_it}"
+	ok "{\"ok\":true,\"installedCount\":$_ic,\"availableCount\":$_free,\"matchedCount\":$_cnt,\"upgradableCount\":$_uc,\"indexUpdatedAt\":$_it}"
 }
 
 # ------------------------------------------------------------------ jobs ---
-
 cleanup_jobs() {
 	_now="$(date +%s 2>/dev/null)"
 	case "$_now" in ''|*[!0-9]*) return 0 ;; esac
@@ -622,17 +702,27 @@ action_remove() {
 action_update() {
 	require_confirm
 	cleanup_jobs
-	_id="$(start_job "$T_UPDATE" apk update)"
+	apk_env
+	_id="$(start_job "$T_UPDATE" apk --cache-dir "$APK_CACHE_DIR" update)"
 	[ -n "$_id" ] || fail "500 Internal Server Error" '{"error":"无法启动任务"}'
 	ok "{\"ok\":true,\"job_id\":\"$_id\",\"status\":\"running\",\"output\":\"正在更新仓库索引\",\"packages\":[]}"
 }
 
+# Upgrades one package or, without a name, every package.
 action_upgrade() {
 	require_confirm
 	cleanup_jobs
-	_id="$(start_job "$T_UPGRADE" apk upgrade --no-interactive --no-cache-packages)"
+	apk_env
+	if [ -n "$pkg_name" ]; then
+		valid_package_name "$pkg_name" || fail "400 Bad Request" '{"error":"软件包名称不合法"}'
+		_id="$(start_job "$T_UPGRADE" apk --cache-dir "$APK_CACHE_DIR" upgrade --no-interactive --no-cache-packages "$pkg_name")"
+		_note="正在升级 $pkg_name"
+	else
+		_id="$(start_job "$T_UPGRADE" apk --cache-dir "$APK_CACHE_DIR" upgrade --no-interactive --no-cache-packages)"
+		_note="正在升级全部软件包"
+	fi
 	[ -n "$_id" ] || fail "500 Internal Server Error" '{"error":"无法启动任务"}'
-	ok "{\"ok\":true,\"job_id\":\"$_id\",\"status\":\"running\",\"output\":\"正在升级全部软件包\",\"packages\":[]}"
+	ok "{\"ok\":true,\"job_id\":\"$_id\",\"status\":\"running\",\"output\":\"$_note\",\"packages\":[]}"
 }
 
 # --------------------------------------------------------------- dispatch ---

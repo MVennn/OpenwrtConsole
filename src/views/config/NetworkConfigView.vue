@@ -11,11 +11,13 @@
         放弃修改
       </el-button>
       <el-button type="primary" :icon="Save" :loading="applying" @click="saveAndApply">
-        保存并应用<template v-if="pending.length">（{{ pending.length }}）</template>
+        保存并应用<template v-if="pendingEntries.length">（{{ pendingEntries.length }}）</template>
       </el-button>
     </PageHeader>
 
-    <el-alert v-if="error" type="error" :title="error.message" :closable="false" show-icon />
+    <DraftNotice :dirty="draftDirty" :saved-at="savedAt" @discard="discardChanges" />
+
+    <el-alert v-if="error" type="error" :title="error?.message || '操作失败'" :closable="false" show-icon />
     <el-alert
       v-if="notice"
       type="warning"
@@ -24,28 +26,6 @@
       show-icon
       @close="notice = ''"
     />
-
-    <el-alert
-      v-if="hasPending"
-      type="warning"
-      show-icon
-      :closable="false"
-      class="pending-alert"
-    >
-      <template #title>
-        <span>{{ pendingTitle }}</span>
-      </template>
-      <ul v-if="pending.length" class="pending-list">
-        <li v-for="(change, index) in pending" :key="`${change.op}-${change.section}-${change.option}-${index}`">
-          <span class="pending-op">{{ opText(change.op) }}</span>
-          <span class="mono">{{ changeText(change) }}</span>
-        </li>
-      </ul>
-      <p class="pending-hint">
-        改动仍在 UCI 暂存区，尚未写入 /etc/config/network。点击右上角「保存并应用」后写入并重载网络服务；
-        「放弃修改」可以撤销它们。
-      </p>
-    </el-alert>
 
     <template v-if="loaded">
       <div class="grid grid-4">
@@ -57,7 +37,7 @@
           tone="brand"
         />
         <StatCard
-          label="已连接接口"
+          label="链路在线"
           :value="connectedCount"
           :meta="`${model.interfaces.length} 个配置接口`"
           :icon="PlugZap"
@@ -81,7 +61,14 @@
 
       <PanelCard title="接口" :subtitle="`${model.interfaces.length} 个 interface 段`" flush>
         <template #actions>
-          <el-button size="small" :icon="Plus" :disabled="busy" @click="openInterfaceDialog()">
+          <el-button
+            link
+            type="primary"
+            size="small"
+            :icon="Plus"
+            :disabled="busy"
+            @click="openInterfaceDialog()"
+          >
             新增接口
           </el-button>
         </template>
@@ -104,10 +91,13 @@
                 <span class="mono table-mono">{{ row.device || '—' }}</span>
               </template>
             </el-table-column>
-            <el-table-column label="地址" min-width="140">
+            <el-table-column label="地址" min-width="150">
               <template #default="{ row }">
                 <div class="table-primary mono">{{ addressText(row) }}</div>
                 <div class="table-sub mono">{{ netmaskText(row) }}</div>
+                <div v-if="runtimeAddress(row)" class="table-sub mono">
+                  运行中 {{ runtimeAddress(row) }}
+                </div>
               </template>
             </el-table-column>
             <el-table-column label="网关" min-width="110">
@@ -120,13 +110,19 @@
                 <span class="mono table-mono">{{ row.dns.join(' ') || '—' }}</span>
               </template>
             </el-table-column>
-            <el-table-column label="状态" width="96">
+            <el-table-column label="链路" min-width="130">
+              <template #default="{ row }">
+                <StatusBadge :label="linkLabel(row)" :tone="linkTone(row)" />
+                <div v-if="linkSpeed(row)" class="table-sub num">{{ linkSpeed(row) }}</div>
+                <div v-else-if="!row.disabled" class="table-sub">无线 / 虚拟接口</div>
+              </template>
+            </el-table-column>
+            <el-table-column label="启用" width="86">
               <template #default="{ row }">
                 <StatusBadge
-                  :label="row.disabled ? '禁用' : '启用'"
+                  :label="row.disabled ? '已禁用' : '已启用'"
                   :tone="row.disabled ? 'neutral' : 'success'"
                 />
-                <div v-if="linkState(row)" class="table-sub">{{ linkState(row) }}</div>
               </template>
             </el-table-column>
             <el-table-column label="操作" width="190">
@@ -171,10 +167,7 @@
           <div v-for="row in model.interfaces" :key="row.id" class="mobile-row">
             <div class="mobile-row-head">
               <strong class="truncate">{{ row.id }}</strong>
-              <StatusBadge
-                :label="row.disabled ? '禁用' : '启用'"
-                :tone="row.disabled ? 'neutral' : 'success'"
-              />
+              <StatusBadge :label="linkLabel(row)" :tone="linkTone(row)" />
             </div>
             <div class="mobile-line">
               <span>协议 / 设备</span>
@@ -191,6 +184,10 @@
             <div class="mobile-line">
               <span>DNS</span>
               <span class="mono">{{ row.dns.join(' ') || '—' }}</span>
+            </div>
+            <div class="mobile-line">
+              <span>链路速率</span>
+              <span class="num">{{ linkSpeed(row) || '—' }}</span>
             </div>
             <div class="mobile-actions">
               <el-button size="small" :icon="Pencil" :disabled="busy" @click="openInterfaceDialog(row)">
@@ -237,7 +234,14 @@
 
       <PanelCard title="静态路由" :subtitle="`${model.routes.length} 条 route 段`" flush>
         <template #actions>
-          <el-button size="small" :icon="Plus" :disabled="busy" @click="openRouteDialog()">
+          <el-button
+            link
+            type="primary"
+            size="small"
+            :icon="Plus"
+            :disabled="busy"
+            @click="openRouteDialog()"
+          >
             新增路由
           </el-button>
         </template>
@@ -265,23 +269,31 @@
                 <span class="num table-mono">{{ row.metric ?? '—' }}</span>
               </template>
             </el-table-column>
+            <el-table-column label="生效状态" min-width="150">
+              <template #default="{ row }">
+                <StatusBadge :label="routeState(row).label" :tone="routeState(row).tone" />
+                <div v-if="routeState(row).detail" class="table-sub">
+                  {{ routeState(row).detail }}
+                </div>
+              </template>
+            </el-table-column>
             <el-table-column label="操作" width="150">
               <template #default="{ row }">
                 <div class="row-actions">
-                <el-button link size="small" :icon="Pencil" :disabled="busy" @click="openRouteDialog(row)">
-                  编辑
-                </el-button>
-                <el-button link
-                  size="small"
-                  type="danger"
-                  plain
-                  :icon="Trash2"
-                  :disabled="busy"
-                  @click="removeRoute(row)"
-                >
-                  删除
-                </el-button>
-                              </div>
+                  <el-button link size="small" :icon="Pencil" :disabled="busy" @click="openRouteDialog(row)">
+                    编辑
+                  </el-button>
+                  <el-button
+                    link
+                    size="small"
+                    type="danger"
+                    :icon="Trash2"
+                    :disabled="busy"
+                    @click="removeRoute(row)"
+                  >
+                    删除
+                  </el-button>
+                </div>
               </template>
             </el-table-column>
           </el-table>
@@ -291,7 +303,7 @@
           <div v-for="row in model.routes" :key="row.id" class="mobile-row">
             <div class="mobile-row-head">
               <strong class="truncate mono">{{ routeTargetText(row) }}</strong>
-              <span class="num muted">跃点 {{ row.metric ?? '—' }}</span>
+              <StatusBadge :label="routeState(row).label" :tone="routeState(row).tone" />
             </div>
             <div class="mobile-line">
               <span>网关</span>
@@ -300,6 +312,10 @@
             <div class="mobile-line">
               <span>接口</span>
               <span class="mono">{{ row.iface || '—' }}</span>
+            </div>
+            <div class="mobile-line">
+              <span>跃点</span>
+              <span class="num">{{ row.metric ?? '—' }}</span>
             </div>
             <div class="mobile-actions">
               <el-button size="small" :icon="Pencil" :disabled="busy" @click="openRouteDialog(row)">
@@ -340,6 +356,26 @@
           <span>新增与删除在点击「保存并应用」后生效</span>
         </template>
       </PanelCard>
+
+      <ConfigPendingPanel
+        :entries="pendingEntries"
+        title="待生效的改动"
+        subtitle="暂存在 UCI 暂存区，还没有写入 /etc/config/network"
+      >
+        <template #actions>
+          <el-button
+            v-if="hasPending"
+            size="small"
+            type="danger"
+            plain
+            :icon="RotateCcw"
+            :loading="discarding"
+            @click="discardChanges"
+          >
+            放弃修改
+          </el-button>
+        </template>
+      </ConfigPendingPanel>
 
       <PanelCard title="无线网段" subtitle="来自 /etc/config/wireless，本页只读" flush>
         <div v-if="model.wireless.length" class="desktop-only">
@@ -454,18 +490,30 @@
   import StatCard from '@/components/StatCard.vue'
   import StatusBadge from '@/components/StatusBadge.vue'
   import EmptyState from '@/components/EmptyState.vue'
+  import DraftNotice from '@/components/DraftNotice.vue'
+  import ConfigPendingPanel from '@/components/cfg-pending/ConfigPendingPanel.vue'
   import NetInterfaceDialog from '@/components/config-net/NetInterfaceDialog.vue'
   import NetRouteDialog from '@/components/config-net/NetRouteDialog.vue'
+  import { useDraft, useUnsavedGuard } from '@/composables/useDraft'
   import { useRefreshSignal } from '@/composables/useRefresh'
-  import type { UciChange } from '@/api/uci'
+  import { uciChanges, uciGet, type UciChange, type UciSection } from '@/api/uci'
+  import {
+    applyEdits,
+    buildPendingEntries,
+    resetDraft,
+    stageEdits,
+    type PendingEntry,
+    type StagedEdit
+  } from '@/api/configPending'
   import {
     addressText,
     applyNetwork,
-    changeText,
     createEmptyNetworkModel,
+    fetchActiveRoutes,
     fetchNetworkModel,
-    fetchPendingChanges,
+    matchActiveRoute,
     netmaskText,
+    parseNetworkModel,
     protocolText,
     revertNetwork,
     routeTargetText,
@@ -474,6 +522,7 @@
     stageInterfaceRemoval,
     stageRoute,
     stageRouteRemoval,
+    type NetActiveRoute,
     type NetInterface,
     type NetInterfaceDraft,
     type NetRoute,
@@ -485,8 +534,25 @@
 
   const router = useRouter()
 
+  /** The changes the console staged and that are not applied yet. */
+  interface NetDraft {
+    edits: StagedEdit[]
+  }
+
+  const draft = useDraft<NetDraft>('net-config', { edits: [] })
+  /** The moment the draft was written the last time. */
+  const savedAt = draft.savedAt
+
   const model = ref<NetworkModel>(createEmptyNetworkModel())
-  const pending = ref<UciChange[]>([])
+  /** The committed configuration of the router. */
+  const baseline = ref<Record<string, UciSection>>({})
+  /** True once the committed configuration has been read. */
+  const baselineReady = ref(false)
+  /** The change list the router reports for /etc/config/network. */
+  const routerChanges = ref<UciChange[]>([])
+  /** The kernel routing table, empty when the router does not report it. */
+  const activeRoutes = ref<NetActiveRoute[]>([])
+  const routeTableAvailable = ref(false)
 
   const loaded = ref(false)
   const error = ref<Error | null>(null)
@@ -495,13 +561,6 @@
   const applying = ref(false)
   const discarding = ref(false)
   const notice = ref('')
-  /** Set as soon as a change was staged, even when the router does not report
-   *  a change list. */
-  const dirty = ref(false)
-
-  /** Sections that were deleted but are still part of the pending changes. */
-  const removedInterfaces = ref<NetInterface[]>([])
-  const removedRoutes = ref<NetRoute[]>([])
 
   const ifaceDialog = reactive<{ open: boolean; iface: NetInterface | null }>({
     open: false,
@@ -514,8 +573,80 @@
 
   const refreshSignal = useRefreshSignal()
 
+  /* ------------------------------------------------------------ derived */
+
+  /** The changes the router reports but the console did not stage itself. */
+  const foreignEdits = computed<StagedEdit[]>(() => {
+    const known = new Set(
+      draftEdits.value.map((edit) => `${edit.section}.${edit.option ?? ''}`)
+    )
+    const edits: StagedEdit[] = []
+    for (const change of routerChanges.value) {
+      const key = `${change.section}.${change.option ?? ''}`
+      if (known.has(key)) continue
+      known.add(key)
+      if (change.op === 'delete' && !change.option) {
+        edits.push({ op: 'delete', section: change.section, before: '' })
+      } else if (change.op === 'add') {
+        edits.push({ op: 'add', section: change.section, type: change.type, before: '' })
+      } else if (change.option) {
+        edits.push({
+          op: 'set',
+          section: change.section,
+          option: change.option,
+          value: change.value ?? '',
+          before: ''
+        })
+      }
+    }
+    return edits
+  })
+
+  /** The configuration as it will be after "保存并应用". */
+  const effectiveValues = computed(() =>
+    applyEdits(baseline.value, [...draftEdits.value, ...foreignEdits.value])
+  )
+
+  const pendingEntries = computed<PendingEntry[]>(() =>
+    buildPendingEntries(baseline.value, routerChanges.value, [
+      ...draftEdits.value,
+      ...foreignEdits.value
+    ])
+  )
+
+  const hasPending = computed(() => pendingEntries.value.length > 0)
+
+  /** The draft only counts as dirty when it really carries changes. */
+  /** The staged edits the draft keeps across reloads. */
+  const draftEdits = computed(() => draft.value.value.edits)
+
+  /** Replaces the recorded edits — the draft watcher persists them. */
+  function setDraftEdits(next: StagedEdit[]): void {
+    draft.value.value.edits = next
+  }
+
+  const draftDirty = computed(() => draft.dirty.value && draftEdits.value.length > 0)
+
+  useUnsavedGuard(draftDirty, '网络配置有未保存的修改')
+
   const connectedCount = computed(
     () => model.value.interfaces.filter((iface) => model.value.runtime[iface.id]?.up).length
+  )
+
+  const committedModel = computed(() => parseNetworkModel(baseline.value))
+
+  const removedInterfaces = computed<NetInterface[]>(() =>
+    draftEdits.value
+      .filter((edit) => edit.op === 'delete' && !edit.option)
+      .map((edit) => committedModel.value.interfaces.find((item) => item.id === edit.section))
+      .filter((item): item is NetInterface => Boolean(item))
+  )
+
+  const removedRoutes = computed<NetRoute[]>(() =>
+    draftEdits.value
+      .filter((edit) => edit.op === 'delete' && !edit.option)
+      .map((edit) => committedModel.value.routes.find((item) => item.id === edit.section))
+      .filter((item): item is NetRoute => Boolean(item))
   )
 
   const defaultRouteSections = computed(
@@ -541,23 +672,38 @@
     return disabled ? `${disabled} 个已禁用` : '全部处于启用状态'
   })
 
-  const hasPending = computed(() => pending.value.length > 0 || dirty.value)
-
-  const pendingTitle = computed(() =>
-    pending.value.length
-      ? `有 ${pending.value.length} 处未应用的改动`
-      : '有未应用的改动'
-  )
-
   /* ---------------------------------------------------------------- data */
 
+  function delay(ms: number): Promise<void> {
+    return new Promise((resolve) => window.setTimeout(resolve, ms))
+  }
+
   async function load(): Promise<void> {
-    const [nextModel, nextChanges] = await Promise.all([
-      fetchNetworkModel(),
-      fetchPendingChanges()
+    const [values, changes] = await Promise.all([uciGet('network'), uciChanges('network')])
+
+    // The committed configuration is the base of the change list. It is only
+    // refreshed while the router has no staged changes — otherwise the
+    // staged values would be mistaken for the old ones.
+    if (!baselineReady.value || !changes.length) {
+      baseline.value = values
+      baselineReady.value = true
+    }
+    routerChanges.value = changes
+
+    // The router's staging area is empty — the staged changes were applied
+    // or discarded somewhere else, so the local record is outdated.
+    if (!changes.length && draftEdits.value.length) {
+      setDraftEdits([])
+      await resetDraft(draft)
+    }
+
+    const [nextModel, routes] = await Promise.all([
+      fetchNetworkModel(effectiveValues.value),
+      fetchActiveRoutes()
     ])
     model.value = nextModel
-    pending.value = nextChanges
+    activeRoutes.value = routes.routes
+    routeTableAvailable.value = routes.available
   }
 
   async function refresh(): Promise<void> {
@@ -600,15 +746,6 @@
     }
   }
 
-  function opText(op: UciChange['op']): string {
-    if (op === 'set') return '设置'
-    if (op === 'delete') return '删除'
-    if (op === 'add') return '新增'
-    if (op === 'rename') return '重命名'
-    if (op === 'move') return '移动'
-    return op
-  }
-
   function modeText(mode: string): string {
     if (mode === 'ap') return '接入点'
     if (mode === 'sta') return '客户端'
@@ -617,18 +754,70 @@
     return mode.toUpperCase()
   }
 
-  /** The runtime link state of an interface. */
-  function linkState(iface: NetInterface): string {
-    const state = model.value.runtime[iface.id]
-    if (!state) return ''
-    return state.up ? '链路在线' : '链路离线'
+  /** The runtime state of an interface. */
+  function runtimeOf(iface: NetInterface) {
+    return model.value.runtime[iface.id]
+  }
+
+  /** The address the interface really has right now. */
+  function runtimeAddress(iface: NetInterface): string {
+    return runtimeOf(iface)?.address || ''
+  }
+
+  /** The link state of an interface. */
+  function linkLabel(iface: NetInterface): string {
+    if (iface.disabled) return '已禁用'
+    const state = runtimeOf(iface)
+    if (!state) return '状态未知'
+    if (!state.up) return '链路离线'
+    if (state.carrier === false) return '无载波'
+    return '链路在线'
+  }
+
+  function linkTone(iface: NetInterface): 'success' | 'danger' | 'neutral' | 'warning' {
+    if (iface.disabled) return 'neutral'
+    const state = runtimeOf(iface)
+    if (!state) return 'neutral'
+    if (!state.up) return 'danger'
+    if (state.carrier === false) return 'warning'
+    return 'success'
+  }
+
+  /** The negotiated link speed of the device of an interface. */
+  function linkSpeed(iface: NetInterface): string {
+    const speed = runtimeOf(iface)?.speed
+    if (!speed) return ''
+    return speed >= 1000 ? `${speed / 1000} Gbps` : `${speed} Mbps`
+  }
+
+  /** Whether a static route is part of the kernel routing table. */
+  function routeState(route: NetRoute): {
+    label: string
+    tone: 'success' | 'warning' | 'neutral'
+    detail: string
+  } {
+    if (!routeTableAvailable.value) {
+      return { label: '未知', tone: 'neutral', detail: '路由器未提供内核路由表' }
+    }
+    const match = matchActiveRoute(route, activeRoutes.value)
+    if (match) {
+      const parts: string[] = []
+      if (match.nexthop) parts.push(`下一跳 ${match.nexthop}`)
+      if (match.iface) parts.push(match.iface)
+      return { label: '已生效', tone: 'success', detail: parts.join(' · ') }
+    }
+    return {
+      label: '未生效',
+      tone: 'warning',
+      detail: route.isDefault ? '可能被 DHCP 下发的默认路由覆盖' : '内核路由表中没有这条路由'
+    }
   }
 
   function openWirelessConfig(): void {
     void router.push({ name: 'config-wireless' })
   }
 
-  /* ------------------------------------------------------------- dialogs */
+  /* ------------------------------------------------------------ dialogs */
 
   function openInterfaceDialog(iface?: NetInterface): void {
     ifaceDialog.iface = iface ?? null
@@ -640,33 +829,38 @@
     routeDialog.open = true
   }
 
+  /** Records the staged edits and refreshes the view. */
+  function remember(edits: StagedEdit[]): void {
+    setDraftEdits(stageEdits(baseline.value, draftEdits.value, edits))
+  }
+
   /* ------------------------------------------------------------ interface */
 
-  async function saveInterface(draft: NetInterfaceDraft): Promise<void> {
-    const original = draft.id
-      ? model.value.interfaces.find((iface) => iface.id === draft.id)
+  async function saveInterface(draftData: NetInterfaceDraft): Promise<void> {
+    const original = draftData.id
+      ? model.value.interfaces.find((iface) => iface.id === draftData.id)
       : undefined
 
     const addressChanged =
       Boolean(original) &&
-      (original?.address !== draft.address ||
-        (original?.prefix ?? null) !== (draft.prefix ?? null))
-    const gatewayChanged = Boolean(original) && original?.gateway !== draft.gateway
+      (original?.address !== draftData.address ||
+        (original?.prefix ?? null) !== (draftData.prefix ?? null))
+    const gatewayChanged = Boolean(original) && original?.gateway !== draftData.gateway
 
     if (addressChanged || gatewayChanged) {
       const details: string[] = []
       if (addressChanged) {
         details.push(
-          `IPv4 地址（${original?.address || '无'} → ${draft.address || '无'}）`
+          `IPv4 地址（${original?.address || '无'} → ${draftData.address || '无'}）`
         )
       }
       if (gatewayChanged) {
-        details.push(`网关（${original?.gateway || '无'} → ${draft.gateway || '无'}）`)
+        details.push(`网关（${original?.gateway || '无'} → ${draftData.gateway || '无'}）`)
       }
       const ok = await confirm(
-        `修改接口 ${draft.id || draft.name || ''} 的 ${details.join('、')} ` +
-          '会立即重载网络服务，可能中断当前连接（包括本管理页面的访问）。' +
-          '如果你正在通过该接口连接路由器，保存后可能无法继续访问本页面。是否继续？',
+        `修改接口 ${draftData.id || draftData.name || ''} 的 ${details.join('、')} ` +
+          '会在点击「保存并应用」后重载网络服务，可能中断当前连接（包括本管理页面的访问）。' +
+          '如果你正在通过该接口连接路由器，应用后可能无法继续访问本页面。是否继续？',
         '确认修改网络接口'
       )
       if (!ok) return
@@ -674,18 +868,14 @@
 
     busy.value = true
     try {
-      const result = await stageInterface(draft)
-      await applyNetwork()
+      const result = await stageInterface(draftData)
+      remember(result.edits)
       await load()
-      dirty.value = false
       ifaceDialog.open = false
-      ElMessage.success('接口已保存并应用')
+      ElMessage.success('接口已暂存，点击「保存并应用」后生效')
       if (result.warning) notice.value = result.warning
     } catch (err) {
-      ElMessage.error(
-        `保存接口失败：${messageOf(err)}。` +
-          '若提示网络断开，说明配置已写入但网络重载中断了连接，请刷新页面确认接口状态。'
-      )
+      ElMessage.error(`保存接口失败：${messageOf(err)}`)
     } finally {
       busy.value = false
     }
@@ -694,7 +884,8 @@
   async function toggleInterface(iface: NetInterface, enabled: boolean): Promise<void> {
     if (!enabled) {
       const ok = await confirm(
-        `禁用接口 ${iface.id} 会立即中断该接口上的所有连接（包括本管理页面的访问），` +
+        `禁用接口 ${iface.id} 会在点击「保存并应用」后重载网络服务，` +
+          '该接口上的所有连接（包括本管理页面的访问）都会中断，' +
           '绑定该网络的设备将无法联网。是否继续？',
         '确认禁用接口'
       )
@@ -703,10 +894,10 @@
 
     busy.value = true
     try {
-      await stageInterfaceEnabled(iface.id, enabled)
-      await applyNetwork()
+      const result = await stageInterfaceEnabled(iface.id, enabled)
+      remember(result.edits)
       await load()
-      ElMessage.success(`接口 ${iface.id} 已${enabled ? '启用' : '禁用'}`)
+      ElMessage.success(`接口 ${iface.id} 已暂存为${enabled ? '启用' : '禁用'}`)
     } catch (err) {
       ElMessage.error(`操作失败：${messageOf(err)}`)
     } finally {
@@ -725,11 +916,10 @@
 
     busy.value = true
     try {
-      await stageInterfaceRemoval(iface.id)
-      removedInterfaces.value = [...removedInterfaces.value, iface]
+      const result = await stageInterfaceRemoval(iface.id)
+      remember(result.edits)
       await load()
-      dirty.value = true
-      ElMessage.success('接口已删除，点击「保存并应用」后生效')
+      ElMessage.success('接口已暂存删除，点击「保存并应用」后生效')
     } catch (err) {
       ElMessage.error(`删除接口失败：${messageOf(err)}`)
     } finally {
@@ -739,14 +929,14 @@
 
   /* ---------------------------------------------------------------- route */
 
-  async function saveRoute(draft: NetRouteDraft): Promise<void> {
+  async function saveRoute(draftData: NetRouteDraft): Promise<void> {
     busy.value = true
     try {
-      await stageRoute(draft)
+      const result = await stageRoute(draftData)
+      remember(result.edits)
       await load()
-      dirty.value = true
       routeDialog.open = false
-      ElMessage.success('静态路由已保存，点击「保存并应用」后生效')
+      ElMessage.success('静态路由已暂存，点击「保存并应用」后生效')
     } catch (err) {
       ElMessage.error(`保存路由失败：${messageOf(err)}`)
     } finally {
@@ -764,11 +954,10 @@
 
     busy.value = true
     try {
-      await stageRouteRemoval(route.id)
-      removedRoutes.value = [...removedRoutes.value, route]
+      const result = await stageRouteRemoval(route.id)
+      remember(result.edits)
       await load()
-      dirty.value = true
-      ElMessage.success('静态路由已删除，点击「保存并应用」后生效')
+      ElMessage.success('静态路由已暂存删除，点击「保存并应用」后生效')
     } catch (err) {
       ElMessage.error(`删除路由失败：${messageOf(err)}`)
     } finally {
@@ -784,7 +973,7 @@
       return
     }
 
-    const count = pending.value.length
+    const count = pendingEntries.value.length
     const ok = await confirm(
       (count
         ? `即将提交 ${count} 项网络改动并重载网络服务，`
@@ -797,16 +986,18 @@
     applying.value = true
     try {
       await applyNetwork()
+      ElMessage.success('网络配置已保存并应用，正在重新读取接口状态…')
+      setDraftEdits([])
+      await resetDraft(draft)
+      // The network service needs a moment before the new state is visible.
+      await delay(2000)
       await load()
-      dirty.value = false
-      removedInterfaces.value = []
-      removedRoutes.value = []
-      ElMessage.success('网络配置已保存并应用')
     } catch (err) {
       ElMessage.error(
         `应用网络配置失败：${messageOf(err)}。` +
           '配置可能已经写入 /etc/config/network，请刷新页面确认接口状态后再重试。'
       )
+      await load().catch(() => undefined)
     } finally {
       applying.value = false
     }
@@ -823,10 +1014,9 @@
     discarding.value = true
     try {
       await revertNetwork()
+      setDraftEdits([])
+      await resetDraft(draft)
       await load()
-      dirty.value = false
-      removedInterfaces.value = []
-      removedRoutes.value = []
       ElMessage.success('已放弃未提交的改动')
     } catch (err) {
       ElMessage.error(`放弃改动失败：${messageOf(err)}`)
@@ -837,6 +1027,12 @@
 </script>
 
 <style scoped>
+  /* Element Plus 给相邻按钮加了 12px 左边距，和外层 flex 的 gap 叠加后
+     同一行的按钮会被拉到 20px 间距；这里把间距统一交回给 gap 控制。 */
+  .el-button + .el-button {
+    margin-left: 0;
+  }
+
   .table-primary {
     color: var(--text);
     font-size: var(--text-sm);
@@ -852,40 +1048,6 @@
   .table-mono {
     color: var(--text-secondary);
     font-size: 12px;
-  }
-
-  .pending-alert {
-    align-items: flex-start;
-  }
-
-  .pending-list {
-    padding: 0;
-    margin: 6px 0 0;
-    list-style: none;
-  }
-
-  .pending-list li {
-    display: flex;
-    align-items: baseline;
-    gap: 8px;
-    padding: 2px 0;
-    color: var(--text-secondary);
-    font-size: 12px;
-  }
-
-  .pending-op {
-    flex-shrink: 0;
-    min-width: 28px;
-    color: var(--warning-text);
-    font-size: 11px;
-    font-weight: 500;
-  }
-
-  .pending-hint {
-    margin-top: 8px;
-    color: var(--text-muted);
-    font-size: 11.5px;
-    line-height: 1.6;
   }
 
   .removed-box {

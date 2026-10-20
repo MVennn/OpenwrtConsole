@@ -19,6 +19,7 @@
 | 请求体上限 | `modern-login` 4096 · `modern-exec` 4096 · `modern-uci` 8192 · `modern-pkg` 8192 · `modern-shellcrash` 65536 · `modern-sysupgrade` JSON 8192 / 固件 40 MB |
 | 换行 | CGI 文件必须 **LF**；CRLF 会让 shebang 报 `No such file or directory` |
 | 原子替换 | CGI 更新自己时用「同目录临时文件 + rename」 |
+| 应答格式 | **每个应答都必须是合法 JSON**（直接透传上游 JSON 的除外，见下文） |
 
 ### 错误码（通用）
 
@@ -45,6 +46,36 @@
 - **用途必须完全一致**，已知用途：
   `set-password` · `reboot` · `factory-reset` · `backup-restore` · `firmware-upgrade`。
 - **口令与固件刷写这类动作还要求界面上的确认词**（前端先弹确认框，用户输入确认词后才去申请令牌）。
+
+---
+
+### 应答自检（`send_json`）
+
+**约定：每个 CGI 的每个应答都是合法 JSON。** 违反这条的症状很隐蔽：浏览器
+`JSON.parse` 整段失败 → 前端拿到 `null` → 报「Cannot read properties of null」，
+而路由器侧其实**已经写成功并返回了 200**，表现为「保存失败但配置已改」。
+
+shell 拼 JSON 时最容易踩的两个坑：
+
+- **数组里不能放没有花括号的键值对**。`["key":"value"]` 不是合法 JSON，
+  要写成 `["key=value"]`（字符串数组）或 `[{"key":"value"}]`（对象数组）。
+- **变量插进 JSON 字符串前要先转义**。用 `modern-pkg` 的 `esc_json`、
+  `modern-shellcrash` 的 `jstr`，不要裸插。
+
+为此 9 个 CGI 的 `ok()` / `fail()` 统一走 `send_json()`：应答先写进临时文件，
+再用 `jsonfilter -i <file> -e '@'` 验一遍（非法 JSON 时 jsonfilter 非 0 退出），
+不合法就换成 `{"ok":false,"error":"路由器生成了无效的响应，请查看系统日志"}`，
+不会再让浏览器报一句没头没脑的「无法解析」。
+
+**改完 CGI 必测**（`jsonfilter` 会拒绝非法 JSON）：
+
+```bash
+sid=$(ubus call session login '{"username":"root","password":"…","timeout":60}' | jsonfilter -e @.ubus_rpc_session)
+curl -sk -X POST -H 'Content-Type: application/json'   -d '{"action":"status","params":{}}'   "https://<路由器IP>/cgi-bin/modern-shellcrash?sid=$sid" | jsonfilter -e '@'
+```
+
+> 例外：`modern-uci` 的 `svc-list` 直接透传 `ubus call luci getInitList` 的原始 JSON，
+> `modern-proxy` 直接透传 mihomo 的应答 —— 两者上游本身就是 JSON，不经过拼装。
 
 ---
 
@@ -250,7 +281,6 @@
 | `uci-revert` | `config` | `{"ok":true}` | — |
 | `uci-commit` | `config` | `{"ok":true}` | — |
 | `uci-apply` | — | `{"ok":true}` | — |
-| `uci-changes` | `config` | **不是 JSON**：`uci changes` 的原始文本（≤20000 字节） | — |
 | `svc-list` | — | **不是 JSON**：`ubus call luci getInitList` 的原始 JSON | — |
 | `svc-action` | `service`、`svc_action` | `{"ok":true}` | — |
 | `net-reload` | — | `{"ok":true}` | — |
@@ -413,7 +443,7 @@
 | --- | --- | --- |
 | `status` | — | `{"ok":true,"installed":true,"running":true,"service_status":"…","pid":N,"core_version":"…","shellcrash_version":"…","redir_mod":"…","dns_mod":"…","firewall_mod":"…","ports":{"mixed":N,"redir":N,"tproxy":N,"socks":N,"dns":N,"controller":N},"subs_count":N,"autostart":true,"last_action":"…"}` |
 | `config` | — | `{"ok":true,"values":{…},"url_host":"…","secret_set":true}` |
-| `config-write` | 白名单键 + `confirm=yes` | `{"ok":true,"changed":["key":"value",…],"backup":"/etc/ShellCrash/configs/ShellCrash.cfg.bak-20261020-101112","message":"需重启 ShellCrash 生效"}` |
+| `config-write` | 白名单键 + `confirm=yes` | `{"ok":true,"changed":["key=value",…],"backup":"/etc/ShellCrash/configs/ShellCrash.cfg.bak-20261020-101112","message":"需重启 ShellCrash 生效"}` |
 | `service` | `action`（`start\|stop\|restart\|enable\|disable`） | `{"ok":true,"action":"restart","started":true,"message":"操作已提交，路由器正在执行"}`（`enable`/`disable` 另带 `autostart` 布尔与不同 message） |
 | `overrides` | — | `{"ok":true,"files":[{"name":"config.yaml","enabled":true,"description":"…"}],"global_disabled":false}` |
 | `override-toggle` | `file`、`enable=yes\|no`、`confirm=yes` | `{"ok":true,"file":"rules.yaml","enabled":true,"message":"覆写文件已启用，需重启 ShellCrash 生效"}` |
@@ -454,7 +484,13 @@ config.yaml proxies.yaml proxy-groups.yaml rules.yaml user.yaml
 > 服务启停是**后台执行**（核心要下载配置，可能要一分钟），请求立刻返回，
 > 前端靠轮询 `status` 感知结果。
 >
-> `service_status` 显示 `inactive` 属正常现象：这台机器的 `/etc/init.d/shellcrash` 处于
+> **完成记录 = 状态到位，不是脚本跑完**。后台 runner 在写
+> `/tmp/ShellCrash/modern-shellcrash.last`（`<action> <rc> <时间戳>`）之前，
+> 会先等核心真的起来（`pidof CrashCore` 出现，最多 60 秒）或真的消失（停止动作，最多 30 秒）；
+> 等不到就写非 0 退出码。`start.sh` 是把核心拉起来就返回的，
+> 少了这一步，前端会在核心还没起来时读到「没在运行」。
+>
+> `service_status` 显示 `inactive` 属正常现象：实测设备上的 `/etc/init.d/shellcrash` 处于
 > 「保守模式」（`start_old=ON`），核心由 `start_legacy.sh` 拉起、不在 procd 下。
 > 真实运行态以 `running` 为准。
 
@@ -469,3 +505,4 @@ config.yaml proxies.yaml proxy-groups.yaml rules.yaml user.yaml
 | 新增一个令牌用途 | 本篇 §0 的用途清单 · [WRITE-LAYER.md](WRITE-LAYER.md) §4 |
 | 改白名单（配置文件 / 配置键 / 覆写文件） | 本篇对应小节 · [WRITE-LAYER.md](WRITE-LAYER.md) §1 |
 | 改错误码 | 本篇对应小节 · 前端的错误码翻译表（如 `src/api/systemOps.ts` 的 `ERROR_TEXT`） |
+| 改了应答的 JSON 形状 | 本篇对应小节 · **跑一遍 `send_json` 自检**（见 §0）· 前端 `src/api/` 里对应的封装模块的返回类型 |

@@ -5,7 +5,7 @@
       <el-button type="primary" @click="goSystemConfig">系统设置</el-button>
     </PageHeader>
 
-    <el-alert v-if="error" type="error" :title="error.message" :closable="false" show-icon />
+    <el-alert v-if="error" type="error" :title="error?.message || '操作失败'" :closable="false" show-icon />
 
     <template v-if="loaded">
       <div class="grid grid-4">
@@ -98,12 +98,18 @@
 
       <PanelCard title="系统日志" :subtitle="`最近 ${logLines.length} 行`" flush>
         <template #actions>
-          <el-select v-model="logCount" size="small" style="width: 108px" @change="loadLogs">
+          <el-select
+            v-model="logCount"
+            size="small"
+            class="log-select"
+            style="width: 108px"
+            @change="loadLogs"
+          >
             <el-option :value="80" label="80 行" />
             <el-option :value="160" label="160 行" />
             <el-option :value="300" label="300 行" />
           </el-select>
-          <button class="icon-btn" aria-label="刷新日志" @click="loadLogs">
+          <button class="icon-btn log-refresh" aria-label="刷新日志" @click="loadLogs">
             <RefreshCw :size="15" />
           </button>
         </template>
@@ -125,9 +131,9 @@
               <p class="maintenance-desc">软件包、启动项、备份与固件升级都在控制台内完成。</p>
             </div>
             <div class="maintenance-links">
-              <el-button size="small" @click="goPackages">软件包</el-button>
-              <el-button size="small" @click="goOperations">启动项</el-button>
-              <el-button size="small" @click="goFirmware">备份 / 固件</el-button>
+              <el-button link type="primary" size="small" @click="goPackages">软件包</el-button>
+              <el-button link type="primary" size="small" @click="goOperations">启动项</el-button>
+              <el-button link type="primary" size="small" @click="goFirmware">备份 / 固件</el-button>
             </div>
           </div>
         </div>
@@ -307,6 +313,12 @@
 </script>
 
 <style scoped>
+  /* Element Plus 给相邻按钮加了 12px 左边距，和外层 flex 的 gap 叠加后
+     同一行的按钮会被拉到 20px 间距；这里把间距统一交回给 gap 控制。 */
+  .el-button + .el-button {
+    margin-left: 0;
+  }
+
   .info-grid {
     gap: 16px 24px;
   }
@@ -365,6 +377,17 @@
 
   .res-fill.tone-neutral {
     background: var(--text-faint);
+  }
+
+  /* 卡片头部的下拉与图标按钮保持同一档高度（small = 30px），否则同一行
+     里会出现一高一矮的两个控件。 */
+  .log-select :deep(.el-select__wrapper) {
+    min-height: 30px;
+  }
+
+  .log-refresh {
+    width: 30px;
+    height: 30px;
   }
 
   .log-view {

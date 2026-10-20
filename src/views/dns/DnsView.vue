@@ -5,7 +5,7 @@
       <el-button type="primary" @click="goDhcpConfig">DHCP 与主机名</el-button>
     </PageHeader>
 
-    <el-alert v-if="error" type="error" :title="error.message" :closable="false" show-icon />
+    <el-alert v-if="error" type="error" :title="error?.message || '操作失败'" :closable="false" show-icon />
     <el-alert
       v-if="partialError"
       type="warning"
@@ -468,6 +468,12 @@
 </script>
 
 <style scoped>
+  /* Element Plus 给相邻按钮加了 12px 左边距，和外层 flex 的 gap 叠加后
+     同一行的按钮会被拉到 20px 间距；这里把间距统一交回给 gap 控制。 */
+  .el-button + .el-button {
+    margin-left: 0;
+  }
+
   .block {
     display: flex;
     flex-direction: column;

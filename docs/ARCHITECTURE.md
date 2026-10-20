@@ -84,11 +84,12 @@
 > 表里列了 11 行：`/ubus` 拆成 3 行（`system`/`uci`、`luci-rpc`、`luci`），
 > 加上 8 个 CGI（`modern-login` 除外）。按「传输 + 权限模型」算，通道仍是 **10 个**。
 
-### 通道之外的两条特殊路径
+### 通道之外的三条特殊路径
 
 | 路径 | 干什么 | 注意 |
 | --- | --- | --- |
 | `POST /cgi-bin/modern-login` | 用 root 密码换 ubus 会话 | 唯一**不需要 sid** 的 CGI；`timeout: 3600`；密码只出现一次，不写前端存储 |
+| `POST /ubus`（匿名会话，仅登录页） | 试着读 `system.board`，拿设备型号与固件版本 | **不需要 sid**（用匿名会话 id）；多数路由器的 rpcd 默认拒绝（`Access denied`），此时登录页显示通用文案，型号在登录后的「概览」页显示；失败一律静默回退，不影响登录 |
 | `GET /cgi-bin/modern-login` 之外的 `/cgi-bin/luci/**` | LuCI 应急入口 | 控制台**不写** LuCI，只保留它可访问 |
 
 ## 3. 路由器端 9 个 CGI 清单
