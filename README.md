@@ -1,5 +1,7 @@
 # OpenWrt Console
 
+> **可见性**：公开 —— 仓内**零凭据、零设备标识**；vendored 只有 art-design-pro（MIT）。第三方组件声明见 [NOTICE](NOTICE)。
+
 > **一句话**：给小米 AX3000T 用的、**替代 LuCI** 的现代 Web 管理界面 —— 部署在路由器的 `/modern/` 路径下，
 > 看状态、改配置、装软件、刷固件、重启都在一个界面里做完，LuCI 只留作应急入口。
 
