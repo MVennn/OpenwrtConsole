@@ -1,0 +1,656 @@
+#!/bin/sh
+# POST /cgi-bin/modern-pkg?sid=<session>
+# Body: { "action": "<action>", "params": { ... } }
+#
+# Software package management for the modern console. This router manages its
+# packages with apk (apk-tools 3.x), so this CGI is the only place that knows
+# how the package database looks.
+#
+# Read actions return the package list as a JSON array:
+#   list       installed packages (name/version/description/size)
+#   available  packages offered by the configured repositories
+#   search     the same lists filtered by a keyword
+#   stats      counters only (installed/installable/upgradable/index time)
+#
+# Write actions never run inside the request. They start a background job that
+# the console polls with the "status" action, because `apk upgrade` may run for
+# minutes while uhttpd would otherwise drop the connection:
+#   install / remove / update / upgrade
+#
+# Safety rules enforced here:
+#   * the session is validated against rpcd before anything is executed
+#   * package names must match [A-Za-z0-9._+-]{1,64} and may not start with a
+#     dash, so a name can never be read as an option by apk
+#   * write actions require confirm=yes, so a stray POST cannot change the box
+#   * every command runs under a watchdog that kills it with SIGKILL
+#   * outputs are truncated and the number of returned packages is capped
+
+MAX_BODY=8192
+MAX_OUTPUT=204800
+MAX_INSTALLED=600
+MAX_AVAILABLE=300
+
+JOB_ROOT="/tmp/modern-pkg-jobs"
+STATE_DIR="/tmp/modern-pkg"
+WORK="$STATE_DIR/work.$$"
+
+T_READ=30
+T_INSTALL=300
+T_REMOVE=180
+T_UPDATE=300
+T_UPGRADE=900
+
+APK_FIELDS="name,version,description,installed-size,file-size,arch,license,origin"
+# The repository holds more than ten thousand packages. The available list
+# only needs the four fields the table shows, and every field makes the JSON
+# that has to be parsed on the router bigger.
+APK_FIELDS_AVAIL="name,version,description,installed-size"
+
+CACHE_DIR="/tmp/modern-pkg-cache"
+
+deny() {
+	printf 'Status: 401 Unauthorized\r\n'
+	printf 'Content-Type: application/json; charset=utf-8\r\n'
+	printf 'Cache-Control: no-store\r\n'
+	printf 'X-Content-Type-Options: nosniff\r\n\r\n'
+	printf '{"error":"unauthorized"}'
+	exit 0
+}
+
+fail() {
+	printf 'Status: %s\r\n' "$1"
+	printf 'Content-Type: application/json; charset=utf-8\r\n'
+	printf 'Cache-Control: no-store\r\n'
+	printf 'X-Content-Type-Options: nosniff\r\n\r\n'
+	printf '%s' "$2"
+	exit 0
+}
+
+ok() {
+	printf 'Status: 200 OK\r\n'
+	printf 'Content-Type: application/json; charset=utf-8\r\n'
+	printf 'Cache-Control: no-store\r\n'
+	printf 'X-Content-Type-Options: nosniff\r\n\r\n'
+	printf '%s' "$1"
+	exit 0
+}
+
+cleanup() {
+	rm -rf "$WORK" 2>/dev/null
+}
+
+# ---------------------------------------------------------------- session ---
+# The sid may arrive in the owrt_sid cookie or as ?sid=; both are validated
+# against rpcd before anything is executed.
+
+qs="${QUERY_STRING:-}"
+sid=""
+oldIFS=$IFS
+IFS='&'
+for pair in $qs; do
+	key="${pair%%=*}"
+	val="${pair#*=}"
+	case "$key" in
+		sid) sid="$val" ;;
+	esac
+done
+IFS=$oldIFS
+
+if [ -z "$sid" ]; then
+	sid="$(printf '%s' "${HTTP_COOKIE:-}" | tr ';' '\n' | sed -n 's/^ *owrt_sid=//p' | head -n 1)"
+fi
+[ -n "$sid" ] || deny
+
+# Only characters that are inert inside the ubus JSON payload are accepted,
+# so a session id can never break out of the string it is placed in.
+case "$sid" in
+	*[!A-Za-z0-9._~+/=-]*) deny ;;
+esac
+
+ubus call session get "{\"ubus_rpc_session\":\"$sid\"}" 2>/dev/null | grep -q '"username"' || deny
+
+# ------------------------------------------------------------------ body ---
+[ "${REQUEST_METHOD:-GET}" = "POST" ] ||
+	fail "405 Method Not Allowed" '{"error":"只接受 POST 请求"}'
+
+body="$(head -c $((MAX_BODY + 1)) 2>/dev/null)"
+[ -n "$body" ] || fail "400 Bad Request" '{"error":"请求体为空"}'
+[ "${#body}" -le "$MAX_BODY" ] || fail "413 Payload Too Large" '{"error":"请求体过大"}'
+
+# One flat line keeps the key/value extraction below predictable.
+body="$(printf '%s' "$body" | tr '\012\015\011' '   ')"
+
+json_string() {
+	# $1 = key name. Prints the value of the first "key":"value" pair found.
+	# The value can never contain a quote, so it stays a single token.
+	printf '%s' "$body" |
+		grep -o "\"$1\"[[:space:]]*:[[:space:]]*\"[^\"]*\"" |
+		head -n 1 |
+		sed 's/^"[^"]*"[[:space:]]*:[[:space:]]*"\(.*\)"$/\1/'
+}
+
+action="$(json_string action)"
+pkg_name="$(json_string name)"
+keyword="$(json_string keyword)"
+scope="$(json_string scope)"
+limit_raw="$(json_string limit)"
+confirm="$(json_string confirm)"
+job_id="$(json_string job)"
+
+[ -n "$action" ] || fail "400 Bad Request" '{"error":"缺少操作名称"}'
+
+mkdir -p "$STATE_DIR" "$JOB_ROOT" 2>/dev/null
+cleanup
+trap cleanup EXIT INT TERM
+mkdir -p "$WORK" 2>/dev/null || fail "500 Internal Server Error" '{"error":"无法创建临时目录"}'
+
+# --------------------------------------------------------------- helpers ---
+
+# Runs a command with a watchdog. The router has no coreutils timeout, so the
+# command is started in its own session and killed with SIGKILL when it
+# overruns. stdout goes to $2, stderr to $2.err.
+run_bg() {
+	_rt="$1"
+	_rf="$2"
+	shift 2
+	: > "$_rf" 2>/dev/null
+	: > "$_rf.err" 2>/dev/null
+	_rg=0
+	if command -v setsid >/dev/null 2>&1; then
+		setsid "$@" > "$_rf" 2>"$_rf.err" </dev/null &
+		_rg=1
+	else
+		"$@" > "$_rf" 2>"$_rf.err" </dev/null &
+	fi
+	_rp=$!
+	# The watchdog counts the seconds itself instead of running one long
+	# sleep, so that stopping it cannot leave a stray sleep behind on a
+	# router with little memory.
+	(
+		_i=0
+		while [ "$_i" -lt "$_rt" ]; do
+			sleep 1
+			_i=$((_i + 1))
+		done
+		if [ "$_rg" = 1 ]; then kill -9 -"$_rp" 2>/dev/null; else kill -9 "$_rp" 2>/dev/null; fi
+	) &
+	_rgd=$!
+	wait "$_rp" 2>/dev/null
+	_rs=$?
+	kill "$_rgd" 2>/dev/null
+	wait "$_rgd" 2>/dev/null
+	return $_rs
+}
+
+# Escapes a file (or stdin) into a JSON string body, without the quotes.
+esc_json() {
+	awk '
+	BEGIN {
+		ctrl = "\001\002\003\004\005\006\007\010\013\014\016\017\020\021\022\023\024\025\026\027\030\031\032\033\034\035\036\037"
+	}
+	NR > 1 { printf "\\n" }
+	{
+		line = $0
+		out = ""
+		n = length(line)
+		for (i = 1; i <= n; i++) {
+			c = substr(line, i, 1)
+			if (c == "\\") out = out "\\\\"
+			else if (c == "\"") out = out "\\\""
+			else if (c == "\t") out = out "\\t"
+			else if (c == "\r") out = out "\\r"
+			else if (index(ctrl, c) > 0) out = out " "
+			else out = out c
+		}
+		printf "%s", out
+	}'
+}
+
+# awk program that turns the JSON array produced by `apk query --format json`
+# back into a JSON array. The objects are passed through unchanged (only the
+# field names are normalised), so the descriptions keep their escaping.
+#
+#   -v limit      maximum number of objects to emit (0 = no limit)
+#   -v keyword    case insensitive filter, matched against name and body
+#   -v exclude   file with package names that must be skipped
+#   -v countfile  file that receives the number of matching objects
+#
+# Every match is counted, but only the first `limit` objects are emitted, so
+# the caller learns the real size of the repository while the answer stays
+# small.
+PARSE_PROG='
+BEGIN {
+	if (exclude != "") {
+		while ((getline line < exclude) > 0) {
+			if (line != "") skip[line] = 1
+		}
+		close(exclude)
+	}
+	kw = tolower(keyword)
+	have_kw = (kw != "")
+	first = 1
+	count = 0
+	printf "[\n"
+}
+{
+	line = $0
+	if (!started) {
+		if (line == "[") started = 1
+		next
+	}
+	if (line == "]") next
+	head = substr(line, 1, 3)
+	if (head == "  {") { body = ""; n = 0; nm = ""; next }
+	if (head == "  }") {
+		keep = 1
+		if (nm != "" && (nm in skip)) keep = 0
+		if (keep && have_kw) {
+			if (index(tolower(nm), kw) == 0 && index(tolower(body), kw) == 0) keep = 0
+		}
+		if (keep) {
+			count++
+			if (limit <= 0 || count <= limit) emit(body)
+		}
+		# The line "  }, {" closes one object and opens the next one, so the
+		# state has to be cleared here as well.
+		body = ""
+		n = 0
+		nm = ""
+		next
+	}
+	n++
+	body = (body == "") ? line : body "\n" line
+	if (n == 1) nm = name_of(line)
+}
+END {
+	printf "]\n"
+	if (countfile != "") printf "%d", count > countfile
+}
+function emit(b,   i, cnt, parts, ln) {
+	if (!first) printf ",\n"
+	first = 0
+	printf "  {\n"
+	cnt = split(b, parts, "\n")
+	for (i = 1; i <= cnt; i++) {
+		ln = parts[i]
+		gsub(/"installed-size"[[:space:]]*:/, "\"installedSize\":", ln)
+		gsub(/"file-size"[[:space:]]*:/, "\"fileSize\":", ln)
+		printf "%s\n", ln
+	}
+	printf "  }"
+}
+# The name is the first field of every object. Plain string handling is used
+# on purpose: a regular expression would be evaluated for each of the more
+# than ten thousand packages in the repository, which costs seconds on the
+# busybox awk of the router.
+function name_of(ln,   p, rest, q, r) {
+	p = index(ln, "\"name\"")
+	if (p == 0) return ""
+	rest = substr(ln, p + 6)
+	q = index(rest, "\"")
+	if (q == 0) return ""
+	rest = substr(rest, q + 1)
+	r = index(rest, "\"")
+	if (r == 0) return ""
+	return substr(rest, 1, r - 1)
+}
+'
+
+# Splits the apk JSON into the packages array and a count file.
+#   $1 json file, $2 array file, $3 count file, $4 limit, $5 keyword, $6 exclude
+parse_packages() {
+	awk -v limit="$4" -v keyword="$5" -v exclude="$6" -v countfile="$3" \
+		"$PARSE_PROG" "$1" > "$2" 2>/dev/null
+}
+
+# Prints the epoch of the newest repository index, or 0 when it is missing.
+index_updated_at() {
+	_f=""
+	for _d in /var/cache/apk /var/cache/apk/*; do
+		[ -d "$_d" ] || continue
+		_c="$(ls -t "$_d"/APKINDEX.* 2>/dev/null | head -n 1)"
+		if [ -n "$_c" ]; then
+			_f="$_c"
+			break
+		fi
+	done
+	[ -n "$_f" ] || { printf '0'; return; }
+	date -r "$_f" +%s 2>/dev/null || printf '0'
+}
+
+# Writes the installed package names, one per line, into $2.
+installed_names() {
+	awk '
+	{
+		if (match($0, /"name"[[:space:]]*:[[:space:]]*"[^"]*"/)) {
+			s = substr($0, RSTART, RLENGTH)
+			p = index(s, ":")
+			s = substr(s, p + 1)
+			q = index(s, "\"")
+			s = substr(s, q + 1)
+			sub(/"$/, "", s)
+			if (s != "") print s
+		}
+	}' "$1" > "$2"
+}
+
+# The warnings apk prints on stderr are worth showing: they tell the user that
+# the repository index is missing or unreachable.
+stderr_note() {
+	[ -f "$1" ] || return 0
+	head -c 4000 "$1" 2>/dev/null | tr -d '\r' | sed '/^$/d'
+}
+
+# Normalises the keyword: control characters are dropped and the length is
+# capped. The keyword is only ever used for matching inside awk and for the
+# summary text, never as an argument of a command.
+safe_keyword() {
+	printf '%s' "$1" | tr -d '\000-\037\177' | cut -c1-64
+}
+
+# ------------------------------------------------------------- read paths ---
+
+# Fills $WORK/installed.json with the installed packages.
+load_installed() {
+	run_bg "$T_READ" "$WORK/installed.json" \
+		apk query --installed --format json --fields "$APK_FIELDS" "*"
+}
+
+# Fills $WORK/available.json with the packages offered by the repositories.
+load_available() {
+	run_bg "$T_READ" "$WORK/available.json" \
+		apk query --available --format json --fields "$APK_FIELDS_AVAIL" "*"
+}
+
+# The parsed answer is cached, because building it needs a full pass over the
+# repository index. The key contains the age of the index and a checksum of
+# the installed package names, so the cache is dropped as soon as the router
+# installs or removes something.
+cache_key() {
+	_k="$(printf '%s' "$1" | md5sum | cut -c1-12)"
+	printf '%s-%s' "$_k" "$(md5sum "$2" 2>/dev/null | cut -c1-12)"
+}
+
+cache_get() {
+	[ -f "$CACHE_DIR/$1.json" ] || return 1
+	[ -f "$CACHE_DIR/$1.count" ] || return 1
+	return 0
+}
+
+cache_put() {
+	mkdir -p "$CACHE_DIR" 2>/dev/null || return 0
+	cp "$2" "$CACHE_DIR/$1.json.tmp" 2>/dev/null &&
+		mv "$CACHE_DIR/$1.json.tmp" "$CACHE_DIR/$1.json" 2>/dev/null
+	cp "$3" "$CACHE_DIR/$1.count.tmp" 2>/dev/null &&
+		mv "$CACHE_DIR/$1.count.tmp" "$CACHE_DIR/$1.count" 2>/dev/null
+	# Keep the cache small: only the newest few entries survive.
+	for _f in "$CACHE_DIR"/*.json; do
+		[ -f "$_f" ] || continue
+		[ "$_f" = "$CACHE_DIR/$1.json" ] && continue
+		rm -f "$_f" 2>/dev/null
+	done
+	return 0
+}
+
+# Counts the packages that a newer version exists for.
+upgradable_count() {
+	run_bg "$T_READ" "$WORK/upgradable.json" \
+		apk query --upgradable --format json --fields name,version "*"
+	_n="$(grep -c '"name"' "$WORK/upgradable.json" 2>/dev/null)"
+	case "$_n" in ''|*[!0-9]*) _n=0 ;; esac
+	printf '%s' "$_n"
+}
+
+# $1 = keyword. The installed packages, optionally filtered.
+action_installed() {
+	_kw="$(safe_keyword "$1")"
+
+	load_installed
+	installed_names "$WORK/installed.json" "$WORK/installed.names"
+
+	parse_packages "$WORK/installed.json" "$WORK/packages.json" "$WORK/count" \
+		"$MAX_INSTALLED" "$_kw" ""
+
+	_cnt="$(cat "$WORK/count" 2>/dev/null)"
+	case "$_cnt" in ''|*[!0-9]*) _cnt=0 ;; esac
+
+	_uc="$(upgradable_count)"
+	_it="$(index_updated_at)"
+
+	_out="已安装 $_cnt 个软件包"
+	[ -n "$_kw" ] && _out="匹配「$_kw」的软件包 $_cnt 个"
+	_note="$(stderr_note "$WORK/installed.json.err")"
+	[ -n "$_note" ] && _out="$_out
+$_note"
+
+	ok "{\"ok\":true,\"output\":\"$(printf '%s' "$_out" | esc_json)\",\"packages\":$(cat "$WORK/packages.json"),\"installedCount\":$_cnt,\"upgradableCount\":$_uc,\"indexUpdatedAt\":$_it}"
+}
+
+# $1 = keyword. The packages offered by the repositories, minus the ones that
+# are already installed.
+action_available() {
+	_kw="$(safe_keyword "$1")"
+
+	_lim="$MAX_AVAILABLE"
+	case "$limit_raw" in
+		''|*[!0-9]*) ;;
+		*) [ "$limit_raw" -gt 0 ] && _lim="$limit_raw" ;;
+	esac
+	[ "$_lim" -le "$MAX_AVAILABLE" ] || _lim="$MAX_AVAILABLE"
+
+	load_installed
+	installed_names "$WORK/installed.json" "$WORK/installed.names"
+	_ic="$(wc -l < "$WORK/installed.names" 2>/dev/null)"
+	case "$_ic" in ''|*[!0-9]*) _ic=0 ;; esac
+
+	_it="$(index_updated_at)"
+
+	_key="$(cache_key "$_it-$_kw-$_lim" "$WORK/installed.names")"
+	if cache_get "$_key"; then
+		cp "$CACHE_DIR/$_key.json" "$WORK/packages.json" 2>/dev/null
+		cp "$CACHE_DIR/$_key.count" "$WORK/count" 2>/dev/null
+	else
+		load_available
+		parse_packages "$WORK/available.json" "$WORK/packages.json" "$WORK/count" \
+			"$_lim" "$_kw" "$WORK/installed.names"
+		cache_put "$_key" "$WORK/packages.json" "$WORK/count"
+	fi
+
+	_cnt="$(cat "$WORK/count" 2>/dev/null)"
+	case "$_cnt" in ''|*[!0-9]*) _cnt=0 ;; esac
+
+	_out="仓库中可安装 $_cnt 个软件包"
+	[ -n "$_kw" ] && _out="仓库中匹配「$_kw」的软件包 $_cnt 个"
+	_note="$(stderr_note "$WORK/available.json.err")"
+	[ -n "$_note" ] && _out="$_out
+$_note"
+
+	ok "{\"ok\":true,\"output\":\"$(printf '%s' "$_out" | esc_json)\",\"packages\":$(cat "$WORK/packages.json"),\"availableCount\":$_cnt,\"installedCount\":$_ic,\"indexUpdatedAt\":$_it}"
+}
+
+# The counters of the page. The number of installable packages can only be
+# known after the repository index has been parsed, so the cached parse of the
+# unfiltered available list is reused and only the counters are sent back.
+action_stats() {
+	load_installed
+	installed_names "$WORK/installed.json" "$WORK/installed.names"
+	_ic="$(wc -l < "$WORK/installed.names" 2>/dev/null)"
+	case "$_ic" in ''|*[!0-9]*) _ic=0 ;; esac
+
+	_it="$(index_updated_at)"
+
+	# This is the key of the unfiltered available list, so both actions share
+	# one parse of the repository index.
+	_key="$(cache_key "$_it--$MAX_AVAILABLE" "$WORK/installed.names")"
+	if cache_get "$_key"; then
+		cp "$CACHE_DIR/$_key.count" "$WORK/count" 2>/dev/null
+	else
+		load_available
+		parse_packages "$WORK/available.json" "$WORK/packages.json" "$WORK/count" \
+			"$MAX_AVAILABLE" "" "$WORK/installed.names"
+		cache_put "$_key" "$WORK/packages.json" "$WORK/count"
+	fi
+
+	_cnt="$(cat "$WORK/count" 2>/dev/null)"
+	case "$_cnt" in ''|*[!0-9]*) _cnt=0 ;; esac
+
+	_uc="$(upgradable_count)"
+
+	ok "{\"ok\":true,\"installedCount\":$_ic,\"availableCount\":$_cnt,\"upgradableCount\":$_uc,\"indexUpdatedAt\":$_it}"
+}
+
+# ------------------------------------------------------------------ jobs ---
+
+cleanup_jobs() {
+	_now="$(date +%s 2>/dev/null)"
+	case "$_now" in ''|*[!0-9]*) return 0 ;; esac
+	for _d in "$JOB_ROOT"/*; do
+		[ -d "$_d" ] || continue
+		_b="${_d##*/}"
+		_e="${_b%%-*}"
+		case "$_e" in ''|*[!0-9]*) continue ;; esac
+		[ $((_now - _e)) -gt 3600 ] && rm -rf "$_d" 2>/dev/null
+	done
+	return 0
+}
+
+# Starts a background job. $1 = timeout, rest = command.
+start_job() {
+	_to="$1"
+	shift
+	_id="$(date +%s 2>/dev/null)-$(head -c 32 /dev/urandom 2>/dev/null | md5sum | cut -c1-12)"
+	[ -n "$_id" ] || return 1
+	_dir="$JOB_ROOT/$_id"
+	mkdir -p "$_dir" 2>/dev/null || return 1
+
+	cat > "$_dir/worker.sh" <<'WORKER'
+#!/bin/sh
+# Runs one command under a watchdog.
+#   $1 timeout seconds, $2 output file, $3 status file, $4 exit file, $5.. command
+timeout="$1"
+out="$2"
+statusf="$3"
+exitf="$4"
+shift 4
+
+: > "$out" 2>/dev/null
+echo running > "$statusf" 2>/dev/null
+
+grp=0
+if command -v setsid >/dev/null 2>&1; then
+	setsid "$@" > "$out" 2>&1 </dev/null &
+	grp=1
+else
+	"$@" > "$out" 2>&1 </dev/null &
+fi
+pid=$!
+
+( i=0; while [ "$i" -lt "$timeout" ]; do sleep 1; i=$((i + 1)); done; echo timeout > "$statusf.timeout" 2>/dev/null; if [ "$grp" = 1 ]; then kill -9 -"$pid" 2>/dev/null; else kill -9 "$pid" 2>/dev/null; fi ) &
+guard=$!
+
+wait "$pid" 2>/dev/null
+code=$?
+kill "$guard" 2>/dev/null
+wait "$guard" 2>/dev/null
+
+if [ -f "$statusf.timeout" ]; then
+	echo 124 > "$exitf"
+	echo timeout > "$statusf"
+else
+	echo "$code" > "$exitf"
+	echo done > "$statusf"
+fi
+WORKER
+	chmod +x "$_dir/worker.sh" 2>/dev/null
+
+	setsid "$_dir/worker.sh" "$_to" "$_dir/out" "$_dir/status" "$_dir/exit" \
+		"$@" >/dev/null 2>&1 </dev/null &
+	printf '%s' "$_id"
+}
+
+action_status() {
+	case "$job_id" in
+		''|*[!A-Za-z0-9-]*) fail "400 Bad Request" '{"error":"任务编号无效"}' ;;
+	esac
+	_dir="$JOB_ROOT/$job_id"
+	[ -d "$_dir" ] || fail "404 Not Found" '{"error":"任务不存在或已过期"}'
+
+	_state="$(cat "$_dir/status" 2>/dev/null)"
+	[ -n "$_state" ] || _state="running"
+	_code="$(cat "$_dir/exit" 2>/dev/null)"
+	case "$_code" in ''|*[!0-9]*) _code=0 ;; esac
+
+	_out="$(head -c "$MAX_OUTPUT" "$_dir/out" 2>/dev/null | esc_json)"
+
+	ok "{\"ok\":true,\"job_id\":\"$job_id\",\"status\":\"$_state\",\"exit_code\":$_code,\"output\":\"$_out\"}"
+}
+
+# ----------------------------------------------------------- write paths ----
+
+valid_package_name() {
+	case "$1" in
+		'') return 1 ;;
+		-*) return 1 ;;
+		*[!A-Za-z0-9._+-]*) return 1 ;;
+	esac
+	[ "${#1}" -le 64 ] || return 1
+	return 0
+}
+
+require_confirm() {
+	[ "$confirm" = "yes" ] || fail "403 Forbidden" '{"error":"操作需要确认"}'
+}
+
+action_install() {
+	require_confirm
+	valid_package_name "$pkg_name" || fail "400 Bad Request" '{"error":"软件包名称不合法"}'
+	cleanup_jobs
+	_id="$(start_job "$T_INSTALL" apk add --no-interactive --no-cache-packages "$pkg_name")"
+	[ -n "$_id" ] || fail "500 Internal Server Error" '{"error":"无法启动任务"}'
+	ok "{\"ok\":true,\"job_id\":\"$_id\",\"status\":\"running\",\"output\":\"正在安装 $pkg_name\",\"packages\":[]}"
+}
+
+action_remove() {
+	require_confirm
+	valid_package_name "$pkg_name" || fail "400 Bad Request" '{"error":"软件包名称不合法"}'
+	cleanup_jobs
+	_id="$(start_job "$T_REMOVE" apk del --no-interactive "$pkg_name")"
+	[ -n "$_id" ] || fail "500 Internal Server Error" '{"error":"无法启动任务"}'
+	ok "{\"ok\":true,\"job_id\":\"$_id\",\"status\":\"running\",\"output\":\"正在卸载 $pkg_name\",\"packages\":[]}"
+}
+
+action_update() {
+	require_confirm
+	cleanup_jobs
+	_id="$(start_job "$T_UPDATE" apk update)"
+	[ -n "$_id" ] || fail "500 Internal Server Error" '{"error":"无法启动任务"}'
+	ok "{\"ok\":true,\"job_id\":\"$_id\",\"status\":\"running\",\"output\":\"正在更新仓库索引\",\"packages\":[]}"
+}
+
+action_upgrade() {
+	require_confirm
+	cleanup_jobs
+	_id="$(start_job "$T_UPGRADE" apk upgrade --no-interactive --no-cache-packages)"
+	[ -n "$_id" ] || fail "500 Internal Server Error" '{"error":"无法启动任务"}'
+	ok "{\"ok\":true,\"job_id\":\"$_id\",\"status\":\"running\",\"output\":\"正在升级全部软件包\",\"packages\":[]}"
+}
+
+# --------------------------------------------------------------- dispatch ---
+
+case "$action" in
+	list) action_installed "" ;;
+	available) action_available "$keyword" ;;
+	stats) action_stats ;;
+	search)
+		case "$scope" in
+			available) action_available "$keyword" ;;
+			*) action_installed "$keyword" ;;
+		esac
+		;;
+	install) action_install ;;
+	remove) action_remove ;;
+	update) action_update ;;
+	upgrade) action_upgrade ;;
+	status) action_status ;;
+	*) fail "400 Bad Request" '{"error":"不支持的操作","code":"unsupported_action"}' ;;
+esac

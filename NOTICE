@@ -1,0 +1,95 @@
+OpenWrt Console
+================
+
+> 一句话：本文件是本项目的第三方组件与商标声明 —— 谁被用、用在哪、什么许可证。
+
+This product includes software developed as part of the OpenWrt Console project.
+
+The repository's own code is released under the MIT License; see the LICENSE
+file in the repository root for the full text. The third-party components
+listed below remain under their own licenses, regardless of that.
+
+Third-party components
+-----------------------
+
+- Vue (vue, vue-router)
+  https://github.com/vuejs/core
+  https://github.com/vuejs/router
+  Licensed under the MIT License.
+  Used for: the reactive component model and the client-side router
+  (hash history, so the console works under any sub-path on the router).
+
+- Vite (@vitejs/plugin-vite equivalent plugin, unplugin-vue-components,
+  unplugin-vue-components/resolvers)
+  https://github.com/vitejs/vite
+  https://github.com/unplugin/unplugin-vue-components
+  Licensed under the MIT License.
+  Used for: the build tool and the on-demand import of Element Plus
+  components and their stylesheets.
+
+- TypeScript
+  https://github.com/microsoft/TypeScript
+  Licensed under the Apache License, Version 2.0.
+  Used for: the type system of the whole frontend.
+
+- Element Plus
+  https://github.com/element-plus/element-plus
+  Licensed under the MIT License.
+  Used for: the UI component library (forms, tables, dialogs, selects,
+  switches, message boxes). Imported on demand; no component stylesheet is
+  vendored into this repository.
+
+- Apache ECharts
+  https://github.com/apache/echarts
+  Licensed under the Apache License, Version 2.0.
+  Used for: the line charts on the dashboard and the monitoring pages.
+  Only the line chart is registered.
+
+- Lucide (lucide-vue-next)
+  https://github.com/lucide-icons/lucide
+  Licensed under the ISC License.
+  Used for: the icon set of the interface.
+
+- art-design-pro
+  https://github.com/Daymychen/art-design-pro
+  Licensed under the MIT License.
+  Used for: the visual baseline of the design tokens. This project's design
+  tokens are derived from it -- the gray ramp, the background/box colors and
+  the border color in src/styles/tokens.css map one-to-one onto art-design-pro's
+  --art-gray-* and --default-* custom properties (see the token-by-token table
+  in third-party/art-design-pro/UPSTREAM.md). Tailwind is not used; the tokens
+  were re-declared as plain CSS custom properties, with the contrast ratios
+  measured against this project's own palette.
+  Distribution: **yes** -- a verbatim snapshot is vendored in this repository
+  under third-party/art-design-pro/ at commit
+  f3aaf58eec1a0e988f162352c33862327a484f95 (2026-06-01). The upstream LICENSE
+  is kept alongside it, and not one byte of upstream source was modified.
+  It is a design reference, not a runtime dependency: the frontend never
+  imports anything from that directory.
+
+- OpenWrt / LuCI
+  https://github.com/openwrt/openwrt
+  https://github.com/openwrt/luci
+  Licensed under the Apache License, Version 2.0.
+  Used for: the target platform. This project calls the rpcd/ubus interfaces
+  and the LuCI-rpc object that OpenWrt already exposes; it contains no
+  OpenWrt or LuCI source code. LuCI is kept only as an emergency entry point
+  on the device.
+  Distribution: **no** -- neither repository is vendored here. Both are far
+  above the 5 MB vendoring threshold, and this project only calls their
+  interfaces. See third-party/README.md for the full decision record.
+
+Trademarks and attributions
+---------------------------
+
+"OpenWrt" is a trademark of the OpenWrt project. "LuCI" is a trademark of
+the LuCI project. "ShellCrash" and "mihomo" are the property of their
+respective authors. This project is not affiliated with, endorsed by, or
+supported by any of them.
+
+Third-party code that is not vendored is not distributed as part of this
+repository; it is resolved by the package manager at build time and recorded
+in package-lock.json. The one exception is art-design-pro, whose snapshot is
+vendored under third-party/ together with its own LICENSE and a source-credential
+file (UPSTREAM.md) recording the upstream URL, the commit SHA, the clone date
+and the update procedure. See third-party/README.md for the index.

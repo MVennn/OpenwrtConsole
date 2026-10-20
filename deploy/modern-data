@@ -1,0 +1,123 @@
+#!/usr/bin/ucode
+"use strict";
+
+/*
+ * GET /cgi-bin/modern-data?what=stations&sid=<session>
+ * GET /cgi-bin/modern-data?what=logs&lines=120&sid=<session>
+ * The sid may also arrive in the owrt_sid cookie. It is validated against
+ * rpcd before anything is returned.
+ */
+
+import * as fs from 'fs';
+import * as ubus from 'ubus';
+
+function respond(status, payload) {
+	printf("Status: %s\r\n", status);
+	printf("Content-Type: application/json; charset=utf-8\r\n");
+	printf("Cache-Control: no-store\r\n");
+	printf("X-Content-Type-Options: nosniff\r\n");
+	printf("\r\n");
+	printf("%J", payload);
+}
+
+let query = getenv("QUERY_STRING");
+if (type(query) != "string") query = "";
+
+let params = {};
+for (let pair in split(query, "&")) {
+	if (!length(pair)) continue;
+	let kv = split(pair, "=");
+	params[kv[0]] = length(kv) > 1 ? kv[1] : "";
+}
+
+let sid = params.sid != null ? params.sid : "";
+if (!length(sid)) {
+	let cookie = getenv("HTTP_COOKIE");
+	if (type(cookie) == "string") {
+		for (let part in split(cookie, ";")) {
+			let kv = split(trim(part), "=");
+			if (length(kv) == 2 && kv[0] == "owrt_sid")
+				sid = kv[1];
+		}
+	}
+}
+
+let authorized = false;
+if (length(sid) > 0) {
+	try {
+		let session = ubus.call("session", "get", { ubus_rpc_session: sid });
+		if (session != null && type(session) == "object" &&
+		    session.values != null && session.values.username)
+			authorized = true;
+	} catch (e) {
+		authorized = false;
+	}
+}
+
+if (!authorized) {
+	respond("401 Unauthorized", { error: "unauthorized" });
+	exit(0);
+}
+
+if (params.what == "stations") {
+	let devices = [];
+	try {
+		let wireless = ubus.call("luci-rpc", "getWirelessDevices", {});
+		for (let key in keys(wireless)) {
+			let radio = wireless[key];
+			if (radio == null || radio.interfaces == null)
+				continue;
+			for (let iface in radio.interfaces) {
+				if (iface.ifname && !(iface.config != null && iface.config.disabled))
+					push(devices, iface.ifname);
+			}
+		}
+	} catch (e) {
+		devices = [];
+	}
+
+	if (!length(devices))
+		devices = [ "phy0-ap0", "phy1-ap0" ];
+
+	let stations = {};
+	for (let device in devices) {
+		try {
+			let result = ubus.call("iwinfo", "assoclist", { device: device });
+			stations[device] = (result != null && result.results != null) ? result.results : [];
+		} catch (e) {
+			stations[device] = [];
+		}
+	}
+
+	respond("200 OK", { stations: stations });
+	exit(0);
+}
+
+if (params.what == "logs") {
+	let lines = 120;
+	if (params.lines != null) {
+		let parsed = +params.lines;
+		if (parsed > 0) lines = parsed;
+		if (lines > 500) lines = 500;
+	}
+
+	let output = [];
+	try {
+		let pipe = fs.popen(sprintf("logread | tail -n %d", lines));
+		if (pipe != null) {
+			let content = pipe.read("all");
+			if (type(content) == "string" && length(content) > 0) {
+				output = split(content, "\n");
+				if (length(output) > 0 && output[length(output) - 1] == "")
+					output = slice(output, 0, length(output) - 1);
+			}
+		}
+	} catch (e) {
+		output = [];
+	}
+
+	respond("200 OK", { lines: output });
+	exit(0);
+}
+
+respond("400 Bad Request", { error: "unknown action" });

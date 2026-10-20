@@ -1,0 +1,191 @@
+/*
+ * Design tokens derived from art-design-pro (MIT).
+ * Keep this file as the single source of visual truth: components should not
+ * introduce one-off colors, radii or shadows. Values are tuned for a dense
+ * router console, so the type scale tops out at 30px.
+ */
+:root {
+  /* Brand */
+  --brand: #5d87ff;
+  --brand-hover: #4a74f0;
+  --brand-active: #3b60d8;
+  --brand-text: #2f4db0;
+  --brand-soft: #eef4ff;
+  --brand-softer: #f6f9ff;
+
+  /* Neutral surfaces */
+  --bg: #fafbfc;
+  --surface: #ffffff;
+  --surface-2: #f2f4f5;
+  --surface-3: #f9fafb;
+  --border: rgba(17, 24, 39, 0.07);
+  --border-strong: #e6eaeb;
+
+  /* Text: exactly three levels carry the hierarchy. The muted stop is darker
+     than art-design-pro's #7987a1 so 12px labels still clear 4.5:1. */
+  --text: #383853;
+  --text-secondary: #4d5875;
+  --text-muted: #68758e;
+  --text-faint: #94a0b4;
+  --text-inverse: #ffffff;
+
+  /* Semantic */
+  --success: #16a34a;
+  --success-text: #15803d;
+  --success-soft: #ecfdf5;
+  --warning: #d97706;
+  --warning-text: #b45309;
+  --warning-soft: #fffbeb;
+  --danger: #dc2626;
+  --danger-text: #b91c1c;
+  --danger-soft: #fef2f2;
+  --info: #0ea5e9;
+  --info-text: #0369a1;
+  --info-soft: #f0f9ff;
+
+  /* Chart series */
+  --chart-rx: #5d87ff;
+  --chart-tx: #14b8a6;
+  --chart-grid: #eef1f5;
+
+  /* Shape */
+  --radius-sm: 6px;
+  --radius: 8px;
+  --radius-md: 10px;
+  --radius-lg: 12px;
+  --radius-xl: 16px;
+  --shadow-xs: 0 1px 2px rgba(16, 24, 40, 0.04);
+  --shadow-sm: 0 1px 3px rgba(16, 24, 40, 0.05), 0 1px 2px rgba(16, 24, 40, 0.03);
+  --shadow-md: 0 8px 24px rgba(16, 24, 40, 0.08);
+
+  /* Type */
+  --font-sans:
+    -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB',
+    'Microsoft YaHei', 'Noto Sans SC', sans-serif;
+  --font-mono: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
+  --text-xs: 12px;
+  --text-sm: 13px;
+  --text-base: 14px;
+  --text-md: 16px;
+  --text-lg: 20px;
+  --text-xl: 26px;
+  --text-2xl: 30px;
+
+  /* Spacing scale */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --space-8: 32px;
+
+  /* Layout */
+  --sidebar-w: 236px;
+  --sidebar-w-collapsed: 76px;
+  --header-h: 64px;
+  --content-max: 1560px;
+
+  /* Element Plus bridge — the action color is darker than the brand accent so
+     white label text keeps a 4.5:1 contrast ratio. */
+  --el-color-primary: #3b60d8;
+  --el-color-primary-light-3: #5d87ff;
+  --el-color-primary-light-5: #8fb9ff;
+  --el-color-primary-light-7: #bcd5ff;
+  --el-color-primary-light-8: #dbe8ff;
+  --el-color-primary-light-9: #eef4ff;
+  --el-color-primary-dark-2: #2f4db0;
+  --el-color-success: #16a34a;
+  --el-color-warning: #d97706;
+  --el-color-danger: #dc2626;
+  --el-color-error: #dc2626;
+  --el-color-info: #64748b;
+  --el-text-color-primary: var(--text);
+  --el-text-color-regular: var(--text-secondary);
+  --el-text-color-secondary: var(--text-muted);
+  --el-text-color-placeholder: var(--text-faint);
+  --el-border-color: var(--border-strong);
+  --el-border-color-light: var(--border);
+  --el-border-color-lighter: var(--border);
+  --el-border-color-extra-light: var(--border);
+  --el-fill-color: var(--surface-2);
+  --el-fill-color-light: var(--surface-3);
+  --el-fill-color-lighter: var(--surface-3);
+  --el-fill-color-blank: var(--surface);
+  --el-bg-color: var(--surface);
+  --el-bg-color-overlay: var(--surface);
+  --el-bg-color-page: var(--bg);
+  --el-font-family: var(--font-sans);
+  --el-border-radius-base: 8px;
+  --el-border-radius-small: 6px;
+  --el-border-radius-round: 999px;
+  --el-box-shadow-light: var(--shadow-sm);
+  --el-box-shadow: var(--shadow-md);
+}
+
+.dark {
+  --brand: #7da0ff;
+  --brand-hover: #8fb9ff;
+  --brand-active: #6d8dff;
+  --brand-text: #9db9ff;
+  --brand-soft: rgba(93, 135, 255, 0.14);
+  --brand-softer: rgba(93, 135, 255, 0.08);
+
+  --bg: #0b0b0d;
+  --surface: #161618;
+  --surface-2: #1d1d22;
+  --surface-3: #1a1a1e;
+  --border: rgba(255, 255, 255, 0.08);
+  --border-strong: rgba(255, 255, 255, 0.12);
+
+  --text: #e3e3e8;
+  --text-secondary: #b4b4c4;
+  --text-muted: #a0a0b2;
+  --text-faint: #73738c;
+  --text-inverse: #101014;
+
+  --success: #34d399;
+  --success-text: #6ee7b7;
+  --success-soft: rgba(16, 185, 129, 0.12);
+  --warning: #fbbf24;
+  --warning-text: #fcd34d;
+  --warning-soft: rgba(245, 158, 11, 0.12);
+  --danger: #f87171;
+  --danger-text: #fca5a5;
+  --danger-soft: rgba(239, 68, 68, 0.12);
+  --info: #38bdf8;
+  --info-text: #7dd3fc;
+  --info-soft: rgba(14, 165, 233, 0.12);
+
+  --chart-rx: #7da0ff;
+  --chart-tx: #2dd4bf;
+  --chart-grid: rgba(255, 255, 255, 0.06);
+
+  --shadow-xs: 0 1px 2px rgba(0, 0, 0, 0.24);
+  --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.3);
+  --shadow-md: 0 8px 24px rgba(0, 0, 0, 0.36);
+
+  --el-color-primary: #4a74f0;
+  --el-color-primary-light-3: #6d8dff;
+  --el-color-primary-light-5: #8fb9ff;
+  --el-color-primary-light-7: #2b3f74;
+  --el-color-primary-light-8: #22325c;
+  --el-color-primary-light-9: #1b2540;
+  --el-color-primary-dark-2: #3b60d8;
+  --el-text-color-primary: var(--text);
+  --el-text-color-regular: var(--text-secondary);
+  --el-text-color-secondary: var(--text-muted);
+  --el-text-color-placeholder: var(--text-faint);
+  --el-border-color: var(--border-strong);
+  --el-border-color-light: var(--border);
+  --el-border-color-lighter: var(--border);
+  --el-border-color-extra-light: var(--border);
+  --el-fill-color: var(--surface-2);
+  --el-fill-color-light: var(--surface-3);
+  --el-fill-color-lighter: var(--surface-3);
+  --el-fill-color-blank: var(--surface);
+  --el-bg-color: var(--surface);
+  --el-bg-color-overlay: var(--surface);
+  --el-bg-color-page: var(--bg);
+  --el-mask-color: rgba(0, 0, 0, 0.6);
+}

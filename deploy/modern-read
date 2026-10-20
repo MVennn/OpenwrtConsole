@@ -1,0 +1,162 @@
+#!/usr/bin/ucode
+"use strict";
+
+/*
+ * GET /cgi-bin/modern-read?what=leases&sid=<session>
+ * GET /cgi-bin/modern-read?what=hosts&sid=<session>
+ * GET /cgi-bin/modern-read?what=resolv&sid=<session>
+ *
+ * Read-only view on the dnsmasq runtime state. The sid may also arrive in the
+ * owrt_sid cookie; it is validated against rpcd before anything is returned.
+ *
+ * Every file path below is a hard coded constant and the `what` value only
+ * selects one of the three allowlisted readers, so a request can never reach
+ * an arbitrary path. A missing or unreadable file yields an empty list and a
+ * 200 response instead of an error.
+ */
+
+import * as fs from 'fs';
+import * as ubus from 'ubus';
+
+const LEASES_PATH = "/tmp/dhcp.leases";
+const HOSTS_GLOB = "/tmp/hosts/dhcp.*";
+const RESOLV_PATHS = [ "/etc/resolv.conf.auto", "/tmp/resolv.conf.d/resolv.conf.auto" ];
+
+function respond(status, payload) {
+	printf("Status: %s\r\n", status);
+	printf("Content-Type: application/json; charset=utf-8\r\n");
+	printf("Cache-Control: no-store\r\n");
+	printf("X-Content-Type-Options: nosniff\r\n");
+	printf("\r\n");
+	printf("%J", payload);
+}
+
+/* Reads a fixed path; a missing or unreadable file becomes an empty string. */
+function readFile(path) {
+	let content = fs.readfile(path);
+	return type(content) == "string" ? content : "";
+}
+
+/* Splits a line on spaces and tabs, dropping the empty fields. */
+function fields(line) {
+	let parts = [];
+	for (let chunk in split(line, "\t")) {
+		for (let part in split(chunk, " ")) {
+			if (length(part)) push(parts, part);
+		}
+	}
+	return parts;
+}
+
+/* Numeric cast that never produces NaN. */
+function toInt(value) {
+	let number = +value;
+	let kind = type(number);
+	if (kind != "int" && kind != "double") return 0;
+	if (number != number) return 0;
+	return number;
+}
+
+let query = getenv("QUERY_STRING");
+if (type(query) != "string") query = "";
+
+let params = {};
+for (let pair in split(query, "&")) {
+	if (!length(pair)) continue;
+	let kv = split(pair, "=");
+	params[kv[0]] = length(kv) > 1 ? kv[1] : "";
+}
+
+let sid = params.sid != null ? params.sid : "";
+if (!length(sid)) {
+	let cookie = getenv("HTTP_COOKIE");
+	if (type(cookie) == "string") {
+		for (let part in split(cookie, ";")) {
+			let kv = split(trim(part), "=");
+			if (length(kv) == 2 && kv[0] == "owrt_sid")
+				sid = kv[1];
+		}
+	}
+}
+
+let authorized = false;
+if (length(sid) > 0) {
+	try {
+		let session = ubus.call("session", "get", { ubus_rpc_session: sid });
+		if (session != null && type(session) == "object" &&
+		    session.values != null && session.values.username)
+			authorized = true;
+	} catch (e) {
+		authorized = false;
+	}
+}
+
+if (!authorized) {
+	respond("401 Unauthorized", { error: "unauthorized" });
+	exit(0);
+}
+
+/* /tmp/dhcp.leases: <expiry> <mac> <ip> <hostname> <client-id> */
+if (params.what == "leases") {
+	let leases = [];
+	for (let line in split(readFile(LEASES_PATH), "\n")) {
+		line = trim(line);
+		if (!length(line)) continue;
+		let parts = fields(line);
+		if (length(parts) < 3) continue;
+		let hostname = length(parts) > 3 ? parts[3] : "";
+		if (hostname == "*") hostname = "";
+		push(leases, {
+			expiry: toInt(parts[0]),
+			mac: parts[1],
+			ip: parts[2],
+			hostname: hostname
+		});
+	}
+	respond("200 OK", { leases: leases });
+	exit(0);
+}
+
+/* /tmp/hosts/dhcp.*: <ip> <name> [<name> ...] */
+if (params.what == "hosts") {
+	let hosts = [];
+	for (let path in fs.glob(HOSTS_GLOB)) {
+		for (let line in split(readFile(path), "\n")) {
+			line = trim(line);
+			if (!length(line) || substr(line, 0, 1) == "#") continue;
+			let parts = fields(line);
+			if (!length(parts)) continue;
+			let names = [];
+			for (let i = 1; i < length(parts); i++) push(names, parts[i]);
+			push(hosts, { ip: parts[0], names: names });
+		}
+	}
+	respond("200 OK", { hosts: hosts });
+	exit(0);
+}
+
+/* resolv.conf: "nameserver <ip>" and "search <domain> [<domain> ...]" */
+if (params.what == "resolv") {
+	let nameservers = [];
+	let search = [];
+	let content = "";
+	for (let path in RESOLV_PATHS) {
+		content = readFile(path);
+		if (length(content)) break;
+	}
+	for (let line in split(content, "\n")) {
+		line = trim(line);
+		if (!length(line) || substr(line, 0, 1) == "#") continue;
+		let parts = fields(line);
+		if (!length(parts)) continue;
+		if (parts[0] == "nameserver" && length(parts) > 1) {
+			push(nameservers, parts[1]);
+		} else if (parts[0] == "search" || parts[0] == "domain") {
+			for (let i = 1; i < length(parts); i++) push(search, parts[i]);
+		}
+	}
+	respond("200 OK", { nameservers: nameservers, search: search });
+	exit(0);
+}
+
+respond("400 Bad Request", { error: "unknown action" });

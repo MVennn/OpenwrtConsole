@@ -1,0 +1,851 @@
+#!/bin/sh
+# POST /cgi-bin/modern-sysupgrade?sid=<session>&action=<action>
+#
+# Firmware upgrade, update check and configuration backup / restore.
+#
+# The rpcd session that the console uses may read the board information, but
+# it may neither flash a firmware image nor write a configuration backup.
+# Those operations live in this root CGI. Every action is named explicitly,
+# the parameters are validated one by one and the two destructive actions
+# (upgrade, restore) additionally need a single use token that `modern-uci`
+# issues on request with the purpose `firmware-upgrade` or `backup-restore`.
+#
+#   info           – board / release information plus the firmware files in /tmp
+#   upload         – the raw request body is the firmware image
+#   upgrade        – sysupgrade /tmp/openwrt-firmware.bin          (token)
+#   backup         – sysupgrade -b /tmp/openwrt-backup.tar.gz
+#   restore        – sysupgrade -r <path>                          (token)
+#   list-backups   – the configuration backups that live in /tmp
+#   check-update   – ask the official download server for a newer release
+#   download       – download the official image and verify its checksum
+#   download-status / check-status – the state of a background job
+#
+# The action is read from the `action` query parameter. The upload carries a
+# binary body and therefore can only be selected that way; the other actions
+# carry a JSON body and their parameters (path, token) are read from there,
+# because a query string would percent encode them. The name of an uploaded
+# file arrives in the `X-Filename` header (uhttpd exports it as
+# HTTP_X_FILENAME); the `filename` query parameter is accepted as a fallback
+# for the builds that do not forward custom headers.
+#
+# The tokens are the files in /tmp/modern-tokens/<token>; each of them holds
+# "<purpose> <expiry>" and is valid for 120 seconds and for one single use.
+#
+# The update check and the download reach the internet. This router has no
+# direct route to the outside world, so the requests go through the local
+# proxy of ShellCrash; a direct connection is the fallback. Neither the
+# router nor busybox provides a `timeout` command, so every network call runs
+# in a background process under a watchdog that kills it with SIGKILL. The
+# update check needs three round trips (release list, target directory, wiki
+# notes) and the wiki is slow, so the check runs as a background job as well:
+# the action waits a short while for the result and answers with the job id
+# when the job is still running. The console then polls `check-status`.
+
+TOKEN_DIR="/tmp/modern-tokens"
+FIRMWARE_PATH="/tmp/openwrt-firmware.bin"
+BACKUP_PATH="/tmp/openwrt-backup.tar.gz"
+MAX_UPLOAD=41943040
+MAX_OUTPUT=204800
+FIRMWARE_GLOB="/tmp/*.bin /tmp/*.tar /tmp/*.img"
+BACKUP_GLOB="/tmp/*.tar.gz"
+
+# Background jobs of the update check and of the firmware download.
+JOB_ROOT="/tmp/modern-fw-jobs"
+# The result of the last successful check, so that a reload of the page can
+# show the state again without asking the download server a second time.
+UPDATE_DIR="/tmp/modern-fw-update"
+
+# The mixed port of the local proxy. A direct connection is used when the
+# proxy refuses the request.
+PROXY="http://127.0.0.1:7890"
+
+RELEASES_BASE="https://downloads.openwrt.org/releases"
+NOTES_BASE="https://openwrt.org/releases"
+
+# Watchdogs (seconds) and the time the action waits for the job.
+# The update check runs three round trips with their own timeouts
+# (30 + 30 + 45 seconds), so the job is bounded by them; the download
+# watches over the whole transfer.
+T_DOWNLOAD=900
+WAIT_CHECK=18
+WAIT_DOWNLOAD=4
+MAX_NOTES=8
+
+deny() {
+	emit "401 Unauthorized" '{"error":"unauthorized"}'
+	exit 0
+}
+
+fail() {
+	emit "$1" "$2"
+	exit 0
+}
+
+ok() {
+	emit "200 OK" "$1"
+	exit 0
+}
+
+# Prints the answer; a payload that would exceed the size limit is replaced
+# by a short error so that the response always stays valid JSON.
+emit() {
+	_status="$1"
+	_payload="$2"
+	if [ "${#_payload}" -gt "$MAX_OUTPUT" ]; then
+		_payload='{"ok":false,"error":"响应过大"}'
+	fi
+	printf 'Status: %s\r\n' "$_status"
+	printf 'Content-Type: application/json; charset=utf-8\r\n'
+	printf 'Cache-Control: no-store\r\n\r\n'
+	printf '%s' "$_payload"
+}
+
+# Escapes the characters that would break a JSON string.
+json_escape() {
+	printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g' | tr -d '\r\n'
+}
+
+# ---------------------------------------------------------------- session ---
+qs="${QUERY_STRING:-}"
+sid=""
+qs_action=""
+qs_filename=""
+qs_path=""
+qs_token=""
+oldIFS=$IFS
+IFS='&'
+for pair in $qs; do
+	key="${pair%%=*}"
+	val="${pair#*=}"
+	case "$key" in
+		sid) sid="$val" ;;
+		action) qs_action="$val" ;;
+		filename) qs_filename="$val" ;;
+		path) qs_path="$val" ;;
+		token) qs_token="$val" ;;
+	esac
+done
+IFS=$oldIFS
+
+if [ -z "$sid" ]; then
+	sid="$(printf '%s' "${HTTP_COOKIE:-}" | tr ';' '\n' | sed -n 's/^ *owrt_sid=//p' | head -n 1)"
+fi
+[ -n "$sid" ] || deny
+
+case "$sid" in
+	*[!A-Za-z0-9._~+/=-]*) deny ;;
+esac
+
+ubus call session get "{\"ubus_rpc_session\":\"$sid\"}" 2>/dev/null | grep -q '"username"' || deny
+
+# ------------------------------------------------------------------- body ---
+[ "${REQUEST_METHOD:-GET}" = "POST" ] ||
+	fail "405 Method Not Allowed" '{"error":"只接受 POST 请求"}'
+
+# Only a JSON body is parsed; the firmware upload is a raw binary stream.
+body=""
+case "$(printf '%s' "${CONTENT_TYPE:-}" | tr 'A-Z' 'a-z')" in
+	application/json*) body="$(head -c 8192)" ;;
+esac
+
+json_string() {
+	printf '%s' "$body" |
+		grep -o "\"$1\"[[:space:]]*:[[:space:]]*\"[^\"]*\"" |
+		head -n 1 |
+		sed 's/^"[^"]*"[[:space:]]*:[[:space:]]*"\(.*\)"$/\1/'
+}
+
+action="$qs_action"
+[ -n "$action" ] || action="${HTTP_X_ACTION:-}"
+if [ -z "$action" ] && [ -n "$body" ]; then
+	action="$(json_string action)"
+fi
+[ -n "$action" ] || fail "400 Bad Request" '{"error":"缺少操作名称"}'
+
+token=""
+if [ -n "$body" ]; then
+	token="$(json_string token)"
+fi
+[ -n "$token" ] || token="$qs_token"
+[ -n "$token" ] || token="${HTTP_X_TOKEN:-}"
+
+# The parameters travel in the JSON body: a query string would carry them
+# percent encoded and the CGI reads the raw value.
+target_path=""
+if [ -n "$body" ]; then
+	target_path="$(json_string path)"
+fi
+[ -n "$target_path" ] || target_path="$qs_path"
+[ -n "$target_path" ] || target_path="${HTTP_X_PATH:-}"
+
+upload_name="$qs_filename"
+[ -n "$upload_name" ] || upload_name="${HTTP_X_FILENAME:-}"
+[ -n "$upload_name" ] || upload_name="${X_FILENAME:-}"
+
+download_url=""
+expected_sha=""
+expected_size=""
+job_id=""
+if [ -n "$body" ]; then
+	download_url="$(json_string download_url)"
+	expected_sha="$(json_string sha256)"
+	expected_size="$(json_string size)"
+	job_id="$(json_string job_id)"
+fi
+
+# ----------------------------------------------------------------- tokens ---
+# The token file holds "<purpose> <expiry>"; it is removed before the purpose
+# is checked, so a token can never be used twice.
+consume_token() {
+	_want="$1"
+	_got="$2"
+	[ -n "$_got" ] || return 1
+	# Only alphanumerics and the dash may appear: the token becomes a file
+	# name below, so a dot or a slash must never reach the path.
+	case "$_got" in
+		*[!A-Za-z0-9-]*) return 1 ;;
+	esac
+	_file="$TOKEN_DIR/$_got"
+	[ -f "$_file" ] || return 1
+	_purpose=""
+	_expires=""
+	read -r _purpose _expires < "$_file" || true
+	rm -f "$_file"
+	[ "$_purpose" = "$_want" ] || return 1
+	[ -n "$_expires" ] || return 1
+	[ "$_expires" -ge "$(date +%s)" ] || return 1
+	return 0
+}
+
+# ------------------------------------------------------------------ files ---
+# Prints a JSON array with the files that match the given glob patterns.
+list_json() {
+	_out=""
+	for _pattern in $1; do
+		for _file in $_pattern; do
+			[ -f "$_file" ] || continue
+			_name="${_file##*/}"
+			_safe="$(printf '%s' "$_name" | sed 's/[^A-Za-z0-9._-]/_/g')"
+			_size="$(wc -c < "$_file" 2>/dev/null | tr -d ' ')"
+			[ -n "$_size" ] || _size=0
+			_mtime="$(date -r "$_file" +%s 2>/dev/null | tr -d ' ')"
+			[ -n "$_mtime" ] || _mtime=0
+			[ -n "$_out" ] && _out="$_out,"
+			_out="$_out{\"name\":\"$_safe\",\"path\":\"/tmp/$_safe\",\"size\":$_size,\"mtime\":$_mtime}"
+		done
+	done
+	printf '%s' "$_out"
+}
+
+# ------------------------------------------------------------------ jobs ---
+# Creates the directory of a background job and returns its id.
+new_job() {
+	_id="$(date +%s 2>/dev/null)-$(head -c 32 /dev/urandom 2>/dev/null | md5sum | cut -c1-12)"
+	[ -n "$_id" ] || return 1
+	_dir="$JOB_ROOT/$_id"
+	mkdir -p "$_dir" 2>/dev/null || return 1
+	echo running > "$_dir/status" 2>/dev/null
+	: > "$_dir/result" 2>/dev/null
+	: > "$_dir/out" 2>/dev/null
+	: > "$_dir/progress" 2>/dev/null
+	printf '%s' "$_id"
+}
+
+# Removes the jobs that are older than an hour.
+cleanup_jobs() {
+	_now="$(date +%s 2>/dev/null)"
+	case "$_now" in ''|*[!0-9]*) return 0 ;; esac
+	for _d in "$JOB_ROOT"/*; do
+		[ -d "$_d" ] || continue
+		_b="${_d##*/}"
+		_e="${_b%%-*}"
+		case "$_e" in ''|*[!0-9]*) continue ;; esac
+		[ $((_now - _e)) -gt 3600 ] && rm -rf "$_d" 2>/dev/null
+	done
+	return 0
+}
+
+# Waits for the job to write its result. $1 = job id, $2 = seconds.
+wait_for_result() {
+	_id="$1"
+	_secs="$2"
+	_dir="$JOB_ROOT/$_id"
+	_i=0
+	while [ "$_i" -lt "$_secs" ]; do
+		[ -s "$_dir/result" ] && return 0
+		_st="$(cat "$_dir/status" 2>/dev/null)"
+		case "$_st" in
+			failed|timeout) return 1 ;;
+		esac
+		sleep 1
+		_i=$((_i + 1))
+	done
+	[ -s "$_dir/result" ] && return 0
+	return 1
+}
+
+# Compares two versions. Prints 1 when the first one is newer.
+version_newer() {
+	awk -v a="$1" -v b="$2" 'BEGIN{
+		n = split(a, A, "."); m = split(b, B, ".");
+		for (i = 1; i <= 3; i++) {
+			x = (i <= n ? A[i] + 0 : 0);
+			y = (i <= m ? B[i] + 0 : 0);
+			if (x > y) { print "1"; exit }
+			if (x < y) { print "0"; exit }
+		}
+		print "0"
+	}'
+}
+
+# Only the official download server may be used as a source. The path may
+# not contain a dot segment and has to end with .bin.
+valid_download_url() {
+	_url="$1"
+	case "$_url" in
+		"$RELEASES_BASE"/*) ;;
+		*) return 1 ;;
+	esac
+	_rest="${_url#"$RELEASES_BASE"/}"
+	case "$_rest" in
+		''|*[!A-Za-z0-9._/-]*) return 1 ;;
+	esac
+	case "$_rest" in
+		*..*) return 1 ;;
+	esac
+	case "$_rest" in
+		*.bin) ;;
+		*) return 1 ;;
+	esac
+	[ "${#_rest}" -le 200 ] || return 1
+	return 0
+}
+
+# Writes the worker of the update check into the job directory.
+write_check_worker() {
+	cat > "$1/worker.sh" <<'WORKER'
+#!/bin/sh
+# Collects the update information from the official OpenWrt download server.
+#   $1 job dir, $2 proxy, $3 board name, $4 target, $5 current version,
+#   $6 model, $7 cache dir, $8 maximum number of notes
+job="$1"
+proxy="$2"
+board="$3"
+target="$4"
+current="$5"
+model="$6"
+cache="$7"
+max_notes="$8"
+[ -n "$max_notes" ] || max_notes=8
+
+releases_base="https://downloads.openwrt.org/releases"
+notes_base="https://openwrt.org/releases"
+
+out="$job/out"
+result="$job/result"
+status="$job/status"
+
+echo running > "$status"
+: > "$out"
+
+note() { printf '%s\n' "$*" >> "$out"; }
+
+# Downloads a file. The proxy is tried first, a direct connection is the
+# fallback for the case that the proxy is not running.
+fetch() {
+	_u="$1"
+	_f="$2"
+	_t="$3"
+	if [ -n "$proxy" ]; then
+		curl -x "$proxy" -sSL --fail --max-time "$_t" -o "$_f" "$_u" >>"$out" 2>&1 && return 0
+		rm -f "$_f"
+	fi
+	curl -sSL --fail --max-time "$_t" -o "$_f" "$_u" >>"$out" 2>&1
+}
+
+fail() {
+	printf '{"ok":false,"error":"%s"}' "$1" > "$result"
+	echo failed > "$status"
+	exit 0
+}
+
+esc() { printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g' | tr -d '\r\n'; }
+
+# Compares two versions. Prints 1 when the first one is newer.
+version_newer() {
+	awk -v a="$1" -v b="$2" 'BEGIN{
+		n = split(a, A, "."); m = split(b, B, ".");
+		for (i = 1; i <= 3; i++) {
+			x = (i <= n ? A[i] + 0 : 0);
+			y = (i <= m ? B[i] + 0 : 0);
+			if (x > y) { print "1"; exit }
+			if (x < y) { print "0"; exit }
+		}
+		print "0"
+	}'
+}
+
+# 1. the list of the released versions
+fetch "$releases_base/" "$job/releases.html" 30 ||
+	fail "无法连接 OpenWrt 官方下载站，请检查路由器外网与代理设置"
+[ -s "$job/releases.html" ] || fail "官方下载站没有返回版本列表"
+
+latest="$(grep -o 'href="[0-9][0-9.]*/"' "$job/releases.html" |
+	sed 's/^href="//; s#/"$##' |
+	grep '^[0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*$' |
+	sort -t. -k1,1n -k2,2n -k3,3n | tail -n 1)"
+[ -n "$latest" ] || fail "未能解析官方版本列表"
+
+# 2. the date of the release directory
+published="$(grep "href=\"$latest/\"" "$job/releases.html" |
+	sed -n 's/.*<td class="d">\([^<]*\)<.*/\1/p' | head -n 1)"
+published_iso="$(printf '%s' "$published" | awk '{
+	split("Jan Feb Mar Apr May Jun Jul Aug Sep Oct Nov Dec", m, " ");
+	for (i = 1; i <= 12; i++) if (m[i] == $2) mon = i;
+	if (mon == "" || $3 == "" || $5 == "") { print ""; exit }
+	printf "%s-%02d-%02d %s", $5, mon, $3, $4;
+}')"
+published_ts=0
+if [ -n "$published_iso" ]; then
+	published_ts="$(date -d "$published_iso" +%s 2>/dev/null | tr -d ' ')"
+	case "$published_ts" in ''|*[!0-9]*) published_ts=0 ;; esac
+fi
+
+# 3. the files of the target platform
+target_url="$releases_base/$latest/targets/$target/"
+fetch "$target_url" "$job/target.html" 30 ||
+	fail "无法获取目标平台的固件列表"
+[ -s "$job/target.html" ] || fail "目标平台的固件列表为空"
+
+device="$(printf '%s' "$board" | tr ',' '_')"
+row="$(grep '<td class="n"><a href="[^"]*sysupgrade\.bin"' "$job/target.html" |
+	grep -F -- "$device" | grep -F -- '-squashfs-sysupgrade.bin"' | head -n 1)"
+[ -n "$row" ] || row="$(grep '<td class="n"><a href="[^"]*sysupgrade\.bin"' "$job/target.html" |
+	grep -F -- "$device" | head -n 1)"
+
+file_name=""
+sha=""
+size=0
+file_date=""
+warning=""
+if [ -n "$row" ]; then
+	file_name="$(printf '%s' "$row" | sed -n 's/.*<a href="\([^"]*\)">.*/\1/p')"
+	sha="$(printf '%s' "$row" | sed -n 's/.*<td class="sh">\([0-9a-f]*\)<.*/\1/p')"
+	size_kb="$(printf '%s' "$row" | sed -n 's/.*<td class="s">\([0-9.]*\) *KB<.*/\1/p')"
+	size="$(awk -v k="$size_kb" 'BEGIN { if (k == "") print 0; else printf "%d", k * 1024 }')"
+	file_date="$(printf '%s' "$row" | sed -n 's/.*<td class="d">\([^<]*\)<.*/\1/p')"
+
+	# The checksum of the official sums file is authoritative.
+	if fetch "$target_url/sha256sums" "$job/sums" 25; then
+		off="$(awk -v f="$file_name" '$2 == "*" f { print $1 }' "$job/sums" | head -n 1)"
+		[ -n "$off" ] && sha="$off"
+	fi
+else
+	warning="官方源中暂时没有该机型的 sysupgrade 固件"
+fi
+
+# 4. the release notes of the wiki
+branch="$(printf '%s' "$latest" | cut -d. -f1,2)"
+notes_url="$notes_base/$branch/notes-$latest"
+notes_json=""
+note_count=0
+if fetch "$notes_url" "$job/notes.html" 45; then
+	grep -o '<h[23][^>]*>[^<]*</h[23]>' "$job/notes.html" |
+		sed 's/<[^>]*>//g' | tr -d '\r' > "$job/notes.txt"
+	while IFS= read -r line; do
+		[ -n "$line" ] || continue
+		case "$line" in
+			"Learn about OpenWrt"|"Contributing"|"Project"|"About OpenWrt"|\
+			"Announcements about new releases and security fixes") continue ;;
+		esac
+		[ "$note_count" -ge "$max_notes" ] && break
+		[ -n "$notes_json" ] && notes_json="$notes_json,"
+		notes_json="$notes_json\"$(esc "$line")\""
+		note_count=$((note_count + 1))
+	done < "$job/notes.txt"
+fi
+
+# 5. compare the versions
+upgradable=false
+if [ -n "$latest" ] && [ -n "$current" ]; then
+	[ "$(version_newer "$latest" "$current")" = "1" ] && upgradable=true
+fi
+
+download_url=""
+[ -n "$file_name" ] && download_url="$target_url$file_name"
+
+cat > "$result" <<EOF
+{"ok":true,"current_version":"$(esc "$current")","latest_version":"$(esc "$latest")","target":"$(esc "$target")","id":"$(esc "$board")","model":"$(esc "$model")","device":"$(esc "$device")","published_at":"$(esc "$published_iso")","published_at_raw":"$(esc "$published")","published_at_ts":$published_ts,"size":$size,"sha256":"$(esc "$sha")","download_url":"$(esc "$download_url")","changelog_url":"$(esc "$notes_url")","notes":[$notes_json],"upgradable":$upgradable,"file_name":"$(esc "$file_name")","file_date":"$(esc "$file_date")","warning":"$(esc "$warning")"}
+EOF
+
+# The result is kept so that a reload of the page shows the state again.
+if [ -n "$cache" ]; then
+	mkdir -p "$cache" 2>/dev/null
+	cp "$result" "$cache/result.json" 2>/dev/null
+	date +%s > "$cache/checked_at" 2>/dev/null
+fi
+
+echo done > "$status"
+exit 0
+WORKER
+	chmod +x "$1/worker.sh" 2>/dev/null
+}
+
+# Writes the worker of the firmware download into the job directory.
+write_download_worker() {
+	cat > "$1/worker.sh" <<'WORKER'
+#!/bin/sh
+# Downloads the official firmware image and verifies its checksum.
+#   $1 job dir, $2 proxy, $3 url, $4 expected sha256, $5 expected size,
+#   $6 timeout
+job="$1"
+proxy="$2"
+url="$3"
+expected="$4"
+total="$5"
+timeout="$6"
+
+part="$job/firmware.part"
+dest="/tmp/openwrt-firmware.bin"
+out="$job/out"
+result="$job/result"
+status="$job/status"
+
+echo running > "$status"
+echo "0 $total" > "$job/progress"
+: > "$out"
+
+fetch() {
+	_u="$1"
+	_f="$2"
+	_t="$3"
+	if [ -n "$proxy" ]; then
+		curl -x "$proxy" -sSL --fail --max-time "$_t" -o "$_f" "$_u" >>"$out" 2>&1 && return 0
+		rm -f "$_f"
+	fi
+	curl -sSL --fail --max-time "$_t" -o "$_f" "$_u" >>"$out" 2>&1
+}
+
+file_name="${url##*/}"
+dir_url="${url%/*}"
+sums_url="$dir_url/sha256sums"
+
+# The download runs in its own process group, so that the watchdog can kill
+# the whole group when the time is up.
+grp=0
+if command -v setsid >/dev/null 2>&1; then
+	setsid sh "$job/fetch.sh" "$proxy" "$url" "$part" "$timeout" > "$out" 2>&1 &
+	grp=1
+else
+	sh "$job/fetch.sh" "$proxy" "$url" "$part" "$timeout" > "$out" 2>&1 &
+fi
+pid=$!
+
+# Writes the current size of the file so that the console can show a
+# progress bar.
+(
+	while kill -0 "$pid" 2>/dev/null; do
+		sz="$(wc -c < "$part" 2>/dev/null | tr -d ' ')"
+		[ -n "$sz" ] || sz=0
+		echo "$sz $total" > "$job/progress"
+		sleep 1
+	done
+) &
+mon=$!
+
+# The watchdog: the router has no timeout command, so the seconds are
+# counted here.
+(
+	i=0
+	while [ "$i" -lt "$timeout" ]; do
+		sleep 1
+		i=$((i + 1))
+	done
+	echo timeout > "$job/status.timeout"
+	if [ "$grp" = 1 ]; then
+		kill -9 -"$pid" 2>/dev/null
+	else
+		kill -9 "$pid" 2>/dev/null
+	fi
+) &
+guard=$!
+
+wait "$pid" 2>/dev/null
+code=$?
+kill "$guard" 2>/dev/null
+wait "$guard" 2>/dev/null
+kill "$mon" 2>/dev/null
+wait "$mon" 2>/dev/null
+
+if [ -f "$job/status.timeout" ]; then
+	rm -f "$part"
+	printf '{"ok":false,"error":"固件下载超时，请检查网络或代理后重试"}' > "$result"
+	echo timeout > "$status"
+	exit 0
+fi
+
+size="$(wc -c < "$part" 2>/dev/null | tr -d ' ')"
+[ -n "$size" ] || size=0
+if [ "$code" != "0" ] || [ "$size" -le 0 ]; then
+	rm -f "$part"
+	printf '{"ok":false,"error":"固件下载失败，请检查路由器外网与代理设置"}' > "$result"
+	echo failed > "$status"
+	exit 0
+fi
+
+actual="$(sha256sum "$part" 2>/dev/null | cut -d' ' -f1)"
+
+# The checksum of the official sums file wins over the one of the console.
+official=""
+if fetch "$sums_url" "$job/sums" 25; then
+	official="$(awk -v f="$file_name" '$2 == "*" f { print $1 }' "$job/sums" | head -n 1)"
+fi
+
+if [ -n "$official" ] && [ "$official" != "$actual" ]; then
+	rm -f "$part"
+	printf '{"ok":false,"error":"固件校验失败，下载内容与官方校验值不一致"}' > "$result"
+	echo failed > "$status"
+	exit 0
+fi
+if [ -z "$official" ] && [ -n "$expected" ] && [ "$expected" != "$actual" ]; then
+	rm -f "$part"
+	printf '{"ok":false,"error":"固件校验失败，下载内容与检测更新时的校验值不一致"}' > "$result"
+	echo failed > "$status"
+	exit 0
+fi
+
+verified=false
+if [ -n "$official" ] || [ -n "$expected" ]; then
+	verified=true
+fi
+
+mv "$part" "$dest" 2>/dev/null || {
+	rm -f "$part"
+	printf '{"ok":false,"error":"固件文件保存失败"}' > "$result"
+	echo failed > "$status"
+	exit 0
+}
+
+echo "$size $total" > "$job/progress"
+printf '{"ok":true,"path":"%s","size":%s,"sha256":"%s","verified":%s}' \
+	"$dest" "$size" "$actual" "$verified" > "$result"
+echo done > "$status"
+exit 0
+WORKER
+	chmod +x "$1/worker.sh" 2>/dev/null
+
+	cat > "$1/fetch.sh" <<'FETCH'
+#!/bin/sh
+# $1 proxy, $2 url, $3 output file, $4 max time
+proxy="$1"
+url="$2"
+out="$3"
+max="$4"
+if [ -n "$proxy" ]; then
+	curl -x "$proxy" -sSL --fail --max-time "$max" -o "$out" "$url" && exit 0
+	rm -f "$out"
+fi
+curl -sSL --fail --max-time "$max" -o "$out" "$url"
+FETCH
+	chmod +x "$1/fetch.sh" 2>/dev/null
+}
+
+# Reads the board information out of ubus.
+board_field() {
+	printf '%s' "$1" | sed -n 's/.*"'"$2"'"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p'
+}
+
+# ---------------------------------------------------------------- actions ---
+case "$action" in
+	info)
+		board="$(ubus call system board 2>/dev/null | tr '\n' ' ')"
+		kernel="$(json_escape "$(board_field "$board" kernel)")"
+		hostname="$(json_escape "$(board_field "$board" hostname)")"
+		system="$(json_escape "$(board_field "$board" system)")"
+		model="$(json_escape "$(board_field "$board" model)")"
+		board_name="$(json_escape "$(board_field "$board" board_name)")"
+		rootfs_type="$(json_escape "$(board_field "$board" rootfs_type)")"
+		distribution="$(json_escape "$(board_field "$board" distribution)")"
+		version="$(json_escape "$(board_field "$board" version)")"
+		revision="$(json_escape "$(board_field "$board" revision)")"
+		target="$(json_escape "$(board_field "$board" target)")"
+		description="$(json_escape "$(board_field "$board" description)")"
+		firmware_url="$(json_escape "$(board_field "$board" firmware_url)")"
+		files="$(list_json "$FIRMWARE_GLOB")"
+		backups="$(list_json "$BACKUP_GLOB")"
+		update="null"
+		checked_at=0
+		if [ -s "$UPDATE_DIR/result.json" ]; then
+			update="$(cat "$UPDATE_DIR/result.json")"
+		fi
+		if [ -f "$UPDATE_DIR/checked_at" ]; then
+			checked_at="$(cat "$UPDATE_DIR/checked_at" 2>/dev/null | tr -d ' ')"
+			case "$checked_at" in ''|*[!0-9]*) checked_at=0 ;; esac
+		fi
+		ok "{\"ok\":true,\"board\":{\"kernel\":\"$kernel\",\"hostname\":\"$hostname\",\"system\":\"$system\",\"model\":\"$model\",\"board_name\":\"$board_name\",\"rootfs_type\":\"$rootfs_type\"},\"release\":{\"distribution\":\"$distribution\",\"version\":\"$version\",\"revision\":\"$revision\",\"target\":\"$target\",\"description\":\"$description\",\"firmware_url\":\"$firmware_url\"},\"files\":[$files],\"backups\":[$backups],\"update\":$update,\"update_checked_at\":$checked_at}"
+		;;
+
+	upload)
+		[ -n "$upload_name" ] || fail "400 Bad Request" '{"error":"缺少固件文件名"}'
+		case "$upload_name" in
+			*[!A-Za-z0-9._-]*) fail "400 Bad Request" '{"error":"文件名只允许字母、数字、点、下划线和连字符"}' ;;
+		esac
+		[ "${#upload_name}" -le 64 ] || fail "400 Bad Request" '{"error":"文件名过长，最多 64 个字符"}'
+		case "$upload_name" in
+			*.bin|*.tar) ;;
+			*) fail "400 Bad Request" '{"error":"只支持 .bin 或 .tar 固件文件"}' ;;
+		esac
+		clen="${CONTENT_LENGTH:-0}"
+		case "$clen" in
+			''|*[!0-9]*) clen=0 ;;
+		esac
+		[ "$clen" -le "$MAX_UPLOAD" ] ||
+			fail "413 Payload Too Large" '{"error":"固件文件超过 40MB 上限"}'
+		part="/tmp/.openwrt-firmware.bin.part"
+		rm -f "$part"
+		head -c "$MAX_UPLOAD" > "$part" 2>/dev/null
+		size="$(wc -c < "$part" 2>/dev/null | tr -d ' ')"
+		[ -n "$size" ] || size=0
+		if [ "$size" -ge "$MAX_UPLOAD" ]; then
+			rm -f "$part"
+			fail "413 Payload Too Large" '{"error":"固件文件超过 40MB 上限"}'
+		fi
+		if [ "$size" -le 0 ]; then
+			rm -f "$part"
+			fail "400 Bad Request" '{"error":"上传内容为空"}'
+		fi
+		mv "$part" "$FIRMWARE_PATH" 2>/dev/null || {
+			rm -f "$part"
+			fail "500 Internal Server Error" '{"error":"固件文件保存失败"}'
+		}
+		ok "{\"ok\":true,\"path\":\"$FIRMWARE_PATH\",\"size\":$size,\"filename\":\"$upload_name\"}"
+		;;
+
+	upgrade)
+		[ -f "$FIRMWARE_PATH" ] || fail "400 Bad Request" '{"error":"请先上传固件文件"}'
+		size="$(wc -c < "$FIRMWARE_PATH" 2>/dev/null | tr -d ' ')"
+		[ -n "$size" ] || size=0
+		[ "$size" -gt 0 ] || fail "400 Bad Request" '{"error":"固件文件为空"}'
+		consume_token "firmware-upgrade" "$token" ||
+			fail "403 Forbidden" '{"error":"令牌无效或已过期"}'
+		# sysupgrade is a long running task that reboots the router: it is
+		# started in the background and the answer is sent right away.
+		( sleep 1; sysupgrade "$FIRMWARE_PATH" ) >/dev/null 2>&1 &
+		ok '{"ok":true,"started":true}'
+		;;
+
+	backup)
+		backup_target="$target_path"
+		[ -n "$backup_target" ] || backup_target="$BACKUP_PATH"
+		case "$backup_target" in
+			/tmp/*) ;;
+			*) fail "400 Bad Request" '{"error":"备份路径必须位于 /tmp"}' ;;
+		esac
+		case "${backup_target##*/}" in
+			''|*[!A-Za-z0-9._-]*) fail "400 Bad Request" '{"error":"备份文件名不合法"}' ;;
+		esac
+		sysupgrade -b "$backup_target" >/dev/null 2>&1 ||
+			fail "500 Internal Server Error" '{"error":"备份失败"}'
+		size="$(wc -c < "$backup_target" 2>/dev/null | tr -d ' ')"
+		[ -n "$size" ] || size=0
+		ok "{\"ok\":true,\"path\":\"$backup_target\",\"size\":$size}"
+		;;
+
+	restore)
+		[ -n "$target_path" ] || fail "400 Bad Request" '{"error":"缺少备份路径"}'
+		case "$target_path" in
+			/tmp/*) ;;
+			*) fail "400 Bad Request" '{"error":"备份路径必须位于 /tmp"}' ;;
+		esac
+		[ -f "$target_path" ] || fail "400 Bad Request" '{"error":"备份文件不存在"}'
+		consume_token "backup-restore" "$token" ||
+			fail "403 Forbidden" '{"error":"令牌无效或已过期"}'
+		( sleep 1; sysupgrade -r "$target_path" ) >/dev/null 2>&1 &
+		ok '{"ok":true,"started":true}'
+		;;
+
+	list-backups)
+		ok "{\"ok\":true,\"backups\":[$(list_json "$BACKUP_GLOB")]}"
+		;;
+
+	check-update)
+		cleanup_jobs
+		board_raw="$(ubus call system board 2>/dev/null | tr '\n' ' ')"
+		[ -n "$board_raw" ] || fail "500 Internal Server Error" '{"error":"无法读取设备信息"}'
+		cur_board="$(board_field "$board_raw" board_name)"
+		cur_target="$(board_field "$board_raw" target)"
+		cur_version="$(board_field "$board_raw" version)"
+		cur_model="$(board_field "$board_raw" model)"
+		[ -n "$cur_board" ] || fail "500 Internal Server Error" '{"error":"无法读取设备标识"}'
+		[ -n "$cur_target" ] || fail "500 Internal Server Error" '{"error":"无法读取目标平台"}'
+		job="$(new_job)"
+		[ -n "$job" ] || fail "500 Internal Server Error" '{"error":"无法创建任务"}'
+		job_dir="$JOB_ROOT/$job"
+		write_check_worker "$job_dir"
+		setsid "$job_dir/worker.sh" "$job_dir" "$PROXY" "$cur_board" "$cur_target" \
+			"$cur_version" "$cur_model" "$UPDATE_DIR" "$MAX_NOTES" > "$job_dir/log" 2>&1 </dev/null &
+		if wait_for_result "$job" "$WAIT_CHECK"; then
+			ok "$(cat "$job_dir/result")"
+		elif [ -s "$job_dir/result" ]; then
+			ok "$(cat "$job_dir/result")"
+		else
+			ok "{\"ok\":true,\"pending\":true,\"job_id\":\"$job\"}"
+		fi
+		;;
+
+	download)
+		[ -n "$download_url" ] || fail "400 Bad Request" '{"error":"缺少下载地址"}'
+		valid_download_url "$download_url" ||
+			fail "400 Bad Request" '{"error":"下载地址不在允许的官方源范围内"}'
+		if [ -n "$expected_sha" ]; then
+			case "$expected_sha" in
+				*[!0-9a-f]*) fail "400 Bad Request" '{"error":"校验值格式不合法"}' ;;
+			esac
+			[ "${#expected_sha}" -eq 64 ] ||
+				fail "400 Bad Request" '{"error":"校验值格式不合法"}'
+		fi
+		case "$expected_size" in
+			''|*[!0-9]*) expected_size=0 ;;
+		esac
+		[ "$expected_size" -gt 0 ] 2>/dev/null || expected_size=0
+		cleanup_jobs
+		job="$(new_job)"
+		[ -n "$job" ] || fail "500 Internal Server Error" '{"error":"无法创建任务"}'
+		job_dir="$JOB_ROOT/$job"
+		write_download_worker "$job_dir"
+		setsid "$job_dir/worker.sh" "$job_dir" "$PROXY" "$download_url" "$expected_sha" \
+			"$expected_size" "$T_DOWNLOAD" > "$job_dir/log" 2>&1 </dev/null &
+		if wait_for_result "$job" "$WAIT_DOWNLOAD"; then
+			ok "$(cat "$job_dir/result")"
+		elif [ -s "$job_dir/result" ]; then
+			ok "$(cat "$job_dir/result")"
+		else
+			ok "{\"ok\":true,\"pending\":true,\"job_id\":\"$job\"}"
+		fi
+		;;
+
+	download-status|check-status|job-status)
+		[ -n "$job_id" ] || fail "400 Bad Request" '{"error":"缺少任务编号"}'
+		case "$job_id" in
+			*[!A-Za-z0-9-]*) fail "400 Bad Request" '{"error":"任务编号无效"}' ;;
+		esac
+		job_dir="$JOB_ROOT/$job_id"
+		[ -d "$job_dir" ] || fail "404 Not Found" '{"error":"任务不存在或已过期"}'
+		job_state="$(cat "$job_dir/status" 2>/dev/null)"
+		[ -n "$job_state" ] || job_state="running"
+		job_bytes=0
+		job_total=0
+		job_progress="$(cat "$job_dir/progress" 2>/dev/null)"
+		job_bytes="$(printf '%s' "$job_progress" | cut -d' ' -f1)"
+		job_total="$(printf '%s' "$job_progress" | cut -d' ' -f2)"
+		case "$job_bytes" in ''|*[!0-9]*) job_bytes=0 ;; esac
+		case "$job_total" in ''|*[!0-9]*) job_total=0 ;; esac
+		job_result="null"
+		[ -s "$job_dir/result" ] && job_result="$(cat "$job_dir/result")"
+		ok "{\"ok\":true,\"job_id\":\"$job_id\",\"status\":\"$job_state\",\"bytes\":$job_bytes,\"total\":$job_total,\"result\":$job_result}"
+		;;
+
+	*)
+		fail "400 Bad Request" '{"error":"不支持的操作"}'
+		;;
+esac

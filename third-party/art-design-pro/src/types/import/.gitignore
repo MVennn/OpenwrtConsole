@@ -1,0 +1,13 @@
+# 非上游文件 —— 本仓自带的唯一一处例外规则（上游的 .gitignore 逐字保留未改）。
+#
+# 上游 third-party/art-design-pro/.gitignore 把 src/types/import/auto-imports.d.ts
+# 当成「自动生成物」排除掉，但上游仓库里其实**追踪着**这个文件
+# （git ls-files 能查到）。原样 vendor 这份快照时若照抄上游规则，
+# 这一个文件会被 gitignore 挡在仓外 —— 也就是 vendor 的内容不完整。
+#
+# git 的忽略规则里，**越深的 .gitignore 优先级越高**，所以这里放一个同名的
+# .gitignore、只写一条「取消排除」，即可让该文件重新可入库；
+# 上游 .gitignore 的其余规则（node_modules / dist / *.local …）全部照旧生效。
+#
+# 详见 ../../../UPSTREAM.md。
+!auto-imports.d.ts

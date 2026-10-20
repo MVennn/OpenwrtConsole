@@ -1,0 +1,245 @@
+#!/bin/sh
+# POST /cgi-bin/modern-uci?sid=<session>
+# Body: { "action": "<action>", "params": { ... } }
+#
+# The rpcd session that the console uses may read and write the standard UCI
+# configs (uci.get/set/add/delete/commit/apply) but it is denied the
+# privileged operations: discarding staged changes, reloading services and the
+# system actions. This CGI runs as root and exposes exactly those, each one
+# behind an explicit action name and a strict parameter validation.
+#
+# Destructive actions (factory reset, restore, password) additionally require a
+# single use token that the same CGI issues on request.
+
+TOKEN_DIR="/tmp/modern-tokens"
+TOKEN_TTL=120
+
+deny() {
+	printf 'Status: 401 Unauthorized\r\n'
+	printf 'Content-Type: application/json; charset=utf-8\r\n'
+	printf 'Cache-Control: no-store\r\n\r\n'
+	printf '{"error":"unauthorized"}'
+	exit 0
+}
+
+fail() {
+	printf 'Status: %s\r\n' "$1"
+	printf 'Content-Type: application/json; charset=utf-8\r\n'
+	printf 'Cache-Control: no-store\r\n\r\n'
+	printf '%s' "$2"
+	exit 0
+}
+
+ok() {
+	printf 'Status: 200 OK\r\n'
+	printf 'Content-Type: application/json; charset=utf-8\r\n'
+	printf 'Cache-Control: no-store\r\n\r\n'
+	printf '%s' "$1"
+	exit 0
+}
+
+# ---------------------------------------------------------------- session ---
+qs="${QUERY_STRING:-}"
+sid=""
+oldIFS=$IFS
+IFS='&'
+for pair in $qs; do
+	key="${pair%%=*}"
+	val="${pair#*=}"
+	case "$key" in
+		sid) sid="$val" ;;
+	esac
+done
+IFS=$oldIFS
+
+if [ -z "$sid" ]; then
+	sid="$(printf '%s' "${HTTP_COOKIE:-}" | tr ';' '\n' | sed -n 's/^ *owrt_sid=//p' | head -n 1)"
+fi
+[ -n "$sid" ] || deny
+
+case "$sid" in
+	*[!A-Za-z0-9._~+/=-]*) deny ;;
+esac
+
+ubus call session get "{\"ubus_rpc_session\":\"$sid\"}" 2>/dev/null | grep -q '"username"' || deny
+
+# ------------------------------------------------------------------- body ---
+[ "${REQUEST_METHOD:-GET}" = "POST" ] ||
+	fail "405 Method Not Allowed" '{"error":"只接受 POST 请求"}'
+
+body="$(head -c 8192)"
+[ -n "$body" ] || fail "400 Bad Request" '{"error":"请求体为空"}'
+
+json_string() {
+	printf '%s' "$body" |
+		grep -o "\"$1\"[[:space:]]*:[[:space:]]*\"[^\"]*\"" |
+		head -n 1 |
+		sed 's/^"[^"]*"[[:space:]]*:[[:space:]]*"\(.*\)"$/\1/'
+}
+
+action="$(json_string action)"
+config="$(json_string config)"
+service="$(json_string service)"
+svc_action="$(json_string svc_action)"
+purpose="$(json_string purpose)"
+token="$(json_string token)"
+username="$(json_string username)"
+password="$(json_string password)"
+time_value="$(json_string time)"
+backup_path="$(json_string path)"
+
+# Only the standard OpenWrt config files may be touched.
+valid_config() {
+	case "$1" in
+		dhcp|firewall|network|system|wireless|dropbear|luci|opkg|ntp|timeserver) return 0 ;;
+		*) return 1 ;;
+	esac
+}
+
+# Service names are limited to the init script directory.
+valid_service() {
+	case "$1" in
+		''|*[!a-zA-Z0-9_-]*) return 1 ;;
+	esac
+	[ -f "/etc/init.d/$1" ] || return 1
+	return 0
+}
+
+# ----------------------------------------------------------------- tokens ---
+issue_token() {
+	_purpose="$1"
+	[ -n "$_purpose" ] || fail "400 Bad Request" '{"error":"缺少用途"}'
+	mkdir -p "$TOKEN_DIR" 2>/dev/null
+	_tok="$(head -c 32 /dev/urandom 2>/dev/null | md5sum | cut -c1-32)"
+	[ -n "$_tok" ] || _tok="t$(date +%s)$$"
+	printf '%s %s' "$_purpose" "$(( $(date +%s) + TOKEN_TTL ))" > "$TOKEN_DIR/$_tok" 2>/dev/null ||
+		fail "500 Internal Server Error" '{"error":"无法签发令牌"}'
+	ok "{\"token\":\"$_tok\",\"expires_in\":$TOKEN_TTL}"
+}
+
+consume_token() {
+	_want="$1"
+	_got="$2"
+	[ -n "$got" ] || return 1
+	_file="$TOKEN_DIR/$got"
+	[ -f "$_file" ] || return 1
+	read -r _purpose _expires < "$_file"
+	rm -f "$_file"
+	[ "$_purpose" = "$_want" ] || return 1
+	[ -n "$_expires" ] || return 1
+	[ "$_expires" -ge "$(date +%s)" ] || return 1
+	return 0
+}
+
+# ---------------------------------------------------------------- actions ---
+case "$action" in
+	token)
+		issue_token "$purpose"
+		;;
+
+	uci-revert)
+		valid_config "$config" || fail "400 Bad Request" '{"error":"不支持的配置"}'
+		uci revert "$config" >/dev/null 2>&1
+		ok '{"ok":true}'
+		;;
+
+	uci-commit)
+		valid_config "$config" || fail "400 Bad Request" '{"error":"不支持的配置"}'
+		uci commit "$config" >/dev/null 2>&1
+		ok '{"ok":true}'
+		;;
+
+	uci-apply)
+		uci apply >/dev/null 2>&1
+		ok '{"ok":true}'
+		;;
+
+	uci-changes)
+		valid_config "$config" || fail "400 Bad Request" '{"error":"不支持的配置"}'
+		_changes="$(uci changes "$config" 2>/dev/null | head -c 20000)"
+		ok "$_changes"
+		;;
+
+	svc-list)
+		_services="$(ubus call luci getInitList '{}' 2>/dev/null | head -c 60000)"
+		ok "$_services"
+		;;
+
+	svc-action)
+		valid_service "$service" || fail "400 Bad Request" '{"error":"服务不存在"}'
+		case "$svc_action" in
+			start|stop|restart|reload|enable|disable) ;;
+			*) fail "400 Bad Request" '{"error":"不支持的动作"}' ;;
+		esac
+		/etc/init.d/"$service" "$svc_action" >/dev/null 2>&1
+		ok '{"ok":true}'
+		;;
+
+	net-reload)
+		/etc/init.d/network reload >/dev/null 2>&1
+		ok '{"ok":true}'
+		;;
+
+	wifi-reload)
+		[ -x /etc/init.d/wifi ] && /etc/init.d/wifi reload >/dev/null 2>&1
+		ok '{"ok":true}'
+		;;
+
+	firewall-reload)
+		/etc/init.d/firewall reload >/dev/null 2>&1
+		ok '{"ok":true}'
+		;;
+
+	set-localtime)
+		[ -n "$time_value" ] || fail "400 Bad Request" '{"error":"缺少时间"}'
+		date -s "@$time_value" >/dev/null 2>&1
+		ok '{"ok":true}'
+		;;
+
+	set-password)
+		consume_token "set-password" "$token" || fail "403 Forbidden" '{"error":"令牌无效或已过期"}'
+		[ -n "$username" ] && [ -n "$password" ] || fail "400 Bad Request" '{"error":"缺少用户名或密码"}'
+		[ ${#username} -le 32 ] && [ ${#password} -le 128 ] || fail "400 Bad Request" '{"error":"参数过长"}'
+		printf '%s:%s\n' "$username" "$password" | chpasswd >/dev/null 2>&1 ||
+			fail "500 Internal Server Error" '{"error":"修改失败"}'
+		ok '{"ok":true}'
+		;;
+
+	reboot)
+		consume_token "reboot" "$token" || fail "403 Forbidden" '{"error":"令牌无效或已过期"}'
+		( sleep 1; reboot ) >/dev/null 2>&1 &
+		ok '{"ok":true}'
+		;;
+
+	factory-reset)
+		consume_token "factory-reset" "$token" || fail "403 Forbidden" '{"error":"令牌无效或已过期"}'
+		( sleep 1; firstboot -y && reboot ) >/dev/null 2>&1 &
+		ok '{"ok":true}'
+		;;
+
+	backup-create)
+		backup_path="${backup_path:-/tmp/openwrt-backup.tar.gz}"
+		case "$backup_path" in
+			/tmp/*) ;;
+			*) fail "400 Bad Request" '{"error":"备份路径必须位于 /tmp"}' ;;
+		esac
+		sysupgrade -b "$backup_path" >/dev/null 2>&1 ||
+			fail "500 Internal Server Error" '{"error":"备份失败"}'
+		ok "{\"ok\":true,\"path\":\"$backup_path\"}"
+		;;
+
+	backup-restore)
+		consume_token "backup-restore" "$token" || fail "403 Forbidden" '{"error":"令牌无效或已过期"}'
+		case "$backup_path" in
+			/tmp/*) ;;
+			*) fail "400 Bad Request" '{"error":"备份路径必须位于 /tmp"}' ;;
+		esac
+		[ -f "$backup_path" ] || fail "400 Bad Request" '{"error":"备份文件不存在"}'
+		( sleep 1; sysupgrade -r "$backup_path" ) >/dev/null 2>&1 &
+		ok '{"ok":true}'
+		;;
+
+	*)
+		fail "400 Bad Request" '{"error":"不支持的操作"}'
+		;;
+esac

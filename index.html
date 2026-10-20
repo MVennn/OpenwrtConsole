@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <meta name="theme-color" content="#fafbfc" />
+    <link rel="icon" type="image/svg+xml" href="./favicon.svg" />
+    <title>OpenWrt Console</title>
+    <script>
+      // Apply the saved theme before the first paint to avoid a flash.
+      try {
+        var saved = localStorage.getItem('owrt-theme')
+        var dark = saved ? saved === 'dark' : window.matchMedia('(prefers-color-scheme: dark)').matches
+        if (dark) document.documentElement.classList.add('dark')
+      } catch (e) {}
+
+      // Boot guard: if the hashed entry chunk is gone (a redeploy removed it
+      // while this tab held a cached index.html), reload with a cache busting
+      // query so the fresh index is fetched.
+      window.setTimeout(function () {
+        if (window.__OWRT_BOOTED__) return
+        var url = new URL(window.location.href)
+        if (url.searchParams.has('_reload')) return
+        url.searchParams.set('_reload', Date.now().toString())
+        window.location.replace(url.toString())
+      }, 3000)
+    </script>
+  </head>
+  <body>
+    <div id="app"></div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

@@ -1,0 +1,189 @@
+# 架构说明
+
+> **一句话**：控制台是**浏览器里的 SPA**，数据全部来自路由器上两个后端 ——
+> rpcd / ubus（标准配置读写）与 9 个 root CGI（特权读写），本篇把这条链路拆成三层、
+> 十个数据通道讲清楚。
+
+本文只讲**结构与边界**。CGI 的请求 / 响应 JSON 形状在 [CGI-CONTRACT.md](CGI-CONTRACT.md)，
+写入层的授权白名单与范式在 [WRITE-LAYER.md](WRITE-LAYER.md)。
+
+---
+
+## 1. 三层数据流
+
+```
+┌──────────────────────────────────────────────────────────────────────────┐
+│ 第 1 层  浏览器 SPA（src/）                                            │
+│                                                                          │
+│  views/ ──► api/ ──► composables/ · stores/ · utils/                     │
+│    │         │                                                           │
+│    │         ├─ fetch('/ubus')          ← JSON-RPC over uhttpd          │
+│    │         └─ fetch('/cgi-bin/…')    ← CGI，sid 走查询参数            │
+│    │                                                                     │
+│    └─ 路由守卫 src/router/index.ts（无 sid → /login）                    │
+└──────────────────────────────┬───────────────────────────────────────────┘
+                               │  HTTPS（LAN 内，自签证书）
+                               │  传输：sid 走 ?sid=，uhttpd 不转发自定义头
+┌──────────────────────────────▼───────────────────────────────────────────┐
+│ 第 2 层  路由器 web 层（uhttpd）                                        │
+│                                                                          │
+│  /ubus ──────────────► rpcd（会话 ACL 生效）                            │
+│  /cgi-bin/modern-* ──► 9 个 CGI 脚本（root 身份）                       │
+└──────────────────────────────┬───────────────────────────────────────────┘
+                               │
+┌──────────────────────────────▼───────────────────────────────────────────┐
+│ 第 3 层  路由器内部                                                     │
+│                                                                          │
+│  rpcd ──► ubus 对象（system / network.interface / luci / luci-rpc /     │
+│           service / uci）                                               │
+│  rpcd ──► UCI 配置库（/etc/config/*，按配置文件名授权）                 │
+│  CGI ──► 本地 shell 与文件：                                              │
+│          logread · iwinfo assoclist · ip route · netstat ·               │
+│          /tmp/dhcp.leases · /tmp/hosts/dhcp.* · /etc/resolv.conf.auto · │
+│          apk · sysupgrade · uci · /etc/init.d/* · ShellCrash 配置        │
+│  CGI ──► 127.0.0.1:9999（mihomo 控制口，secret 不出路由器）             │
+└──────────────────────────────────────────────────────────────────────────┘
+```
+
+**读与写的分工（记住这一条就够用）：**
+
+| 想做的事 | 走哪条路 | 为什么 |
+| --- | --- | --- |
+| 读系统状态 | `/ubus` | rpcd 会话有 ACL，直接读最快 |
+| 读 DHCP 租约 / hosts / resolv | CGI `modern-read` | 这些是 `/tmp` 下的运行时文件，rpcd 不暴露 |
+| 读无线终端信号 | CGI `modern-data` | `iwinfo assoclist` 只有 root 能读 |
+| 改标准配置 | `/ubus` → `uci.set/add/delete/commit` | rpcd 会话对白名单配置文件有写权 |
+| 应用配置 | CGI `modern-uci` 的 `net-reload` / `wifi-reload` / `firewall-reload` | 重载服务是特权动作，rpcd 被拒 |
+| 丢弃暂存 / 改密码 / 重启 / 恢复出厂 | CGI `modern-uci` | rpcd 会话被明确拒绝 |
+| 装软件 / 刷固件 / 代理切换 / ShellCrash 设置 | 对应 CGI | 全部超出 rpcd 会话权限 |
+
+## 2. 数据通道表
+
+**10 个通道 = 1 个 `/ubus` + 9 个 CGI。** 早前的分析报告记的是「7 个」，
+那是 `modern-pkg` / `modern-sysupgrade` / `modern-shellcrash` 三个 CGI 加进来**之前**的口径；
+按当前实现是 10 个。
+
+下表把 `/ubus` 按 ubus 对象拆成三行（第 1–3 行）—— 它们共用同一个传输与同一套会话 ACL，
+但**可调用的方法集合不同**，分三行写更贴近实际用法。`modern-login` 不在表里：
+它是唯一**不需要 sid** 的 CGI，单列在下面的「特殊路径」里。
+
+| # | 通道 | 走什么 | 返回什么 | 能读什么 | 能写什么 | 授权边界 |
+| --- | --- | --- | --- | --- | --- | --- |
+| 1 | `/ubus`（`system` / `network.interface` / `service` / `uci`） | JSON-RPC `POST /ubus`，`params[0] = sid` | ubus 对象方法的返回值 | 板卡 / 系统信息、接口表、服务列表、UCI 配置 | 白名单 UCI 配置的 `set/add/delete/commit/changes/apply` | 会话 ACL；UCI **按配置文件名**授权，只有 `dhcp`/`firewall`/`network`/`system`/`wireless`/`dropbear`/`luci`/`opkg`/`ntp`/`timeserver` 可写；`uci.revert` **不可用** |
+| 2 | `/ubus`（`luci-rpc`） | 同上 | JSON 对象 | `getNetworkDevices`、`getWirelessDevices`、`getDHCPLeases`、`getHostHints` | 无（只读对象） | 会话 ACL |
+| 3 | `/ubus`（`luci`） | 同上 | JSON 对象 | `getProcessList`、`getMountPoints`、`getBlockDevices`、`getConntrackList`、`getLEDs`、`getTimezones` | 无（只读对象） | 会话 ACL |
+| 4 | CGI `modern-data` | `GET ?what=stations\|logs` | `{stations:{iface:[…]}}` / `{lines:[…]}` | 无线关联终端（信号、速率）、系统日志 | 无 | sid 校验（`ubus session get`） |
+| 5 | CGI `modern-read` | `GET ?what=leases\|hosts\|resolv` | `{leases:[…]}` / `{hosts:[…]}` / `{nameservers:[…],search:[…]}` | dnsmasq 运行时状态 | 无 | sid 校验；路径是**字面常量**，请求不能自带路径 |
+| 6 | CGI `modern-exec` | `POST {tool,target}` | `{tool,target,command,output,exit_code,duration_ms,truncated}` | ping / nslookup / traceroute / 路由表 / 监听端口 | 无（只执行白名单命令） | sid 校验；工具名白名单 5 个；目标字符集 `[A-Za-z0-9._:-]`；单次 12 秒；输出 >200 KB 截断 |
+| 7 | CGI `modern-proxy` | `GET ?path=…` / `POST {group,node}` | mihomo 的原始 JSON | `/version` `/configs` `/proxies` `/connections`、单组详情、延迟探测 | **切换策略组节点**（PUT `/proxies/<组>`） | sid 校验；名字白名单（可打印字符，去掉 `"` `\` `/` `..`）；真正的授权是**向 mihomo 回读组成员表**；延迟探测 URL 只允许三个固定地址 |
+| 8 | CGI `modern-uci` | `POST {action,…}` | `{ok:true}` / `{token,expires_in}` / `uci changes` 原文 / 服务列表原文 | 暂存改动、服务列表 | 丢弃暂存、提交、应用、重载 network/wifi/firewall、改时区、**改密码**、**重启**、**恢复出厂**、备份 / 恢复 | sid 校验；配置文件名与服务名双重白名单；**危险动作需一次性令牌（120 秒、单次使用）** |
+| 9 | CGI `modern-pkg` | `POST {action,…}` | 包列表 / 计数 / `{job_id,status,output}` | 已装列表、仓库列表、检索、统计 | **安装 / 卸载 / 更新索引 / 全量升级** | sid 校验；包名字符集 `[A-Za-z0-9._+-]` 且不以 `-` 开头；写动作必须 `confirm=yes`；写动作是**后台任务**，用 `status` 轮询 |
+| 10 | CGI `modern-sysupgrade` | `POST ?action=…` | 板卡 / 版本 / 文件列表 / 任务状态 | 固件信息、`/tmp` 下的固件与备份清单、更新检查 | **上传固件**、**刷写固件**、备份、**恢复备份**、下载官方固件 | sid 校验；固件名只允许 `.bin` / `.tar` 且 ≤64 字符；上传 ≤40 MB；**刷写与恢复需令牌**（用途 `firmware-upgrade` / `backup-restore`） |
+| 11 | CGI `modern-shellcrash` | `POST {action,params}` | 服务状态 / 配置键值 / 覆写文件清单 / 订阅概览 / 日志 | ShellCrash 服务与核心状态、白名单配置键、覆写文件启用状态、订阅概览（不含 token）、日志、CrashCore 自愈状态 | **服务启停与开机自启**、**写白名单配置键**、**启停覆写文件** | sid 校验；**所有路径是字面常量**；`secret` 与订阅 URL **永不下发到浏览器**；写动作需 `confirm=yes` |
+
+> 表里列了 11 行：`/ubus` 拆成 3 行（`system`/`uci`、`luci-rpc`、`luci`），
+> 加上 8 个 CGI（`modern-login` 除外）。按「传输 + 权限模型」算，通道仍是 **10 个**。
+
+### 通道之外的两条特殊路径
+
+| 路径 | 干什么 | 注意 |
+| --- | --- | --- |
+| `POST /cgi-bin/modern-login` | 用 root 密码换 ubus 会话 | 唯一**不需要 sid** 的 CGI；`timeout: 3600`；密码只出现一次，不写前端存储 |
+| `GET /cgi-bin/modern-login` 之外的 `/cgi-bin/luci/**` | LuCI 应急入口 | 控制台**不写** LuCI，只保留它可访问 |
+
+## 3. 路由器端 9 个 CGI 清单
+
+| 文件 | 运行时 | 职责 | 写操作 |
+| --- | --- | --- | --- |
+| `deploy/modern-login` | ucode | 用 root 密码换取 ubus 会话（`sid` + `expires`） | 创建会话 |
+| `deploy/modern-data` | ucode | 无线关联终端（`iwinfo assoclist`）与系统日志（`logread`） | 无 |
+| `deploy/modern-read` | ucode | dnsmasq 租约、自定义 hosts、解析器配置 | 无 |
+| `deploy/modern-exec` | sh | ping / nslookup / traceroute / 路由表 / 监听端口 | 只执行白名单命令 |
+| `deploy/modern-proxy` | sh | 转发 mihomo API、测速、切换策略组节点 | 切换节点（PUT `/proxies`） |
+| `deploy/modern-uci` | sh | 丢弃暂存改动、提交、应用、重载服务、改密码、重启、恢复出厂、备份 / 恢复 | 需令牌的动作会改系统 |
+| `deploy/modern-pkg` | sh | apk 软件包列表 / 安装 / 卸载 / 索引更新 / 全量升级 | 安装与卸载 |
+| `deploy/modern-sysupgrade` | sh | 固件信息、上传固件、刷写、备份与恢复、官方更新检查与下载 | 刷写与恢复（需令牌） |
+| `deploy/modern-shellcrash` | sh | ShellCrash 服务控制、白名单配置键、覆写文件、订阅概览、日志、自愈状态 | 服务启停与配置改写 |
+
+**两个部署脚本不是 CGI**：`deploy/deploy.sh`（本地编排）与 `deploy/install-remote.sh`
+（在路由器上解包与世代保留）。
+
+### 所有 CGI 的共同约定
+
+1. **会话校验**：sid 可来自 `?sid=` 或 `owrt_sid` Cookie；两者都要过
+   `ubus call session get`（或等价校验），校验不过一律 `401 {"error":"unauthorized"}`。
+2. **sid 字符集**：`[A-Za-z0-9._~+/=-]`，其它字符直接 401 —— sid 会被拼进 ubus 的 JSON 参数，
+   不能让它逃出字符串。
+3. **响应头**：`Content-Type: application/json; charset=utf-8` + `Cache-Control: no-store`
+   + `X-Content-Type-Options: nosniff`。
+4. **错误码**：`401` 会话无效 / `400` 参数或动作不合法 / `403` 缺令牌或缺确认 /
+   `404` 对象不存在 / `405` 方法不对 / `413` 请求体过大 / `500` 内部失败 / `503` 依赖未就绪。
+5. **路径与参数不来自请求**：所有文件路径都是脚本里的字面常量；用户输入只作为
+   **一个已校验的引号参数**传给命令（`modern-exec`）或作为 **JSON 字符串字段**（其余）。
+6. **必须 LF 换行**：CRLF 会让 shebang 报 `No such file or directory`。
+7. **原子替换**：CGI 用「同目录临时文件 + rename」更新，直接覆盖会与正在处理的请求竞态。
+
+## 4. 目录结构与分层规则
+
+```
+OpenwrtConsole/
+├─ src/
+│  ├─ api/            每个功能域一个模块；只做「取数 / 发请求 / 解析成类型」
+│  ├─ views/          页面组件；只做「展示与交互」，不直接 fetch
+│  ├─ components/     跨页面复用的展示组件（按域分子目录，带前缀）
+│  ├─ composables/    与视图解耦的响应式逻辑（轮询、主题、刷新、构建自愈）
+│  ├─ layouts/        AppLayout（侧栏 + 顶栏 + 滚动内容）
+│  ├─ plugins/        Element Plus 的显式注册与样式清单
+│  ├─ router/         路由表与路由守卫
+│  ├─ stores/         全局状态（会话）
+│  ├─ styles/         设计令牌 / Element Plus 覆盖 / 布局
+│  ├─ utils/          纯函数工具（格式化、客户端合并、代理组解析）
+│  └─ styles/         tokens.css 是「视觉唯一真源」
+├─ deploy/            路由器端：9 个 CGI + 2 个部署脚本（不是 Node 代码）
+├─ docs/              本目录
+├─ public/            静态资源（favicon）
+├─ index.html         含首屏主题脚本与启动守卫
+├─ vite.config.ts     base '/modern/'、Element Plus 按需引入、开发代理
+├─ package.json       依赖与脚本
+└─ tsconfig.json      `@` → src 的别名来源
+```
+
+### 分层规则（越层即视为缺陷）
+
+| 层 | 可以依赖 | **不可以**做 |
+| --- | --- | --- |
+| `views/` | `components/` `composables/` `api/` `stores/` | 直接 `fetch`；直接读 `localStorage` 里的会话 |
+| `components/` | `composables/` `utils/` `api/`（只读型） | 依赖某个具体 view；改全局状态 |
+| `api/` | `api/ubus.ts` `api/uci.ts` `api/systemOps.ts` | 依赖 `views/`；自己拼 URL 字符串（统一从常量来） |
+| `composables/` | `utils/` `api/` | 依赖 `views/` |
+| `utils/` | 无（纯函数） | 依赖 `api/` `views/` |
+| `stores/` | `api/ubus.ts` | 依赖 `views/` |
+| `deploy/modern-*` | 无（路由器上的独立程序） | 依赖 `src/`；**接受请求传来的文件路径** |
+
+### 两条命名硬规则
+
+1. **视图文件统一 `XxxView.vue`**，并在文件里导出 `defineOptions({ name: 'XxxView' })`。
+   > 实测 20 个视图里 **10 个有、10 个没有**。规则写在一次性的开发契约里、没进长期规范，
+   > 所以无人遵守。缺口清单见根 [../CHANGELOG.md](../CHANGELOG.md) 的「修复」段（该段收录的是**待修**缺陷）。
+2. **新增 Element Plus 组件时，必须把它的样式加进 `src/plugins/element.ts`**。
+   > 原因：该文件里的样式被**提到入口 chunk** 里加载；只写模板而不加样式，
+   > 组件样式会落进懒加载的 view chunk，晚于 `src/styles/element.css` 加载而失效
+   > （表现为「组件没有样式」）。命令式服务（`ElMessage` / `ElMessageBox`）
+   > 更是解析器看不见的，只能靠这个文件引入。
+
+## 5. 前端调用的三个统一入口
+
+| 入口 | 文件 | 用途 |
+| --- | --- | --- |
+| `ubusCall(object, method, params)` | `src/api/ubus.ts` | 调 `/ubus`；自动带 sid；`-32002` 视为会话过期并广播 `owrt:session-expired` 事件 |
+| `cgiGet(path)` | `src/api/ubus.ts` | GET 形式的 CGI；自动把 sid 拼进查询串；`401` 视为会话过期 |
+| `runSystemOp(action, params)` | `src/api/systemOps.ts` | POST 形式的 `modern-uci`；带 sid；把错误码翻成中文 |
+
+其它 CGI（`modern-pkg` / `modern-sysupgrade` / `modern-shellcrash` / `modern-proxy` /
+`modern-exec`）各有一个自己的薄封装模块（`packages.ts` / `firmware.ts` /
+`shellcrashConfig.ts` / `proxyActions.ts` / `diagnostics.ts`），**不共用** `runSystemOp` ——
+它们的请求体形状与错误语义各不相同。
+
+**会话过期的统一处理**：所有入口在判定会话失效时
+`window.dispatchEvent(new Event('owrt:session-expired'))`，
+由 `src/router/index.ts` 统一接住并跳回 `/login`。

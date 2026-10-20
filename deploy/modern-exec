@@ -1,0 +1,226 @@
+#!/bin/sh
+# POST /cgi-bin/modern-exec?sid=<session>
+# Body: { "tool": "ping" | "dns" | "trace" | "routes" | "ports", "target": "example.com" }
+#
+# Runs one of five fixed, read-only diagnostics. The tool name only selects a
+# command from the allowlist below, so a caller can never name a program or
+# pass a flag. The target is the single user supplied value: it is validated
+# against a strict character set and then handed to the command as one quoted
+# argument, so the shell never re-parses it.
+#
+# Response body:
+#   { "tool", "target", "command", "output", "exit_code", "duration_ms", "truncated" }
+
+MAX_BODY=4096
+MAX_OUTPUT=204800
+RUN_TIMEOUT=12
+
+deny() {
+	printf 'Status: 401 Unauthorized\r\n'
+	printf 'Content-Type: application/json; charset=utf-8\r\n'
+	printf 'Cache-Control: no-store\r\n'
+	printf 'X-Content-Type-Options: nosniff\r\n\r\n'
+	printf '{"error":"unauthorized"}'
+	exit 0
+}
+
+fail() {
+	printf 'Status: %s\r\n' "$1"
+	printf 'Content-Type: application/json; charset=utf-8\r\n'
+	printf 'Cache-Control: no-store\r\n'
+	printf 'X-Content-Type-Options: nosniff\r\n\r\n'
+	printf '%s' "$2"
+	exit 0
+}
+
+# ---------------------------------------------------------------- session ---
+# The sid may arrive in the owrt_sid cookie or as ?sid=; both are validated
+# against rpcd before anything is executed.
+
+qs="${QUERY_STRING:-}"
+sid=""
+oldIFS=$IFS
+IFS='&'
+for pair in $qs; do
+	key="${pair%%=*}"
+	val="${pair#*=}"
+	case "$key" in
+		sid) sid="$val" ;;
+	esac
+done
+IFS=$oldIFS
+
+if [ -z "$sid" ]; then
+	sid="$(printf '%s' "${HTTP_COOKIE:-}" | tr ';' '\n' | sed -n 's/^ *owrt_sid=//p' | head -n 1)"
+fi
+[ -n "$sid" ] || deny
+
+# Only characters that are inert inside the ubus JSON payload are accepted,
+# so a session id can never break out of the string it is placed in.
+case "$sid" in
+	*[!A-Za-z0-9._~+/=-]*) deny ;;
+esac
+
+ubus call session get "{\"ubus_rpc_session\":\"$sid\"}" 2>/dev/null | grep -q '"username"' || deny
+
+# ------------------------------------------------------------------ body ---
+[ "${REQUEST_METHOD:-GET}" = "POST" ] ||
+	fail "405 Method Not Allowed" '{"error":"只接受 POST 请求"}'
+
+body="$(head -c $((MAX_BODY + 1)) 2>/dev/null)"
+[ -n "$body" ] || fail "400 Bad Request" '{"error":"请求体为空"}'
+[ "${#body}" -le "$MAX_BODY" ] || fail "413 Payload Too Large" '{"error":"请求体过大"}'
+
+# One flat line keeps the key/value extraction below predictable.
+body="$(printf '%s' "$body" | tr '\012\015\011' '   ')"
+
+json_string() {
+	# $1 = key name. Prints the value of the first "key":"value" pair found.
+	# The value can never contain a quote, so it stays a single token.
+	printf '%s' "$body" |
+		grep -o "\"$1\"[[:space:]]*:[[:space:]]*\"[^\"]*\"" |
+		head -n 1 |
+		sed 's/^"[^"]*"[[:space:]]*:[[:space:]]*"\(.*\)"$/\1/'
+}
+
+tool="$(json_string tool)"
+target="$(json_string target)"
+
+case "$tool" in
+	ping|dns|trace|routes|ports) ;;
+	*) fail "400 Bad Request" '{"error":"不支持的诊断工具"}' ;;
+esac
+
+case "$tool" in
+	routes|ports) target="" ;;
+esac
+
+if [ "$tool" != "routes" ] && [ "$tool" != "ports" ]; then
+	[ -n "$target" ] || fail "400 Bad Request" '{"error":"请填写诊断目标"}'
+	# ^[A-Za-z0-9._:-]{1,253}$ - no whitespace, quotes or shell metacharacters.
+	case "$target" in
+		*[!A-Za-z0-9._:-]*) fail "400 Bad Request" '{"error":"目标地址包含非法字符"}' ;;
+	esac
+	[ "${#target}" -le 253 ] || fail "400 Bad Request" '{"error":"目标地址过长"}'
+	# A leading dash would be read as an option by the diagnostics.
+	case "$target" in
+		-*) fail "400 Bad Request" '{"error":"目标地址不能以 - 开头"}' ;;
+	esac
+fi
+
+# -------------------------------------------------------------- execution ---
+out_file="/tmp/modern-exec.$$"
+: > "$out_file" 2>/dev/null || fail "500 Internal Server Error" '{"error":"无法写入临时文件"}'
+trap 'rm -f "$out_file" "$out_file.cut"' EXIT INT TERM
+
+start_ts="$(date +%s 2>/dev/null)"
+case "$start_ts" in
+	''|*[!0-9]*) start_ts="" ;;
+esac
+
+# This router has no coreutils timeout, so the command runs in the background
+# and a watchdog kills it when it overruns RUN_TIMEOUT seconds.
+run_tool() {
+	"$@" > "$out_file" 2>&1 &
+	_rt_pid=$!
+	( sleep "$RUN_TIMEOUT"; kill -9 "$_rt_pid" 2>/dev/null ) &
+	_rt_guard=$!
+	wait "$_rt_pid" 2>/dev/null
+	_rt_status=$?
+	kill "$_rt_guard" 2>/dev/null
+	wait "$_rt_guard" 2>/dev/null
+	return $_rt_status
+}
+
+case "$tool" in
+	ping)
+		command="ping -c 3 -W 3 $target"
+		run_tool ping -c 3 -W 3 "$target"
+		;;
+	dns)
+		command="nslookup $target"
+		run_tool nslookup "$target"
+		;;
+	trace)
+		command="traceroute -n -w 1 -q 3 $target"
+		run_tool traceroute -n -w 1 -q 3 "$target"
+		;;
+	routes)
+		command="ip route show"
+		run_tool ip route show
+		;;
+	ports)
+		command="netstat -lntup"
+		run_tool netstat -lntup
+		;;
+esac
+status=$?
+
+end_ts="$(date +%s 2>/dev/null)"
+case "$end_ts" in
+	''|*[!0-9]*) end_ts="" ;;
+esac
+
+duration_ms=0
+if [ -n "$start_ts" ] && [ -n "$end_ts" ]; then
+	duration_ms=$(( (end_ts - start_ts) * 1000 ))
+	[ "$duration_ms" -ge 0 ] || duration_ms=0
+	[ "$duration_ms" -le 600000 ] || duration_ms=0
+fi
+
+# ------------------------------------------------------------- truncation ---
+truncated=false
+size="$(wc -c < "$out_file" 2>/dev/null)"
+case "$size" in
+	''|*[!0-9]*) size=0 ;;
+esac
+
+if [ "$size" -gt "$MAX_OUTPUT" ]; then
+	head -c "$MAX_OUTPUT" "$out_file" > "$out_file.cut" 2>/dev/null
+	{
+		cat "$out_file.cut"
+		printf '\n\n[输出超过 %s 字节，已截断]\n' "$MAX_OUTPUT"
+	} > "$out_file" 2>/dev/null
+	truncated=true
+fi
+
+# ----------------------------------------------------------------- output ---
+# The command output is embedded as a JSON string, so quotes, backslashes and
+# control characters have to be escaped. Everything is rendered as plain text.
+json="$(awk -v code="$status" -v tool="$tool" -v target="$target" \
+	-v command="$command" -v dur="$duration_ms" -v trunc="$truncated" '
+BEGIN {
+	ctrl = "\001\002\003\004\005\006\007\010\013\014\016\017\020\021\022\023\024\025\026\027\030\031\032\033\034\035\036\037"
+	nl = "\\n"
+	printf "{\"tool\":\"%s\",\"target\":\"%s\",\"command\":\"%s\",\"exit_code\":%d,\"duration_ms\":%d,\"truncated\":%s,\"output\":\"",
+		tool, target, command, code, dur, (trunc == "true" ? "true" : "false")
+}
+function esc(s,   i, c, out) {
+	out = ""
+	for (i = 1; i <= length(s); i++) {
+		c = substr(s, i, 1)
+		if (c == "\\") out = out "\\\\"
+		else if (c == "\"") out = out "\\\""
+		else if (c == "\t") out = out "\\t"
+		else if (c == "\r") out = out "\\r"
+		else if (index(ctrl, c) > 0) out = out " "
+		else out = out c
+	}
+	return out
+}
+{
+	printf "%s", esc($0)
+	if (NR > 1) printf "%s", nl
+}
+END {
+	printf "\"}"
+}
+' "$out_file" 2>/dev/null)"
+
+[ -n "$json" ] || fail "500 Internal Server Error" '{"error":"生成结果失败"}'
+
+printf 'Status: 200 OK\r\n'
+printf 'Content-Type: application/json; charset=utf-8\r\n'
+printf 'Cache-Control: no-store\r\n'
+printf 'X-Content-Type-Options: nosniff\r\n\r\n'
+printf '%s' "$json"

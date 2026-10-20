@@ -1,0 +1,318 @@
+#!/bin/sh
+# ShellCrash / mihomo bridge for the modern console.
+#
+#   GET  /cgi-bin/modern-proxy?path=/version|/configs|/proxies|/connections
+#   GET  /cgi-bin/modern-proxy?path=/proxies/<group>
+#   GET  /cgi-bin/modern-proxy?path=/proxies/<name>/delay&url=<allowed url>
+#   POST /cgi-bin/modern-proxy   {"group":"<group>","node":"<node>"}
+#
+# The ShellCrash secret never leaves the router: mihomo is only reachable from
+# here. The sid is validated against rpcd; the owrt_sid cookie is accepted as
+# a fallback for callers that can set one.
+
+API_BASE="http://127.0.0.1:9999"
+CFG_FILE="/etc/ShellCrash/configs/ShellCrash.cfg"
+
+# Byte oriented tools (grep / tr / awk) must not switch to a UTF-8 locale.
+LC_ALL=C
+export LC_ALL
+
+# Only these latency probes may be used; an arbitrary URL would turn the
+# router into an open proxy.
+DELAY_URL_DEFAULT="http://www.gstatic.com/generate_204"
+
+deny() {
+	printf 'Status: 401 Unauthorized\r\n'
+	printf 'Content-Type: application/json; charset=utf-8\r\n'
+	printf 'Cache-Control: no-store\r\n\r\n'
+	printf '{"error":"unauthorized"}'
+	exit 0
+}
+
+fail() {
+	printf 'Status: %s\r\n' "$1"
+	printf 'Content-Type: application/json; charset=utf-8\r\n'
+	printf 'Cache-Control: no-store\r\n\r\n'
+	printf '%s' "$2"
+	exit 0
+}
+
+send_head() {
+	printf 'Content-Type: application/json; charset=utf-8\r\n'
+	printf 'Cache-Control: no-store\r\n'
+	printf 'X-Content-Type-Options: nosniff\r\n\r\n'
+}
+
+TMP="/tmp/modern-proxy.$$"
+mkdir -p "$TMP" 2>/dev/null || TMP="/tmp"
+trap 'rm -rf "$TMP"' 0 1 2 15
+
+# ---------------------------------------------------------------------------
+# helpers
+# ---------------------------------------------------------------------------
+
+# Name whitelist: A-Za-z0-9, CJK U+4E00-U+9FFF, CJK punctuation U+3000-U+303F
+# Name whitelist.
+#
+# Proxy group and node names on a real router carry emoji, flags, CJK, "#",
+# "&" and spaces, so the rule is deliberately wide: anything printable is
+# accepted except the characters that would break the JSON body (" and \),
+# the URL path (/), or a parent directory reference (..).
+# The membership check against mihomo is the real authorisation: a name that
+# is not a group (or not a member of the group) can never be switched.
+valid_name() {
+	_vn="$1"
+	[ -n "$_vn" ] || return 1
+
+	# Reject control characters (CR/LF included) so no line based tool can be
+	# tricked into reading more than one line.
+	_vn_bytes=$(printf '%s' "$_vn" | wc -c)
+	_vn_clean=$(printf '%s' "$_vn" | tr -d '\000-\037\177' | wc -c)
+	[ "$_vn_bytes" -eq "$_vn_clean" ] || return 1
+
+	case "$_vn" in
+		*'"'*|*'\'*|*'/'*|*'..'*) return 1 ;;
+	esac
+
+	# Character count: ASCII bytes count as one, CJK as three, emoji as four.
+	_vn_wide=$(printf '%s' "$_vn" | tr -d '\000-\177' | wc -c)
+	_vn_chars=$(( (_vn_bytes - _vn_wide) + _vn_wide / 3 ))
+	[ "$_vn_chars" -ge 1 ] || return 1
+	[ "$_vn_chars" -le 64 ] || return 1
+	return 0
+}
+
+# urldecode_run <string> : prints the percent decoded bytes of a query value.
+#
+# The decoding happens inside awk and the raw bytes are printed directly. An
+# earlier version escaped every byte as an octal sequence and let printf
+# expand it again; that round trip silently produced an empty string when the
+# script ran under uhttpd, which broke every group name lookup.
+# The byte table covers 0..255 so UTF-8 names (emoji, flags) survive.
+urldecode_run() {
+	printf '%s' "$1" | awk '
+	function hexval(c) { return index("0123456789abcdef", tolower(c)) - 1 }
+	BEGIN { for (i = 0; i < 256; i++) ord[sprintf("%c", i)] = i }
+	{
+		s = $0
+		n = length(s)
+		out = ""
+		i = 1
+		while (i <= n) {
+			c = substr(s, i, 1)
+			if (c == "%") {
+				if (i + 2 > n) exit 2
+				v = hexval(substr(s, i + 1, 1)) * 16 + hexval(substr(s, i + 2, 1))
+				if (v < 0) exit 2
+				if (v < 32 || v == 127) exit 2
+				out = out sprintf("%c", v)
+				i += 3
+			} else if (c == "+") {
+				out = out " "
+				i++
+			} else {
+				v = ord[c]
+				if (v == "") exit 2
+				out = out sprintf("%c", v)
+				i++
+			}
+		}
+		printf "%s", out
+	}'
+}
+
+# urlencode <string> : prints the name percent encoded for a URL path segment.
+# Written in awk on purpose: this router has no od, and awk in the C locale
+# walks the string byte by byte, so UTF-8 names are encoded correctly.
+urlencode() {
+	printf '%s' "$1" | awk '
+	BEGIN { for (i = 0; i < 256; i++) ord[sprintf("%c", i)] = i }
+	{
+		s = $0
+		for (i = 1; i <= length(s); i++) {
+			c = substr(s, i, 1)
+			v = ord[c]
+			if (v == 32) printf "%%20"
+			else if (v == 35) printf "%%23"
+			else if (v == 37) printf "%%25"
+			else if (v == 34) printf "%%22"
+			else if (v == 38) printf "%%26"
+			else if (v == 43) printf "%%2B"
+			else if (v == 61) printf "%%3D"
+			else if (v == 63) printf "%%3F"
+			else if (v >= 128) printf "%%%02X", v
+			else printf "%c", v
+		}
+	}'
+}
+
+# group_has_node <encoded group> <raw node> : succeeds when the group exists
+# in mihomo and owns the node.
+#   0 = ok, 1 = unknown group, 2 = node is not a member of the group
+# The member list is read back from mihomo, so a group can never be switched
+# to a node it does not own.
+group_has_node() {
+	_gh_code=$(curl -s -o "$TMP/group.json" -w '%{http_code}' -m 8 \
+		-H "Authorization: Bearer $secret" "$API_BASE/proxies/$1")
+	[ "$_gh_code" = "200" ] || return 1
+
+	# a proxy group always carries an "all" member list
+	grep -q '"all"' "$TMP/group.json" || return 1
+
+	# mihomo escapes & < > as \uXXXX, mirror that so the needle still matches
+	_gh_needle=$(printf '%s' "$2" | sed -e 's/&/\\u0026/g' -e 's/</\\u003c/g' -e 's/>/\\u003e/g')
+	grep -Fq "\"$_gh_needle\"" "$TMP/group.json" || return 2
+	return 0
+}
+
+# ---------------------------------------------------------------------------
+# request
+# ---------------------------------------------------------------------------
+
+qs="${QUERY_STRING:-}"
+path=""
+sid=""
+url=""
+
+set -f
+oldIFS=$IFS
+IFS='&'
+for pair in $qs; do
+	key="${pair%%=*}"
+	val="${pair#*=}"
+	case "$key" in
+		path) path="$val" ;;
+		sid) sid="$val" ;;
+		url) url="$val" ;;
+	esac
+done
+IFS=$oldIFS
+set +f
+
+if [ -z "$sid" ]; then
+	sid="$(printf '%s' "${HTTP_COOKIE:-}" | tr ';' '\n' | sed -n 's/^ *owrt_sid=//p' | head -n 1)"
+fi
+[ -n "$sid" ] || deny
+
+ubus call session get "{\"ubus_rpc_session\":\"$sid\"}" 2>/dev/null | grep -q '"username"' || deny
+
+secret="$(sed -n 's/^secret=//p' "$CFG_FILE" 2>/dev/null | head -n 1)"
+[ -n "$secret" ] || fail "503 Service Unavailable" '{"error":"shellcrash not configured"}'
+
+# The query string arrives percent encoded; decode it once and use the plain
+# name for every further check. A POST carries its payload in the body, so the
+# path is only relevant for GET.
+url_plain=$(urldecode_run "$url") || url_plain=""
+
+method="${REQUEST_METHOD:-GET}"
+
+switch_node() {
+	_sw_group="$1"
+	_sw_node="$2"
+
+	valid_name "$_sw_group" || fail "400 Bad Request" '{"error":"invalid group name"}'
+	valid_name "$_sw_node" || fail "400 Bad Request" '{"error":"invalid node name"}'
+
+	_sw_enc=$(urlencode "$_sw_group")
+	group_has_node "$_sw_enc" "$_sw_node"
+	_sw_rc=$?
+	if [ "$_sw_rc" -eq 2 ]; then
+		fail "400 Bad Request" '{"error":"node not in group"}'
+	fi
+	if [ "$_sw_rc" -ne 0 ]; then
+		fail "400 Bad Request" '{"error":"group not found"}'
+	fi
+
+	_sw_code=$(curl -s -o "$TMP/put.json" -w '%{http_code}' -m 8 -X PUT \
+		-H "Authorization: Bearer $secret" \
+		-H 'Content-Type: application/json' \
+		--data "{\"name\":\"$_sw_node\"}" \
+		"$API_BASE/proxies/$_sw_enc")
+
+	if [ "$_sw_code" = "200" ] || [ "$_sw_code" = "204" ]; then
+		send_head
+		printf '{"ok":true,"group":"%s","node":"%s"}' "$_sw_group" "$_sw_node"
+		exit 0
+	fi
+
+	_sw_msg=$(sed -n 's/.*"message"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$TMP/put.json" 2>/dev/null | head -n 1)
+	[ -n "$_sw_msg" ] || _sw_msg="switch failed"
+	send_head
+	printf '{"ok":false,"error":"%s"}' "$_sw_msg"
+	exit 0
+}
+
+if [ "$method" = "POST" ]; then
+	body=$(head -c 8192)
+
+	if command -v jsonfilter >/dev/null 2>&1; then
+		printf '%s' "$body" > "$TMP/body.json"
+		group=$(jsonfilter -i "$TMP/body.json" -e '@.group' 2>/dev/null)
+		node=$(jsonfilter -i "$TMP/body.json" -e '@.node' 2>/dev/null)
+	else
+		group=$(printf '%s' "$body" | sed -n 's/.*"group"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')
+		node=$(printf '%s' "$body" | sed -n 's/.*"node"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')
+	fi
+
+	[ -n "$group" ] && [ -n "$node" ] \
+		|| fail "400 Bad Request" '{"error":"missing group or node"}'
+
+	switch_node "$group" "$node"
+	exit 0
+fi
+
+# The decoded path is checked for emptiness instead of relying on the exit
+# status of the substitution: a group name may legitimately decode to a string
+# that the shell pipeline reports as a failure.
+path_plain=$(urldecode_run "$path" 2>/dev/null)
+if [ -z "$path_plain" ]; then
+	fail "400 Bad Request" '{"error":"bad path"}'
+fi
+
+case "$path_plain" in
+	/version|/configs|/proxies|/connections)
+		send_head
+		curl -s -m 8 -H "Authorization: Bearer $secret" "$API_BASE$path_plain"
+		exit 0
+		;;
+	/proxies/*)
+		rest="${path_plain#/proxies/}"
+		case "$rest" in
+			*/delay)
+				is_delay=1
+				name="${rest%/delay}"
+				;;
+			*)
+				is_delay=0
+				name="$rest"
+				;;
+		esac
+
+		valid_name "$name" || fail "400 Bad Request" '{"error":"invalid name"}'
+		encoded=$(urlencode "$name")
+
+		if [ "$is_delay" = "1" ]; then
+			case "$url_plain" in
+				"http://www.gstatic.com/generate_204"|"http://cp.cloudflare.com/generate_204"|"https://www.gstatic.com/generate_204")
+					;;
+				"")
+					url_plain="$DELAY_URL_DEFAULT"
+					;;
+				*)
+					fail "400 Bad Request" '{"error":"url not allowed"}'
+					;;
+			esac
+			send_head
+			curl -s -m 12 -H "Authorization: Bearer $secret" \
+				"$API_BASE/proxies/$encoded/delay?url=$url_plain&timeout=8000"
+			exit 0
+		fi
+
+		send_head
+		curl -s -m 8 -H "Authorization: Bearer $secret" "$API_BASE/proxies/$encoded"
+		exit 0
+		;;
+	*)
+		fail "400 Bad Request" '{"error":"bad path"}'
+		;;
+esac

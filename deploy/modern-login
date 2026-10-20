@@ -1,0 +1,74 @@
+#!/usr/bin/ucode
+"use strict";
+
+/*
+ * POST /cgi-bin/modern-login
+ * Body: { "username": "...", "password": "..." }
+ * Returns the ubus session id used by the console for /ubus calls.
+ * The LuCI session cookie is HttpOnly and scoped to /cgi-bin/luci, so the
+ * console cannot reuse it; this endpoint creates its own short-lived session.
+ */
+
+import * as fs from 'fs';
+import * as ubus from 'ubus';
+
+function respond(status, payload) {
+	printf("Status: %s\r\n", status);
+	printf("Content-Type: application/json; charset=utf-8\r\n");
+	printf("Cache-Control: no-store\r\n");
+	printf("X-Content-Type-Options: nosniff\r\n");
+	printf("\r\n");
+	printf("%J", payload);
+}
+
+if (getenv("REQUEST_METHOD") != "POST") {
+	respond("405 Method Not Allowed", { error: "只接受 POST 请求" });
+	exit(0);
+}
+
+let contentLength = getenv("CONTENT_LENGTH");
+if (type(contentLength) == "string" && +contentLength > 4096) {
+	respond("413 Payload Too Large", { error: "请求体过大" });
+	exit(0);
+}
+
+let raw = "";
+try {
+	raw = fs.readfile("/dev/stdin");
+} catch (e) {
+	raw = "";
+}
+
+let input = null;
+try {
+	input = json(raw);
+} catch (e) {
+	input = null;
+}
+
+let username = input ? input.username : null;
+let password = input ? input.password : null;
+
+if (type(username) != "string" || type(password) != "string" ||
+    length(username) < 1 || length(password) < 1 ||
+    length(username) > 64 || length(password) > 256) {
+	respond("400 Bad Request", { error: "请输入用户名和密码" });
+	exit(0);
+}
+
+let result = null;
+try {
+	result = ubus.call("session", "login", { username: username, password: password, timeout: 3600 });
+} catch (e) {
+	result = null;
+}
+
+if (result != null && type(result) == "object" && result.ubus_rpc_session) {
+	respond("200 OK", {
+		sid: result.ubus_rpc_session,
+		expires: result.expires ? result.expires : (result.timeout ? result.timeout : 3600)
+	});
+} else {
+	sleep(1);
+	respond("401 Unauthorized", { error: "用户名或密码错误" });
+}

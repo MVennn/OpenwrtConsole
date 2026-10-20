@@ -1,0 +1,794 @@
+#!/bin/sh
+# ShellCrash / mihomo configuration bridge for the modern console.
+#
+#   POST /cgi-bin/modern-shellcrash?sid=<session>
+#   Body: { "action": "<action>", "params": { ... } }
+#
+# Actions
+#   status           service state, core version, modes, ports, subscription count
+#   config           the whitelisted ShellCrash.cfg keys (secret and Url masked)
+#   config-write     change whitelisted keys (requires confirm=yes)
+#   service          start / stop / restart / enable / disable
+#   overrides        the override files in /etc/ShellCrash/yamls
+#   override-toggle  enable or disable one override file (requires confirm=yes)
+#   subs             subscription overview without the tokens
+#   log              tail of the ShellCrash / guardian log
+#   crash            CrashCore and guardian state
+#
+# Safety rules enforced here:
+#   * the session is validated against rpcd before anything is executed
+#   * every path is a literal constant, the request never supplies a path
+#   * the mihomo secret and the subscription URL never leave the router
+#   * config-write backs the file up and rewrites it key by key
+#   * service actions run under a watchdog, the request never blocks
+#   * every answer is truncated to 200 KB
+#
+# The router has no coreutils timeout, so the watchdog counts the seconds
+# itself instead of running one long sleep.
+
+MAX_BODY=65536
+MAX_OUTPUT=204800
+MAX_LOG_LINES=200
+
+CFG_FILE="/etc/ShellCrash/configs/ShellCrash.cfg"
+YAMLS_DIR="/etc/ShellCrash/yamls"
+INIT_SCRIPT="/etc/init.d/shellcrash"
+SC_START="/etc/ShellCrash/start.sh"
+RUNTIME_CONFIG="/tmp/ShellCrash/config.yaml"
+SC_DIR="/tmp/ShellCrash"
+LOG_DIR="/etc/ShellCrash/logs"
+PROVIDERS_FILE="/etc/ShellCrash/configs/providers.cfg"
+SERVERS_LIST="/etc/ShellCrash/configs/servers.list"
+VERSION_FILE="/etc/ShellCrash/version"
+INITD_DIR="/etc/rc.d"
+ACTION_RC_FILE="/tmp/ShellCrash/modern-shellcrash.last"
+
+# The keys the console may read and write. Everything else in the file
+# (secret, Url, custcorelink, dns_nameserver, ...) is never returned and
+# never rewritten.
+CFG_KEYS="redir_mod dns_mod firewall_mod cn_ip_route cn_ipv6_route ipv6_support ipv6_redir ipv6_dns hosts_opt dns_protect sniffer quic_rj my_alias ecs_subnet firewall_area core_v crashcore url_id release_type hostdir disoverride"
+
+# The override files the console may toggle.
+OVERRIDE_FILES="config.yaml proxies.yaml proxy-groups.yaml rules.yaml user.yaml"
+
+# Byte oriented tools (grep / tr / awk) must not switch to a UTF-8 locale.
+LC_ALL=C
+export LC_ALL
+
+WORK="/tmp/modern-shellcrash.$$"
+BODY_FILE="$WORK/body"
+# The runner outlives the request, so it must not live inside $WORK (the
+# cleanup trap would delete it before it could start).
+RUNNER="/tmp/modern-shellcrash-runner.$$"
+
+deny() {
+	printf 'Status: 401 Unauthorized\r\n'
+	printf 'Content-Type: application/json; charset=utf-8\r\n'
+	printf 'Cache-Control: no-store\r\n'
+	printf 'X-Content-Type-Options: nosniff\r\n\r\n'
+	printf '{"error":"unauthorized"}'
+	exit 0
+}
+
+fail() {
+	printf 'Status: %s\r\n' "$1"
+	printf 'Content-Type: application/json; charset=utf-8\r\n'
+	printf 'Cache-Control: no-store\r\n'
+	printf 'X-Content-Type-Options: nosniff\r\n\r\n'
+	printf '%s' "$2"
+	exit 0
+}
+
+ok() {
+	printf 'Status: 200 OK\r\n'
+	printf 'Content-Type: application/json; charset=utf-8\r\n'
+	printf 'Cache-Control: no-store\r\n'
+	printf 'X-Content-Type-Options: nosniff\r\n\r\n'
+	printf '%s' "$1" | head -c "$MAX_OUTPUT"
+	exit 0
+}
+
+cleanup() {
+	rm -rf "$WORK" 2>/dev/null
+}
+
+mkdir -p "$WORK" 2>/dev/null || fail "500 Internal Server Error" '{"error":"无法创建临时目录"}'
+trap cleanup EXIT INT TERM
+
+# ---------------------------------------------------------------- session ---
+# The sid may arrive in the owrt_sid cookie or as ?sid=; both are validated
+# against rpcd before anything is executed.
+
+qs="${QUERY_STRING:-}"
+sid=""
+oldIFS=$IFS
+IFS='&'
+for pair in $qs; do
+	key="${pair%%=*}"
+	val="${pair#*=}"
+	case "$key" in
+		sid) sid="$val" ;;
+	esac
+done
+IFS=$oldIFS
+
+if [ -z "$sid" ]; then
+	sid="$(printf '%s' "${HTTP_COOKIE:-}" | tr ';' '\n' | sed -n 's/^ *owrt_sid=//p' | head -n 1)"
+fi
+[ -n "$sid" ] || deny
+
+# Only characters that are inert inside the ubus JSON payload are accepted,
+# so a session id can never break out of the string it is placed in.
+case "$sid" in
+	*[!A-Za-z0-9._~+/=-]*) deny ;;
+esac
+
+ubus call session get "{\"ubus_rpc_session\":\"$sid\"}" 2>/dev/null | grep -q '"username"' || deny
+
+# ------------------------------------------------------------------- body ---
+[ "${REQUEST_METHOD:-GET}" = "POST" ] ||
+	fail "405 Method Not Allowed" '{"error":"只接受 POST 请求"}'
+
+head -c $((MAX_BODY + 1)) > "$BODY_FILE" 2>/dev/null
+[ -s "$BODY_FILE" ] || fail "400 Bad Request" '{"error":"请求体为空"}'
+body_size="$(wc -c < "$BODY_FILE" 2>/dev/null | tr -d ' ')"
+[ "${body_size:-0}" -le "$MAX_BODY" ] || fail "413 Payload Too Large" '{"error":"请求体过大"}'
+
+# One flat line keeps the key/value extraction predictable.
+FLAT_BODY="$(tr '\012\015\011' '   ' < "$BODY_FILE")"
+
+# jsonfilter understands the nested body; the fallback keeps the CGI working
+# on a box where the jsonfilter applet is missing.
+if command -v jsonfilter >/dev/null 2>&1; then
+	HAVE_JSONFILTER=1
+else
+	HAVE_JSONFILTER=0
+fi
+
+json_string() {
+	# $1 = key name. Prints the value of the first "key":"value" pair found.
+	printf '%s' "$FLAT_BODY" |
+		grep -o "\"$1\"[[:space:]]*:[[:space:]]*\"[^\"]*\"" |
+		head -n 1 |
+		sed 's/^"[^"]*"[[:space:]]*:[[:space:]]*"\(.*\)"$/\1/'
+}
+
+jget() {
+	# $1 = json expression, e.g. @.params.redir_mod
+	if [ "$HAVE_JSONFILTER" = 1 ]; then
+		jsonfilter -i "$BODY_FILE" -e "$1" 2>/dev/null
+	else
+		json_string "${1##*.}"
+	fi
+}
+
+action="$(jget '@.action')"
+[ -n "$action" ] || fail "400 Bad Request" '{"error":"缺少操作名称"}'
+
+param() {
+	jget "@.params.$1"
+}
+
+# --------------------------------------------------------------- helpers ---
+
+# Escapes a value and wraps it in quotes so it can be dropped into JSON.
+jstr() {
+	_jq=$(printf '%s' "$1" | awk '
+	BEGIN {
+		ctrl = "\001\002\003\004\005\006\007\010\011\012\013\014\015\016\017\020\021\022\023\024\025\026\027\030\031\032\033\034\035\036\037"
+	}
+	{
+		if (NR > 1) printf " "
+		line = $0
+		n = length(line)
+		for (i = 1; i <= n; i++) {
+			c = substr(line, i, 1)
+			if (c == "\\") printf "\\\\"
+			else if (c == "\"") printf "\\\""
+			else if (c == "\t") printf "\\t"
+			else if (c == "\r") printf "\\r"
+			else if (index(ctrl, c) > 0) printf " "
+			else printf "%s", c
+		}
+	}')
+	printf '"%s"' "$_jq"
+}
+
+jnum() {
+	case "$1" in
+		'' | *[!0-9]*) printf '0' ;;
+		*) printf '%s' "$1" ;;
+	esac
+}
+
+jbool() {
+	if [ "$1" = "1" ] || [ "$1" = "true" ]; then printf 'true'; else printf 'false'; fi
+}
+
+# The ShellCrash log prints the subscription link, and that link carries the
+# token. The log that reaches the browser therefore gets the token and the
+# subscription parameter masked, the rest of the line stays readable.
+mask_secrets() {
+	sed -e 's/\(url=\)[^&"[:space:]]*/\1***/g' \
+		-e 's/\(secret=\)[^&"[:space:]]*/\1***/g' \
+		-e 's/\(password=\)[^&"[:space:]]*/\1***/g' \
+		-e 's/token=[A-Za-z0-9._~%+-]*/token=***/g' \
+		-e 's/token%3[Dd][A-Za-z0-9._~%+-]*/token%3D***/g'
+}
+
+# Reads one key from the ShellCrash config. The surrounding single quotes of
+# a quoted value are removed, so the console always sees the plain value.
+cfg_get() {
+	_v=$(sed -n "s/^$1=//p" "$CFG_FILE" 2>/dev/null | head -n 1)
+	case "$_v" in
+		\'*\') _v=${_v#\'}; _v=${_v%\'} ;;
+	esac
+	printf '%s' "$_v"
+}
+
+# Quotes a value for the config file when it contains characters that the
+# shell would otherwise eat when the file is sourced. The colon of a hostdir
+# is quoted as well, so the file keeps the shape ShellCrash wrote it in.
+cfg_quote() {
+	case "$1" in
+		'' | *[!A-Za-z0-9._/+-]*) printf "'%s'" "$1" ;;
+		*) printf '%s' "$1" ;;
+	esac
+}
+
+# The pid of the running mihomo core, empty when it is not running.
+running_pid() {
+	_pid=$(pidof CrashCore 2>/dev/null | awk '{print $1}')
+	[ -z "$_pid" ] && _pid=$(pgrep -f 'CrashCore' 2>/dev/null | head -n 1)
+	[ -z "$_pid" ] && _pid=$(head -n 1 "$SC_DIR/shellcrash.pid" 2>/dev/null | tr -cd '0-9')
+	if [ -n "$_pid" ] && [ -d "/proc/$_pid" ]; then
+		printf '%s' "$_pid"
+	fi
+}
+
+# The pid of the console itself must never be mistaken for the core.
+autostart_enabled() {
+	ls "$INITD_DIR" 2>/dev/null | grep -q 'shellcrash'
+}
+
+# Reads a scalar from the runtime mihomo config.
+runtime_num() {
+	sed -n "s/^$1:[[:space:]]*\([0-9][0-9]*\).*/\1/p" "$RUNTIME_CONFIG" 2>/dev/null | head -n 1
+}
+
+# The host part of a URL, without the scheme, the path and the token.
+url_host() {
+	printf '%s' "$1" | sed -e 's#^[A-Za-z][A-Za-z0-9+.-]*://##' -e 's#/.*##' -e 's#^[^@]*@##'
+}
+
+# Only the whitelisted keys may be written, and every value has to match the
+# shape the ShellCrash menus use.
+valid_value() {
+	case "$1" in
+		redir_mod)
+			case "$2" in Redir | Tproxy | Tproxy6 | Mix | Tun) return 0 ;; esac
+			;;
+		dns_mod)
+			case "$2" in redir_host | redir_host_ipv6 | fake-ip | mix | route) return 0 ;; esac
+			;;
+		firewall_mod)
+			case "$2" in nftables | iptables) return 0 ;; esac
+			;;
+		firewall_area)
+			case "$2" in 1 | 2 | 3 | 4 | 5) return 0 ;; esac
+			;;
+		crashcore)
+			case "$2" in meta | singbox | singboxr | clash | clashpre) return 0 ;; esac
+			;;
+		release_type)
+			case "$2" in dev | stable | master) return 0 ;; esac
+			;;
+		url_id)
+			case "$2" in '' | *[!0-9]*) return 1 ;; esac
+			[ "${#2}" -le 4 ] && return 0
+			;;
+		core_v)
+			case "$2" in v[0-9]* | [0-9]*) ;; *) return 1 ;; esac
+			case "$2" in *[!A-Za-z0-9._-]*) return 1 ;; esac
+			[ "${#2}" -le 32 ] && return 0
+			;;
+		my_alias)
+			case "$2" in *[!A-Za-z0-9_-]*) return 1 ;; esac
+			[ "${#2}" -le 32 ] && return 0
+			;;
+		hostdir)
+			case "$2" in *[!A-Za-z0-9._/:-]*) return 1 ;; esac
+			[ "${#2}" -le 40 ] && return 0
+			;;
+		*)
+			# the remaining keys are plain on/off switches
+			case "$2" in ON | OFF | on | off | 0 | 1) return 0 ;; esac
+			;;
+	esac
+	return 1
+}
+
+# Rewrites one key of the config file. The first line of the key is
+# replaced in place, further duplicates are dropped and a key that is not in
+# the file yet is appended. Every other line keeps its content and its
+# position.
+cfg_set() {
+	_key="$1"
+	_val="$2"
+	awk -v key="$_key" -v val="$_val" '
+	BEGIN { done = 0 }
+	{
+		if ($0 ~ "^" key "=") {
+			if (done == 0) { print key "=" val; done = 1 }
+			next
+		}
+		print $0
+	}
+	END { if (done == 0) print key "=" val }
+	' "$CFG_FILE" > "$WORK/cfg.new" 2>/dev/null
+	[ -s "$WORK/cfg.new" ] || return 1
+	# Writing through the original inode keeps the mode and the owner of the
+	# file, the backup is the recovery path if the write is interrupted.
+	cat "$WORK/cfg.new" > "$CFG_FILE" 2>/dev/null || return 1
+	rm -f "$WORK/cfg.new" 2>/dev/null
+	return 0
+}
+
+# ---------------------------------------------------------------- status ---
+
+action_status() {
+	_pid=$(running_pid)
+	if [ -n "$_pid" ]; then _running=true; else _running=false; fi
+
+	_svc_status=$("$INIT_SCRIPT" status 2>/dev/null | head -n 1 | tr -d '\r')
+	[ -n "$_svc_status" ] || _svc_status="unknown"
+
+	_core=$(cfg_get core_v)
+	[ -n "$_core" ] || _core="unknown"
+	_sc_version=$(head -n 1 "$VERSION_FILE" 2>/dev/null | tr -d '\r\n')
+	[ -n "$_sc_version" ] || _sc_version="unknown"
+
+	_redir=$(cfg_get redir_mod)
+	[ -n "$_redir" ] || _redir="unknown"
+	_dns=$(cfg_get dns_mod)
+	[ -n "$_dns" ] || _dns="unknown"
+	_fw=$(cfg_get firewall_mod)
+	[ -n "$_fw" ] || _fw="unknown"
+
+	_mixed=$(runtime_num 'mixed-port')
+	_redir_port=$(runtime_num 'redir-port')
+	_tproxy=$(runtime_num 'tproxy-port')
+	_socks=$(runtime_num 'socks-port')
+	_dns_port=$(sed -n 's/^[[:space:]]*listen:[[:space:]]*:\([0-9][0-9]*\).*/\1/p' "$RUNTIME_CONFIG" 2>/dev/null | head -n 1)
+	_ctrl=$(sed -n 's/^external-controller:[[:space:]]*:\([0-9][0-9]*\).*/\1/p' "$RUNTIME_CONFIG" 2>/dev/null | head -n 1)
+
+	_subs=$(grep -c '^Url=' "$CFG_FILE" 2>/dev/null | tr -d ' ')
+	[ -n "$_subs" ] || _subs=0
+
+	if autostart_enabled; then _auto=true; else _auto=false; fi
+
+	_last=""
+	if [ -f "$ACTION_RC_FILE" ]; then
+		_last=$(head -n 1 "$ACTION_RC_FILE" 2>/dev/null | tr -d '\r\n')
+	fi
+
+	ok "{\"ok\":true,\"installed\":true,\"running\":$(jbool "$_running"),\"service_status\":$(jstr "$_svc_status"),\"pid\":$(jnum "$_pid"),\"core_version\":$(jstr "$_core"),\"shellcrash_version\":$(jstr "$_sc_version"),\"redir_mod\":$(jstr "$_redir"),\"dns_mod\":$(jstr "$_dns"),\"firewall_mod\":$(jstr "$_fw"),\"ports\":{\"mixed\":$(jnum "$_mixed"),\"redir\":$(jnum "$_redir_port"),\"tproxy\":$(jnum "$_tproxy"),\"socks\":$(jnum "$_socks"),\"dns\":$(jnum "$_dns_port"),\"controller\":$(jnum "$_ctrl")},\"subs_count\":$(jnum "$_subs"),\"autostart\":$(jbool "$_auto"),\"last_action\":$(jstr "$_last")}"
+}
+
+# ---------------------------------------------------------------- config ---
+
+action_config() {
+	_values=""
+	for _k in $CFG_KEYS; do
+		_v=$(cfg_get "$_k")
+		[ -z "$_values" ] || _values="$_values,"
+		_values="$_values$(jstr "$_k"):$(jstr "$_v")"
+	done
+
+	# The subscription URL carries a token: only the host is handed out.
+	_url=$(cfg_get Url)
+	_url_host=$(url_host "$_url")
+	[ -n "$_url" ] && _secret=true || _secret=false
+
+	ok "{\"ok\":true,\"values\":{$_values},\"url_host\":$(jstr "$_url_host"),\"secret_set\":$(jbool "$_secret")}"
+}
+
+# ---------------------------------------------------------- config-write ---
+
+action_config_write() {
+	_confirm=$(param confirm)
+	[ "$_confirm" = "yes" ] || fail "403 Forbidden" '{"error":"需要 confirm=yes 确认"}'
+
+	_count=0
+	for _k in $CFG_KEYS; do
+		_v=$(param "$_k")
+		[ -n "$_v" ] || continue
+		valid_value "$_k" "$_v" || fail "400 Bad Request" "{\"error\":\"值不合法：$_k\"}"
+		_count=$((_count + 1))
+		_pending="$_pending$_k=$_v
+"
+	done
+
+	[ "$_count" -gt 0 ] || fail "400 Bad Request" '{"error":"没有需要修改的项"}'
+
+	[ -f "$CFG_FILE" ] || fail "404 Not Found" '{"error":"找不到 ShellCrash 配置文件"}'
+
+	_stamp=$(date +%Y%m%d-%H%M%S)
+	_backup="$CFG_FILE.bak-$_stamp"
+	cp -f "$CFG_FILE" "$_backup" 2>/dev/null ||
+		fail "500 Internal Server Error" '{"error":"备份配置失败"}'
+
+	# Every value was validated before the first write, so a rejected value
+	# never leaves a half written file behind.
+	printf '%s' "$_pending" | while IFS='=' read -r _k _v; do
+		[ -n "$_k" ] || continue
+		cfg_set "$_k" "$(cfg_quote "$_v")" || exit 1
+	done || fail "500 Internal Server Error" '{"error":"写入配置失败"}'
+
+	_applied=""
+	for _k in $CFG_KEYS; do
+		_v=$(param "$_k")
+		[ -n "$_v" ] || continue
+		_applied="$_applied$(jstr "$_k"):$(jstr "$_v"),"
+	done
+	_applied=${_applied%,}
+
+	ok "{\"ok\":true,\"changed\":[$_applied],\"backup\":$(jstr "$_backup"),\"message\":\"需重启 ShellCrash 生效\"}"
+}
+
+# --------------------------------------------------------------- service ---
+
+action_service() {
+	_svc=$(param service)
+	[ -n "$_svc" ] || _svc="shellcrash"
+	[ "$_svc" = "shellcrash" ] || fail "400 Bad Request" '{"error":"不支持的服务"}'
+	[ -x "$INIT_SCRIPT" ] || fail "404 Not Found" '{"error":"ShellCrash 服务不存在"}'
+
+	_act=$(param action)
+	case "$_act" in
+		start | stop | restart | enable | disable) ;;
+		*) fail "400 Bad Request" '{"error":"不支持的动作"}' ;;
+	esac
+
+	if [ "$_act" = "enable" ] || [ "$_act" = "disable" ]; then
+		# The boot autostart is a symlink in /etc/rc.d, the init script
+		# creates and removes it.
+		"$INIT_SCRIPT" "$_act" >/dev/null 2>&1
+		if autostart_enabled; then _auto=true; else _auto=false; fi
+		ok "{\"ok\":true,\"action\":$(jstr "$_act"),\"autostart\":$(jbool "$_auto"),\"message\":\"开机自启已$( [ "$_auto" = true ] && printf '开启' || printf '关闭' )\"}"
+	fi
+
+	# start / stop / restart go through ShellCrash's own start.sh. It stops a
+	# running core before it starts the next one, so a restart never leaves
+	# two cores behind - the plain init script only knows the procd
+	# instance and would start a second core next to the running one.
+	#
+	# The stop sequence also runs the init script first: a procd instance
+	# that was registered with a respawn flag would bring the core back
+	# right after it was killed.
+	_runner_script="$INIT_SCRIPT"
+	if [ -x "$SC_START" ]; then
+		_runner_script="$SC_START"
+	fi
+
+	# The work can take a minute (the core downloads its configuration), so
+	# it happens in the background and the browser polls the status instead
+	# of waiting for the request.
+	_log="$SC_DIR/modern-shellcrash.$_act.log"
+	_rc="$ACTION_RC_FILE"
+
+	cat > "$RUNNER" <<'RUNNER_EOF'
+#!/bin/sh
+_init="$1"
+_start="$2"
+_act="$3"
+_log="$4"
+_rc="$5"
+mkdir -p /tmp/ShellCrash 2>/dev/null
+
+(
+	case "$_act" in
+		stop | restart)
+			# remove the procd instance first, it would respawn the core
+			"$_init" stop >/dev/null 2>&1
+			"$_start" stop >/dev/null 2>&1
+			;;
+	esac
+	case "$_act" in
+		start | restart)
+			"$_start" start >/dev/null 2>&1
+			;;
+	esac
+) > "$_log" 2>&1 &
+_p=$!
+_i=0
+while [ "$_i" -lt 300 ]; do
+	kill -0 "$_p" 2>/dev/null || break
+	sleep 1
+	_i=$((_i + 1))
+done
+if kill -0 "$_p" 2>/dev/null; then
+	kill -9 "$_p" 2>/dev/null
+	_rcv=124
+else
+	wait "$_p" 2>/dev/null
+	_rcv=$?
+fi
+printf '%s %s %s\n' "$_act" "$_rcv" "$(date +%s)" > "$_rc" 2>/dev/null
+rm -f "$0" 2>/dev/null
+RUNNER_EOF
+	chmod +x "$RUNNER" 2>/dev/null
+
+	if command -v setsid >/dev/null 2>&1; then
+		setsid "$RUNNER" "$INIT_SCRIPT" "$_runner_script" "$_act" "$_log" "$_rc" >/dev/null 2>&1 &
+	else
+		"$RUNNER" "$INIT_SCRIPT" "$_runner_script" "$_act" "$_log" "$_rc" >/dev/null 2>&1 &
+	fi
+	_watch=$!
+
+	ok "{\"ok\":true,\"action\":$(jstr "$_act"),\"started\":true,\"message\":\"操作已提交，路由器正在执行\"}"
+}
+
+# ------------------------------------------------------------- overrides ---
+
+# The header comment of an override file explains what it is for.
+override_description() {
+	# Only whole comment lines are used, so the result never contains a
+	# half byte of a multi byte character.
+	_desc=$(sed -n '1,12p' "$1" 2>/dev/null |
+		grep '^[[:space:]]*#' |
+		sed 's/^[[:space:]]*#[[:space:]]*//' |
+		grep -v '^$' |
+		grep -v '^[[:space:]=*_-]\{3,\}[[:space:]]*$' |
+		head -n 3 |
+		tr '\n' ' ')
+	_desc=$(printf '%s' "$_desc" | sed 's/[[:space:]]\{1,\}/ /g; s/^ //; s/ $//')
+	printf '%s' "$_desc"
+}
+
+# The size and the modification time of one file.
+file_size() {
+	_sz=$(wc -c < "$1" 2>/dev/null | tr -d ' ')
+	[ -n "$_sz" ] || _sz=0
+	printf '%s' "$_sz"
+}
+
+file_mtime() {
+	# ls --full-time prints "YYYY-MM-DD HH:MM:SS +0800"
+	ls -l --full-time "$1" 2>/dev/null | awk 'NR == 1 { print $6 " " $7 }'
+}
+
+file_mtime_epoch() {
+	_m=$(file_mtime "$1")
+	[ -n "$_m" ] || { printf '0'; return; }
+	date -d "$_m" +%s 2>/dev/null | tr -cd '0-9'
+}
+
+action_overrides() {
+	_items=""
+	for _f in $OVERRIDE_FILES; do
+		if [ -f "$YAMLS_DIR/$_f" ]; then
+			_enabled=true
+			_path="$YAMLS_DIR/$_f"
+		elif [ -f "$YAMLS_DIR/$_f.bak" ]; then
+			_enabled=false
+			_path="$YAMLS_DIR/$_f.bak"
+		else
+			_enabled=false
+			_path=""
+		fi
+
+		if [ -n "$_path" ]; then
+			_size=$(file_size "$_path")
+			_mtime=$(file_mtime "$_path")
+			_epoch=$(file_mtime_epoch "$_path")
+			_desc=$(override_description "$_path")
+		else
+			_size=0
+			_mtime=""
+			_epoch=0
+			_desc=""
+		fi
+
+		[ -z "$_items" ] || _items="$_items,"
+		_items="$_items{\"name\":$(jstr "$_f"),\"enabled\":$(jbool "$_enabled"),\"size\":$(jnum "$_size"),\"mtime\":$(jstr "$_mtime"),\"mtime_epoch\":$(jnum "$_epoch"),\"description\":$(jstr "$_desc")}"
+	done
+
+	_global=$(cfg_get disoverride)
+	[ "$_global" = "1" ] && _global_on=true || _global_on=false
+
+	ok "{\"ok\":true,\"files\":[$_items],\"global_disabled\":$(jbool "$_global_on")}"
+}
+
+# ------------------------------------------------------- override-toggle ---
+
+action_override_toggle() {
+	_confirm=$(param confirm)
+	[ "$_confirm" = "yes" ] || fail "403 Forbidden" '{"error":"需要 confirm=yes 确认"}'
+
+	_file=$(param file)
+	_valid=false
+	for _f in $OVERRIDE_FILES; do
+		[ "$_file" = "$_f" ] && _valid=true
+	done
+	[ "$_valid" = true ] || fail "400 Bad Request" '{"error":"不支持的覆写文件"}'
+
+	_enable=$(param enable)
+	case "$_enable" in
+		yes | no) ;;
+		*) fail "400 Bad Request" '{"error":"缺少 enable=yes 或 enable=no"}' ;;
+	esac
+
+	if [ "$_enable" = "yes" ]; then
+		if [ -f "$YAMLS_DIR/$_file" ]; then
+			ok "{\"ok\":true,\"file\":$(jstr "$_file"),\"enabled\":true,\"message\":\"覆写文件已经处于启用状态\"}"
+		fi
+		[ -f "$YAMLS_DIR/$_file.bak" ] || fail "404 Not Found" '{"error":"找不到被停用的覆写文件"}'
+		mv -f "$YAMLS_DIR/$_file.bak" "$YAMLS_DIR/$_file" 2>/dev/null ||
+			fail "500 Internal Server Error" '{"error":"启用覆写文件失败"}'
+		ok "{\"ok\":true,\"file\":$(jstr "$_file"),\"enabled\":true,\"message\":\"覆写文件已启用，需重启 ShellCrash 生效\"}"
+	fi
+
+	[ -f "$YAMLS_DIR/$_file" ] || fail "404 Not Found" '{"error":"找不到覆写文件"}'
+	mv -f "$YAMLS_DIR/$_file" "$YAMLS_DIR/$_file.bak" 2>/dev/null ||
+		fail "500 Internal Server Error" '{"error":"停用覆写文件失败"}'
+	ok "{\"ok\":true,\"file\":$(jstr "$_file"),\"enabled\":false,\"message\":\"覆写文件已停用，需重启 ShellCrash 生效\"}"
+}
+
+# ------------------------------------------------------------------ subs ---
+
+action_subs() {
+	_url_id=$(cfg_get url_id)
+	_alias=$(cfg_get my_alias)
+
+	_update=""
+	if [ -n "$_url_id" ] && [ -f "$SERVERS_LIST" ]; then
+		_update=$(grep "^$_url_id[[:space:]]" "$SERVERS_LIST" 2>/dev/null | head -n 1 | awk '{print $2}')
+	fi
+	[ -n "$_update" ] || _update="自定义源"
+
+	_subs=""
+	_index=0
+	while IFS= read -r _line; do
+		case "$_line" in
+			Url=*) ;;
+			*) continue ;;
+		esac
+		_index=$((_index + 1))
+		_raw=${_line#Url=}
+		case "$_raw" in
+			\'*\') _raw=${_raw#\'}; _raw=${_raw%\'} ;;
+		esac
+		_host=$(url_host "$_raw")
+		[ -z "$_subs" ] || _subs="$_subs,"
+		_subs="$_subs{\"index\":$_index,\"alias\":$(jstr "$_update"),\"url_id\":$(jstr "$_url_id"),\"host\":$(jstr "$_host"),\"masked\":$(jstr "$_host/***")}"
+	done << EOF
+$(grep '^Url=' "$CFG_FILE" 2>/dev/null)
+EOF
+
+	_providers=""
+	_provider_count=0
+	if [ -f "$PROVIDERS_FILE" ]; then
+		while read -r _name _url _rest; do
+			case "$_name" in
+				'' | '#'*) continue ;;
+			esac
+			[ -n "$_url" ] || continue
+			_provider_count=$((_provider_count + 1))
+			_host=$(url_host "$_url")
+			[ -z "$_providers" ] || _providers="$_providers,"
+			_providers="$_providers{\"name\":$(jstr "$_name"),\"host\":$(jstr "$_host"),\"masked\":$(jstr "$_host/***")}"
+		done < "$PROVIDERS_FILE"
+	fi
+
+	_url_count=$_index
+	_total=$((_url_count + _provider_count))
+
+	ok "{\"ok\":true,\"count\":$(jnum "$_total"),\"url_count\":$(jnum "$_url_count"),\"provider_count\":$(jnum "$_provider_count"),\"url_id\":$(jstr "$_url_id"),\"update_source\":$(jstr "$_update"),\"alias\":$(jstr "$_alias"),\"subs\":[$_subs],\"providers\":[$_providers]}"
+}
+
+# ------------------------------------------------------------------- log ---
+
+log_candidates() {
+	ls "$SC_DIR"/*.log 2>/dev/null
+	ls "$LOG_DIR"/*.log 2>/dev/null
+}
+
+action_log() {
+	_files=""
+	_default=""
+	while IFS= read -r _path; do
+		[ -n "$_path" ] || continue
+		_name=${_path##*/}
+		_size=$(file_size "$_path")
+		[ -z "$_files" ] || _files="$_files,"
+		_files="$_files{\"name\":$(jstr "$_name"),\"path\":$(jstr "$_path"),\"size\":$(jnum "$_size")}"
+		[ -z "$_default" ] && _default="$_path"
+		[ "$_name" = "ShellCrash.log" ] && _default="$_path"
+	done << EOF
+$(log_candidates)
+EOF
+
+	_target=$(param file)
+	if [ -n "$_target" ]; then
+		case "$_target" in
+			*[!A-Za-z0-9._-]*) fail "400 Bad Request" '{"error":"日志文件名不合法"}' ;;
+		esac
+		_found=""
+		while IFS= read -r _path; do
+			[ -n "$_path" ] || continue
+			[ "${_path##*/}" = "$_target" ] && _found="$_path"
+		done << EOF
+$(log_candidates)
+EOF
+		[ -n "$_found" ] || fail "404 Not Found" '{"error":"找不到该日志文件"}'
+		_target="$_found"
+	else
+		_target="$_default"
+	fi
+
+	if [ -z "$_target" ]; then
+		ok "{\"ok\":true,\"file\":$(jstr ""),\"lines\":[],\"files\":[$_files]}"
+	fi
+
+	_lines=""
+	_count=0
+	while IFS= read -r _line; do
+		_count=$((_count + 1))
+		[ -z "$_lines" ] || _lines="$_lines,"
+		_lines="$_lines$(jstr "$_line")"
+	done << EOF
+$(tail -n "$MAX_LOG_LINES" "$_target" 2>/dev/null | mask_secrets)
+EOF
+
+	ok "{\"ok\":true,\"file\":$(jstr "$_target"),\"lines\":[$_lines],\"files\":[$_files]}"
+}
+
+# ----------------------------------------------------------------- crash ---
+
+action_crash() {
+	_pid=$(running_pid)
+	if [ -n "$_pid" ]; then _running=true; else _running=false; fi
+
+	_now=$(date +%s)
+	_start=$(head -n 1 "$SC_DIR/crash_start_time" 2>/dev/null | tr -cd '0-9')
+	_alive=$(head -n 1 "$SC_DIR/.proxy_alive" 2>/dev/null | tr -cd '0-9')
+	_probe=$(head -n 1 "$SC_DIR/.cc_probe_ts" 2>/dev/null | tr -cd '0-9')
+	_heal=$(head -n 1 "$SC_DIR/.last_fallback_heal" 2>/dev/null | tr -cd '0-9')
+
+	[ -n "$_start" ] && _uptime=$((_now - _start)) || _uptime=0
+	[ "$_uptime" -lt 0 ] && _uptime=0
+	[ -n "$_alive" ] && _alive_age=$((_now - _alive)) || _alive_age=-1
+	[ "$_alive_age" -lt 0 ] && _alive_age=0
+
+	if [ -f "/etc/ShellCrash/.start_error" ]; then _start_error=true; else _start_error=false; fi
+
+	_cron=$(crontab -l 2>/dev/null | grep 'guardian' | head -n 1)
+
+	_glines=""
+	_gcount=0
+	while IFS= read -r _line; do
+		_gcount=$((_gcount + 1))
+		[ -z "$_glines" ] || _glines="$_glines,"
+		_glines="$_glines$(jstr "$_line")"
+	done << EOF
+$(tail -n 20 "$SC_DIR/guardian.log" 2>/dev/null | mask_secrets)
+EOF
+
+	ok "{\"ok\":true,\"running\":$(jbool "$_running"),\"pid\":$(jnum "$_pid"),\"core_version\":$(jstr "$(cfg_get core_v)"),\"start_time\":$(jnum "$_start"),\"uptime\":$(jnum "$_uptime"),\"alive_ts\":$(jnum "$_alive"),\"alive_age\":$(jnum "$_alive_age"),\"probe_ts\":$(jnum "$_probe"),\"last_fallback_heal\":$(jnum "$_heal"),\"start_error\":$(jbool "$_start_error"),\"guardian_cron\":$(jstr "$_cron"),\"guardian_log\":[$_glines]}"
+}
+
+# --------------------------------------------------------------- actions ---
+
+case "$action" in
+	status) action_status ;;
+	config) action_config ;;
+	config-write) action_config_write ;;
+	service) action_service ;;
+	overrides) action_overrides ;;
+	override-toggle) action_override_toggle ;;
+	subs) action_subs ;;
+	log) action_log ;;
+	crash) action_crash ;;
+	*) fail "400 Bad Request" '{"error":"不支持的操作"}' ;;
+esac
