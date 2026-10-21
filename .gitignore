@@ -105,3 +105,6 @@ third-party/**/node_modules/
 third-party/**/dist/
 
 # ---- 脱敏未完成前的临时拦截（见 PRIVACY-INVENTORY.md）----
+
+# CodeGraph 索引（本机生成，不入库）
+/.codegraph/
