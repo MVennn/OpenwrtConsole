@@ -358,7 +358,7 @@
     mergeClients,
     type ClientRow
   } from '@/utils/clients'
-  import { pickPrimaryGroup, resolveNode, isProxyGroup } from '@/utils/proxy'
+  import { pickPrimaryGroup, resolveNode, isVisibleGroup } from '@/utils/proxy'
   import { pickWanInterfaces, wanDeviceName } from '@/utils/network'
 
   defineOptions({ name: 'DashboardView' })
@@ -609,7 +609,7 @@
 
       const primary = pickPrimaryGroup(proxies)
       proxy.node = primary ? resolveNode(proxies, primary.now) : ''
-      proxy.groups = Object.values(proxies).filter(isProxyGroup).length
+      proxy.groups = Object.values(proxies).filter(isVisibleGroup).length
       probeProxyDelay(proxy.node)
     } catch {
       proxy.running = false

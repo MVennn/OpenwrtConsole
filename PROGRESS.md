@@ -191,3 +191,25 @@ LuCI 只保留为应急入口。
 ## 状态: 已完成
 
 ---
+
+# 2026-10-21 策略组列表隐藏内置 GLOBAL
+
+## 变更
+- `src/utils/proxy.ts` 新增 `isVisibleGroup`：排除 mihomo 内置 `GLOBAL`
+  （全局选择器，不是用户配置的策略组）。
+- `ProxyView` 的代理组列表、`Dashboard` 的策略组计数改用 `isVisibleGroup`；
+  `GLOBAL` 不再作为普通策略组显示。
+- `isProxyGroup` 保留给 `resolveNode` 等内部解析使用。
+
+## 自检
+- `npx vue-tsc --noEmit` ✓
+- `npm run build` ✓
+- `ROUTER_HOST=root@10.0.0.1 ./deploy/deploy.sh` ✓
+- 部署校验：入口 chunk `index-RqUMl49-.js` 本地/线上一致；
+  `ProxyView-CLzfonbm.js`、`DashboardView-D53RY2il.js` 的 sha256 本地/线上一致；
+  共享 `proxy-BEDlQoPq.js` 已包含 `GLOBAL` 过滤集合。
+- 旧标签页需硬刷新（Ctrl+F5）；刷新后策略组数 25 → 24，`GLOBAL` 行消失。
+
+## 状态: 已完成
+
+---

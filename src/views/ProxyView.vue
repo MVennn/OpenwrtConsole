@@ -316,7 +316,7 @@
     ShellCrashProxy
   } from '@/api/types'
   import { formatBytes } from '@/utils/format'
-  import { groupRank, pickPrimaryGroup, resolveNode } from '@/utils/proxy'
+  import { groupRank, isVisibleGroup, pickPrimaryGroup, resolveNode } from '@/utils/proxy'
 
   defineOptions({ name: 'ProxyView' })
 
@@ -366,7 +366,7 @@
 
   const groups = computed(() =>
     Object.values(proxies.value)
-      .filter((item) => ['Selector', 'URLTest', 'Fallback', 'LoadBalance'].includes(item.type))
+      .filter(isVisibleGroup)
       .sort((a, b) => groupRank(a.name) - groupRank(b.name) || a.name.localeCompare(b.name))
   )
 

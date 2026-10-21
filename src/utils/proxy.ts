@@ -2,6 +2,9 @@ import type { ShellCrashProxy } from '@/api/types'
 
 const GROUP_TYPES = ['Selector', 'URLTest', 'Fallback', 'LoadBalance']
 
+/** mihomo 内置的全局选择器，不是用户配置的策略组；界面里不展示。 */
+const HIDDEN_GROUPS = new Set(['GLOBAL'])
+
 /** Type order for {@link pickPrimaryGroup}: the main group is a Selector. */
 const TYPE_RANK: Record<string, number> = {
   Selector: 0,
@@ -12,6 +15,11 @@ const TYPE_RANK: Record<string, number> = {
 
 export function isProxyGroup(proxy: ShellCrashProxy | undefined): boolean {
   return Boolean(proxy && GROUP_TYPES.includes(proxy.type))
+}
+
+/** 策略组列表 / 主分组选择用；排除 GLOBAL 这类内置项。 */
+export function isVisibleGroup(proxy: ShellCrashProxy | undefined): boolean {
+  return isProxyGroup(proxy) && !HIDDEN_GROUPS.has(proxy?.name || '')
 }
 
 /**
@@ -47,7 +55,7 @@ export function groupRank(name: string): number {
 export function pickPrimaryGroup(
   proxies: Record<string, ShellCrashProxy>
 ): ShellCrashProxy | undefined {
-  const groups = Object.values(proxies).filter(isProxyGroup)
+  const groups = Object.values(proxies).filter(isVisibleGroup)
   if (!groups.length) return undefined
   return [...groups].sort(
     (a, b) =>
