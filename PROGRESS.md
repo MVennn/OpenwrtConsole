@@ -254,3 +254,29 @@ LuCI 只保留为应急入口。
 ## 状态: 已完成
 
 ---
+
+# 2026-10-21 README 门面统一（对齐 GSAuxiliary 七节）
+
+## 背景
+- 在「README 收敛批次」之后再收一轮：门面向读者是使用者，开发者内容下沉 `docs/`；
+  门面资源统一由 `assets/icon.svg` 渲染。
+
+## 已完成变更
+- [x] 根 `README.md` 收敛为七节门面（101 行）：这是什么 / 环境要求 / 安装 / 反馈 / 免责声明 / 开源鸣谢 / 许可证
+- [x] 「功能」分区表下沉新建的 `docs/FEATURES.md`；「限制」十二条下沉新建的 `docs/LIMITS.md`
+- [x] 本地开发细节下沉 `CONTRIBUTING.md`
+- [x] 新增 `tools/make_social_preview.py`（自带 SVG 渲染器，无第三方依赖），生成
+      `assets/logo.png` 与 `assets/social-preview.png`
+- [x] `docs/DOC-RULES.md` 正本映射表与禁止重复清单、`docs/README.md` 索引、
+      `docs/MAINTENANCE.md` §5、`docs/VERSIONING.md` §2 同步
+- [x] CHANGELOG 增补「门面统一批次」
+
+## 自检
+- `python tools/check-docs.py` ✓（25 篇）
+- `npx vue-tsc --noEmit` ✓；`npm run build` ✓
+- GitHub 侧：仓库描述与话题已更新；社交预览图已上传并与仓内资产逐字节一致
+
+## 状态: 已完成
+
+---
+

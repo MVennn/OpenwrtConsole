@@ -16,6 +16,26 @@
 
 ---
 
+## [未发布] — 2026-10-21
+
+### 门面统一批次（2026-10-21）
+
+在「README 收敛批次」之后再收一轮：门面压到与 GSAuxiliary 同款的七节，
+开发者内容继续下沉 `docs/`，门面资源（logo / 社交预览）统一由 `assets/icon.svg` 渲染。
+
+- 调整 文档 —— 根 README 收敛为七节（这是什么 / 环境要求 / 安装 / 反馈 / 免责声明 / 开源鸣谢 / 许可证）；
+  顶部不写「一句话」引言块，定位由副标题承担（对齐 GSAuxiliary）
+- 调整 文档 —— 「功能」分区表下沉新建的 [docs/FEATURES.md](docs/FEATURES.md)；「限制」十二条下沉新建的 [docs/LIMITS.md](docs/LIMITS.md)；
+  本地开发细节（mock 路由器、`ROUTER_URL` 覆盖）下沉 [CONTRIBUTING.md](CONTRIBUTING.md)
+- 新增 工具 —— `tools/make_social_preview.py`：自带 SVG 渲染器，从 `assets/icon.svg` 生成
+  `assets/logo.png`（512×512）与 `assets/social-preview.png`（1280×640），不依赖 cairosvg 等外部程序
+- 调整 资源 —— `assets/logo.png` 改为由 `assets/icon.svg` 渲染，图形不再有两份正本
+- 调整 文档 —— `docs/DOC-RULES.md` 正本映射表与 `docs/README.md` 索引同步；
+  各仓 docs 里指向根 README 章节的文字引用改指新正本
+- 调整 仓库 —— GitHub 仓库描述与话题改成面向使用者的口径（与 README 副标题同调）
+
+---
+
 ## [0.3.0] — 2026-10-21
 
 ### 路由器端修复
