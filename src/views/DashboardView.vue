@@ -1218,6 +1218,8 @@
   .side-stack {
     display: flex;
     flex-direction: column;
+    /* Keep the last card on the same baseline as the taller card next to it. */
+    justify-content: space-between;
     gap: var(--space-4);
     min-width: 0;
   }

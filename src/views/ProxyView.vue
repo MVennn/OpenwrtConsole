@@ -684,6 +684,10 @@
   .side-stack {
     display: flex;
     flex-direction: column;
+    /* The grid row is as tall as the proxy-group card. Push the last card to
+       the bottom so both columns end on the same line instead of leaving a
+       small strip of empty space under the right column. */
+    justify-content: space-between;
     gap: var(--space-4);
     min-width: 0;
   }
