@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="https://gitlab.com/M.Venn/OpenwrtConsole/-/raw/main/assets/logo.png" width="128" alt="OpenwrtConsole">
+<img src="https://raw.githubusercontent.com/MVennn/OpenwrtConsole/main/assets/logo.png" width="128" alt="OpenwrtConsole">
 
 # OpenwrtConsole
 
@@ -8,7 +8,7 @@
 
 看状态、改配置、装软件、刷固件、重启，一个界面里做完。
 
-![流水线](https://gitlab.com/M.Venn/OpenwrtConsole/badges/main/pipeline.svg) ![源码仓库](https://img.shields.io/badge/源码仓库-GitLab-FC6D26?logo=gitlab&logoColor=white) ![问题反馈](https://img.shields.io/badge/问题反馈-Issues-FC6D26?logo=gitlab&logoColor=white) ![Vue 3](https://img.shields.io/badge/Vue-3-4FC08D?logo=vuedotjs&logoColor=white) ![OpenWrt](https://img.shields.io/badge/OpenWrt-任意设备-00B5E2?logo=openwrt&logoColor=white) ![Node.js](https://img.shields.io/badge/Node.js-20%2B-339933?logo=node.js&logoColor=white) ![License](https://img.shields.io/badge/License-MIT-blue)
+![CI](https://github.com/MVennn/OpenwrtConsole/actions/workflows/ci.yml/badge.svg) ![源码仓库](https://img.shields.io/badge/源码仓库-GitHub-181717?logo=github&logoColor=white) ![问题反馈](https://img.shields.io/badge/问题反馈-Issues-181717?logo=github&logoColor=white) ![Vue 3](https://img.shields.io/badge/Vue-3-4FC08D?logo=vuedotjs&logoColor=white) ![OpenWrt](https://img.shields.io/badge/OpenWrt-任意设备-00B5E2?logo=openwrt&logoColor=white) ![Node.js](https://img.shields.io/badge/Node.js-20%2B-339933?logo=node.js&logoColor=white) ![License](https://img.shields.io/badge/License-MIT-blue)
 
 </div>
 
@@ -25,9 +25,9 @@
 
 部署后访问 `https://<路由器IP>/modern/`（`10.0.0.1` 只是默认网关的通行默认值，以你设备实际地址为准）。
 三层数据流与通道表见
-[docs/ARCHITECTURE.md](https://gitlab.com/M.Venn/OpenwrtConsole/-/blob/main/docs/ARCHITECTURE.md)，
+[docs/ARCHITECTURE.md](https://github.com/MVennn/OpenwrtConsole/blob/main/docs/ARCHITECTURE.md)，
 9 个 CGI 的请求 / 响应 JSON 形状见
-[docs/CGI-CONTRACT.md](https://gitlab.com/M.Venn/OpenwrtConsole/-/blob/main/docs/CGI-CONTRACT.md)。
+[docs/CGI-CONTRACT.md](https://github.com/MVennn/OpenwrtConsole/blob/main/docs/CGI-CONTRACT.md)。
 
 ## 适用环境
 
@@ -38,7 +38,7 @@
 | 运行时依赖（按功能） | `curl` —— 代理页与固件页的更新检查 / 下载；`apk` —— 软件包页（OpenWrt 24.10+），只有 `opkg` 的固件软件包页不可用 |
 | 前端工具链 | Node.js 20+（`npm` 随 Node 一起装）、npm 10+ |
 | 路由器访问 | uhttpd 已启用 `/ubus` 与 CGI（默认即满足）；uhttpd 默认自签证书，浏览器首次访问会警告 |
-| 登录方式 | SSH 到 `root@<路由器IP>`（密码登录需配 `SSH_ASKPASS`，见 [DEPLOY](https://gitlab.com/M.Venn/OpenwrtConsole/-/blob/main/DEPLOY.md)）；控制台登录用的就是路由器的 root 密码 |
+| 登录方式 | SSH 到 `root@<路由器IP>`（密码登录需配 `SSH_ASKPASS`，见 [DEPLOY](https://github.com/MVennn/OpenwrtConsole/blob/main/DEPLOY.md)）；控制台登录用的就是路由器的 root 密码 |
 | 可选依赖 | ShellCrash（不装也能用，只是「代理」「ShellCrash」页会显示未检测到服务） |
 
 **已验证环境**（验证环境，不是支持范围 —— 上表满足就能用）：
@@ -81,7 +81,7 @@ ROUTER_HOST=root@<路由器IP> ./deploy/deploy.sh
 > `ROUTER_HOST` 不设时默认是 `root@10.0.0.1`；`ROUTER_WEB` 可覆盖部署目录（默认 `/www/modern`）。
 
 部署脚本把 `dist/` 推到 `/www/modern`，把 9 个 `deploy/modern-*` 推到 `/www/cgi-bin/`。
-完整步骤、缓存与世代保留机制、回退命令见 [DEPLOY](https://gitlab.com/M.Venn/OpenwrtConsole/-/blob/main/DEPLOY.md)。
+完整步骤、缓存与世代保留机制、回退命令见 [DEPLOY](https://github.com/MVennn/OpenwrtConsole/blob/main/DEPLOY.md)。
 
 ## 功能
 
@@ -133,14 +133,14 @@ ROUTER_HOST=root@<路由器IP> ./deploy/deploy.sh
 
 ## 反馈
 
-遇到页面不对、功能缺失或部署问题，到 [Issues](https://gitlab.com/M.Venn/OpenwrtConsole/-/issues) 反馈。
+遇到页面不对、功能缺失或部署问题，到 [Issues](https://github.com/MVennn/OpenwrtConsole/issues) 反馈。
 请尽量带上：设备型号与固件版本、浏览器与控制台版本、出问题的页面与复现步骤、
 浏览器控制台报错原文。排错可以先查
-[docs/TROUBLESHOOTING.md](https://gitlab.com/M.Venn/OpenwrtConsole/-/blob/main/docs/TROUBLESHOOTING.md)（按现象检索）。
+[docs/TROUBLESHOOTING.md](https://github.com/MVennn/OpenwrtConsole/blob/main/docs/TROUBLESHOOTING.md)（按现象检索）。
 
 想参与贡献（怎么跑起来、组件与样式规范、提交前自检），见
-[CONTRIBUTING](https://gitlab.com/M.Venn/OpenwrtConsole/-/blob/main/CONTRIBUTING.md)；
-安全问题按 [SECURITY](https://gitlab.com/M.Venn/OpenwrtConsole/-/blob/main/SECURITY.md) 报告。
+[CONTRIBUTING](https://github.com/MVennn/OpenwrtConsole/blob/main/CONTRIBUTING.md)；
+安全问题按 [SECURITY](https://github.com/MVennn/OpenwrtConsole/blob/main/SECURITY.md) 报告。
 
 ## 免责声明
 
@@ -163,16 +163,16 @@ ROUTER_HOST=root@<路由器IP> ./deploy/deploy.sh
 | [**Vite**](https://github.com/vitejs/vite) · [**TypeScript**](https://github.com/microsoft/TypeScript) | 构建工具与类型系统 |
 | [**Element Plus**](https://github.com/element-plus/element-plus) | UI 组件库（按需引入） |
 | [**ECharts**](https://github.com/apache/echarts) · [**Lucide**](https://lucide-icons/lucide) | 图表（仅折线图）与图标 |
-| [**art-design-pro**](https://github.com/Daymychen/art-design-pro) | 设计令牌的视觉基线（`src/styles/tokens.css` 的色值逐个对应它；未引入 Tailwind）—— 原样 vendor 在 [third-party/art-design-pro/](https://gitlab.com/M.Venn/OpenwrtConsole/-/tree/main/third-party/art-design-pro)，MIT |
+| [**art-design-pro**](https://github.com/Daymychen/art-design-pro) | 设计令牌的视觉基线（`src/styles/tokens.css` 的色值逐个对应它；未引入 Tailwind）—— 原样 vendor 在 [third-party/art-design-pro/](https://github.com/MVennn/OpenwrtConsole/tree/main/third-party/art-design-pro)，MIT |
 | [**OpenWrt**](https://github.com/openwrt/openwrt) / [**LuCI**](https://github.com/openwrt/luci) | 目标平台与对照实现（只**调用**它们的接口，不含其代码） |
 
 **随仓分发的上游项目**索引见
-[third-party/README.md](https://gitlab.com/M.Venn/OpenwrtConsole/-/blob/main/third-party/README.md)；
-第三方组件的完整许可证声明见 [NOTICE](https://gitlab.com/M.Venn/OpenwrtConsole/-/blob/main/NOTICE)。
+[third-party/README.md](https://github.com/MVennn/OpenwrtConsole/blob/main/third-party/README.md)；
+第三方组件的完整许可证声明见 [NOTICE](https://github.com/MVennn/OpenwrtConsole/blob/main/NOTICE)。
 
 ## 许可证
 
-本仓库以 [MIT License](https://gitlab.com/M.Venn/OpenwrtConsole/-/blob/main/LICENSE) 发布。
+本仓库以 [MIT License](https://github.com/MVennn/OpenwrtConsole/blob/main/LICENSE) 发布。
 
 > 本仓不包含任何 GPL-3.0 派生件（ShellCrash 的派生件在兄弟仓 `ShellcrashRules`），
 > 因此整仓 MIT 成立。引用的第三方组件各自适用其自己的许可证。

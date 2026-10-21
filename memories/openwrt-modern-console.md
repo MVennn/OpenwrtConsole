@@ -8,7 +8,7 @@ metadata:
 ---
 
 2026-10-20 做了一套**通用**控制台（art-design-pro 设计语言），最初在小米 AX3000T 上验证；
-源码有两份：git 仓库 `OpenwrtConsole\`（2026-10-20 建仓，独立上传 GitLab）与开发副本 `frontend\`（上游 OpenWrt 运维仓）；线上 <https://<路由器IP>/modern/>。
+源码有两份：git 仓库 `OpenwrtConsole\`（2026-10-20 建仓，独立上传 GitHub）与开发副本 `frontend\`（上游 OpenWrt 运维仓）；线上 <https://<路由器IP>/modern/>。
 改完要把开发副本同步回仓库：`src/` + `deploy/` 全量覆盖，但仓库独有的 `src/api/device.ts`、`src/views/LoginView.vue`、`vite.config.ts` 不要覆盖（`firmware.ts` 要手工合并）。
 **根路径 `/` 已指向它，LuCI 降级为应急入口**（`/cgi-bin/luci/`、`/index.luci.html`）。
 LuCI 主题包已删除（`apk del luci-theme-bootstrap` + 手动装的 argon），

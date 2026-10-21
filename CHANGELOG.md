@@ -345,7 +345,7 @@
 - 调整 文档 —— 「仓库现状说明」迁入 [docs/MAINTENANCE.md](docs/MAINTENANCE.md) §8「与源目录的同步状态」；删掉「记忆文档」「文档地图」「参与与治理」等开发者向章节（docs 索引就是文档地图）
 
 **本仓是首次建仓。** 内容不是一次功能发布，而是把上游 OpenWrt 运维仓的 `frontend/`
-（源目录）的**快照**拆出来，做成能独立上传 GitLab、独立看懂、独立演进的仓库。
+（源目录）的**快照**拆出来，做成能独立上传 GitHub、独立看懂、独立演进的仓库。
 
 拆分动作只动**文档层**：`src/`、`deploy/`、`public/`、`package.json`、`vite.config.ts`、
 `tsconfig.json`、`index.html`、`docs/V2-CONTRACT.md`、`docs/V3-CONTRACT.md`、`DESIGN.md`
