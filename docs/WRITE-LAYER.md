@@ -94,7 +94,11 @@ await systemOps.reloadNetwork()
 是死代码。**这段死代码已删** —— `src/api/uci.ts` 现在只导出
 `uciGet` / `uciGetSection` / `uciSet` / `uciDelete` / `uciAdd` / `uciCommit` / `uciChanges`。
 
-**应用一律走 `systemOps.applyChanges()` → CGI `modern-uci` 的 `uci-apply`（`uci apply`）。**
+**应用一律走 `systemOps.applyChanges()` → CGI `modern-uci` 的 `uci-apply`。**
+`uci-apply` 在路由器上执行 `/sbin/reload_config`（没有该脚本时回退 `ubus call uci apply`）：
+它把已提交的配置与上次生效的状态对比，只对真正变化的配置包发 `config.change`，
+由 procd 重载对应服务。**不要写成 `uci apply`** —— OpenWrt 的 uci 命令行没有这个子命令，
+早期版本因此把「应用」变成了静默空操作（静态租约、主机名、时区保存后不生效）。
 本篇与 [CGI-CONTRACT.md](CGI-CONTRACT.md) 都以这条为准。
 
 ## 3. 哪些动作必须走 root CGI
@@ -114,7 +118,7 @@ await systemOps.reloadNetwork()
 | 卸载软件包 | root CGI | `modern-pkg` `remove` | —（`confirm=yes`） | ✅ |
 | 更新仓库索引 / 全量升级 | root CGI | `modern-pkg` `update` / `upgrade` | —（`confirm=yes`） | ✅ |
 | 切换代理策略组节点 | root CGI | `modern-proxy` `POST` | —（组内成员校验） | ✅ |
-| ShellCrash 服务启停 | root CGI | `modern-shellcrash` `service` | —（不要求 confirm） | — |
+| ShellCrash 服务启停 | root CGI | `modern-shellcrash` `service` | —（`confirm=yes`） | — |
 | ShellCrash 配置键写入 | root CGI | `modern-shellcrash` `config-write` | —（`confirm=yes`） | — |
 | ShellCrash 覆写文件启停 | root CGI | `modern-shellcrash` `override-toggle` | —（`confirm=yes`） | — |
 | ShellCrash 订阅热更新 | root CGI | `modern-shellcrash` `sub-update` | —（`confirm=yes`） | — |
@@ -135,11 +139,9 @@ await systemOps.reloadNetwork()
 > 修法是检查实际参数 `$_got` 并限制令牌字符集 `[A-Za-z0-9-]`。路由器上的 `modern-uci`
 > 必须是本次部署的新版本，否则旧行为仍在。
 
-> ⚠️ **待办（安全缺口）**：ShellCrash 服务启停（`service`）是本表里**最危险的动作**，
-> 却**不要求 `confirm=yes`** —— `deploy/modern-shellcrash` 的 `action_service()` 里**没有** `_confirm` 判断，
-> 而同一文件里的 `config-write` / `override-toggle` / `sub-update` 都有。
-> 也就是「停核心 / 重启核心」比「改一个配置键」更容易触发 —— **最危险的动作反而没有确认保护**，
-> 是本表当前最明显的安全缺口，待补。
+> **已补（本版）**：ShellCrash 服务启停（`service`）现在与配置写入一样要求 `confirm=yes` ——
+> `deploy/modern-shellcrash` 的 `action_service()` 在读取 `service` / `action` 之前先做确认检查，
+> 前端 `runShellCrashService()` 在用户确认后带上该参数。此前它是本表里最危险、却唯一没有确认保护的动作。
 
 ### 令牌与确认词的先后顺序
 

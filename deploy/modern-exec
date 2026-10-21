@@ -274,27 +274,23 @@ json="$(awk -v code="$status" -v tool="$tool" -v target="$target" \
 	-v command="$command" -v dur="$duration_ms" -v trunc="$truncated" \
 	-v params="$params_json" '
 BEGIN {
-	ctrl = "\001\002\003\004\005\006\007\010\013\014\016\017\020\021\022\023\024\025\026\027\030\031\032\033\034\035\036\037"
-	nl = "\\n"
+	BS = sprintf("%c", 92)
+	Q = sprintf("%c", 34)
+	nl = BS "n"
 	printf "{\"tool\":\"%s\",\"target\":\"%s\",\"command\":\"%s\",\"params\":%s,\"exit_code\":%d,\"duration_ms\":%d,\"truncated\":%s,\"output\":\"",
 		tool, target, command, params, code, dur, (trunc == "true" ? "true" : "false")
 }
-function esc(s,   i, c, out) {
-	out = ""
-	for (i = 1; i <= length(s); i++) {
-		c = substr(s, i, 1)
-		if (c == "\\") out = out "\\\\"
-		else if (c == "\"") out = out "\\\""
-		else if (c == "\t") out = out "\\t"
-		else if (c == "\r") out = out "\\r"
-		else if (index(ctrl, c) > 0) out = out " "
-		else out = out c
-	}
-	return out
+function esc(s) {
+	gsub(/\\/, BS BS BS BS, s)
+	gsub(/"/, BS BS Q, s)
+	gsub(/\t/, BS BS "t", s)
+	gsub(/\r/, BS BS "r", s)
+	gsub(/[\001-\037]/, " ", s)
+	return s
 }
 {
-	printf "%s", esc($0)
 	if (NR > 1) printf "%s", nl
+	printf "%s", esc($0)
 }
 END {
 	printf "\"}"

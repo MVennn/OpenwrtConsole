@@ -107,29 +107,19 @@ send_json() {
 }
 
 fail() {
-	printf 'Status: %s
-' "$1"
-	printf 'Content-Type: application/json; charset=utf-8
-'
-	printf 'Cache-Control: no-store
-'
-	printf 'X-Content-Type-Options: nosniff
-
-'
+	printf 'Status: %s\r\n' "$1"
+	printf 'Content-Type: application/json; charset=utf-8\r\n'
+	printf 'Cache-Control: no-store\r\n'
+	printf 'X-Content-Type-Options: nosniff\r\n\r\n'
 	send_json "$2"
 	exit 0
 }
 
 ok() {
-	printf 'Status: 200 OK
-'
-	printf 'Content-Type: application/json; charset=utf-8
-'
-	printf 'Cache-Control: no-store
-'
-	printf 'X-Content-Type-Options: nosniff
-
-'
+	printf 'Status: 200 OK\r\n'
+	printf 'Content-Type: application/json; charset=utf-8\r\n'
+	printf 'Cache-Control: no-store\r\n'
+	printf 'X-Content-Type-Options: nosniff\r\n\r\n'
 	send_json "$1"
 	exit 0
 }
@@ -217,27 +207,39 @@ param() {
 
 # --------------------------------------------------------------- helpers ---
 
-# Escapes a value and wraps it in quotes so it can be dropped into JSON.
+# Escapes a value and wraps it in quotes so it can be dropped into JSON. The
+# backslash is built with sprintf because BusyBox awk and gawk disagree about
+# backslashes written literally in a gsub replacement.
 jstr() {
 	_jq=$(printf '%s' "$1" | awk '
-	BEGIN {
-		ctrl = "\001\002\003\004\005\006\007\010\011\012\013\014\015\016\017\020\021\022\023\024\025\026\027\030\031\032\033\034\035\036\037"
-	}
+	BEGIN { BS = sprintf("%c", 92); Q = sprintf("%c", 34) }
 	{
+		s = $0
+		gsub(/\\/, BS BS BS BS, s)
+		gsub(/"/, BS BS Q, s)
+		gsub(/\t/, BS BS "t", s)
+		gsub(/\r/, BS BS "r", s)
+		gsub(/[\001-\037]/, " ", s)
 		if (NR > 1) printf " "
-		line = $0
-		n = length(line)
-		for (i = 1; i <= n; i++) {
-			c = substr(line, i, 1)
-			if (c == "\\") printf "\\\\"
-			else if (c == "\"") printf "\\\""
-			else if (c == "\t") printf "\\t"
-			else if (c == "\r") printf "\\r"
-			else if (index(ctrl, c) > 0) printf " "
-			else printf "%s", c
-		}
+		printf "%s", s
 	}')
 	printf '"%s"' "$_jq"
+}
+
+# Reads lines from stdin and prints them as comma separated JSON strings (the
+# caller wraps them in []). One awk pass instead of one process per line.
+jstr_lines() {
+	awk '
+	BEGIN { BS = sprintf("%c", 92); Q = sprintf("%c", 34) }
+	function esc(s) {
+		gsub(/\\/, BS BS BS BS, s)
+		gsub(/"/, BS BS Q, s)
+		gsub(/\t/, BS BS "t", s)
+		gsub(/\r/, BS BS "r", s)
+		gsub(/[\001-\037]/, " ", s)
+		return s
+	}
+	{ if (NR > 1) printf ","; printf "\"%s\"", esc($0) }'
 }
 
 jnum() {
@@ -292,7 +294,6 @@ running_pid() {
 	fi
 }
 
-# The pid of the console itself must never be mistaken for the core.
 autostart_enabled() {
 	ls "$INITD_DIR" 2>/dev/null | grep -q 'shellcrash'
 }
@@ -496,6 +497,9 @@ action_config_write() {
 # --------------------------------------------------------------- service ---
 
 action_service() {
+	_confirm=$(param confirm)
+	[ "$_confirm" = "yes" ] || fail "403 Forbidden" '{"error":"需要 confirm=yes 确认"}'
+
 	_svc=$(param service)
 	[ -n "$_svc" ] || _svc="shellcrash"
 	[ "$_svc" = "shellcrash" ] || fail "400 Bad Request" '{"error":"不支持的服务"}'
@@ -608,37 +612,34 @@ RUNNER_EOF
 	else
 		"$RUNNER" "$INIT_SCRIPT" "$_runner_script" "$_act" "$_log" "$_rc" >/dev/null 2>&1 &
 	fi
-	_watch=$!
 
 	ok "{\"ok\":true,\"action\":$(jstr "$_act"),\"started\":true,\"message\":\"操作已提交，路由器正在执行\"}"
 }
 
 # ------------------------------------------------------------- overrides ---
 
-# The header comment of an override file explains what it is for.
-override_description() {
-	# Only whole comment lines are used, so the result never contains a
-	# half byte of a multi byte character.
-	_desc=$(sed -n '1,12p' "$1" 2>/dev/null |
+# The header comment of an override file explains what it is for. $2 is the
+# number of comment lines to join; the summary is the same list cut to one.
+# Only whole comment lines are used, so the result never contains a half byte
+# of a multi byte character.
+override_comment() {
+	_cmt=$(sed -n '1,12p' "$1" 2>/dev/null |
 		grep '^[[:space:]]*#' |
 		sed 's/^[[:space:]]*#[[:space:]]*//' |
 		grep -v '^$' |
 		grep -v '^[[:space:]=*_-]\{3,\}[[:space:]]*$' |
-		head -n 3 |
+		head -n "$2" |
 		tr '\n' ' ')
-	_desc=$(printf '%s' "$_desc" | sed 's/[[:space:]]\{1,\}/ /g; s/^ //; s/ $//')
-	printf '%s' "$_desc"
+	_cmt=$(printf '%s' "$_cmt" | sed 's/[[:space:]]\{1,\}/ /g; s/^ //; s/ $//')
+	printf '%s' "$_cmt"
 }
 
-# The first comment line of the file: the short summary of its purpose.
+override_description() {
+	override_comment "$1" 3
+}
+
 override_summary() {
-	_sum=$(sed -n '1,12p' "$1" 2>/dev/null |
-		grep '^[[:space:]]*#' |
-		sed 's/^[[:space:]]*#[[:space:]]*//' |
-		grep -v '^$' |
-		grep -v '^[[:space:]=*_-]\{3,\}[[:space:]]*$' |
-		head -n 1)
-	printf '%s' "$_sum"
+	override_comment "$1" 1
 }
 
 # The number of lines of one file.
@@ -660,10 +661,10 @@ file_mtime() {
 	ls -l --full-time "$1" 2>/dev/null | awk 'NR == 1 { print $6 " " $7 }'
 }
 
+# date -r reads the mtime directly; parsing the `ls --full-time` output would
+# need a date -d that BusyBox may not support for that exact format.
 file_mtime_epoch() {
-	_m=$(file_mtime "$1")
-	[ -n "$_m" ] || { printf '0'; return; }
-	date -d "$_m" +%s 2>/dev/null | tr -cd '0-9'
+	date -r "$1" +%s 2>/dev/null | tr -cd '0-9'
 }
 
 action_overrides() {
@@ -875,15 +876,7 @@ EOF
 		ok "{\"ok\":true,\"file\":$(jstr ""),\"lines\":[],\"files\":[$_files]}"
 	fi
 
-	_lines=""
-	_count=0
-	while IFS= read -r _line; do
-		_count=$((_count + 1))
-		[ -z "$_lines" ] || _lines="$_lines,"
-		_lines="$_lines$(jstr "$_line")"
-	done << EOF
-$(tail -n "$MAX_LOG_LINES" "$_target" 2>/dev/null | mask_secrets)
-EOF
+	_lines=$(tail -n "$MAX_LOG_LINES" "$_target" 2>/dev/null | mask_secrets | jstr_lines)
 
 	ok "{\"ok\":true,\"file\":$(jstr "$_target"),\"lines\":[$_lines],\"files\":[$_files]}"
 }
@@ -909,15 +902,7 @@ action_crash() {
 
 	_cron=$(crontab -l 2>/dev/null | grep 'guardian' | head -n 1)
 
-	_glines=""
-	_gcount=0
-	while IFS= read -r _line; do
-		_gcount=$((_gcount + 1))
-		[ -z "$_glines" ] || _glines="$_glines,"
-		_glines="$_glines$(jstr "$_line")"
-	done << EOF
-$(tail -n 20 "$SC_DIR/guardian.log" 2>/dev/null | mask_secrets)
-EOF
+	_glines=$(tail -n 20 "$SC_DIR/guardian.log" 2>/dev/null | mask_secrets | jstr_lines)
 
 	ok "{\"ok\":true,\"running\":$(jbool "$_running"),\"pid\":$(jnum "$_pid"),\"core_version\":$(jstr "$(cfg_get core_v)"),\"start_time\":$(jnum "$_start"),\"uptime\":$(jnum "$_uptime"),\"alive_ts\":$(jnum "$_alive"),\"alive_age\":$(jnum "$_alive_age"),\"probe_ts\":$(jnum "$_probe"),\"last_fallback_heal\":$(jnum "$_heal"),\"start_error\":$(jbool "$_start_error"),\"guardian_cron\":$(jstr "$_cron"),\"guardian_log\":[$_glines]}"
 }
@@ -1157,14 +1142,7 @@ action_sub_update_state() {
 	[ -n "$_started" ] || _started=0
 	[ -n "$_finished" ] || _finished=0
 
-	_lines=""
-	while IFS= read -r _line; do
-		[ -n "$_line" ] || continue
-		[ -z "$_lines" ] || _lines="$_lines,"
-		_lines="$_lines$(jstr "$(printf '%s' "$_line" | mask_secrets)")"
-	done << EOF
-$(tail -n 30 "$SUB_UPDATE_LOG" 2>/dev/null)
-EOF
+	_lines=$(tail -n 30 "$SUB_UPDATE_LOG" 2>/dev/null | mask_secrets | grep -v '^$' | jstr_lines)
 
 	ok "{\"ok\":true,\"running\":$(jbool "$_running"),\"done\":$(jbool "$_done"),\"success\":$(jbool "$_success"),\"rc\":$(jnum "$_rc"),\"started\":$(jnum "$_started"),\"finished\":$(jnum "$_finished"),\"lines\":[$_lines]}"
 }

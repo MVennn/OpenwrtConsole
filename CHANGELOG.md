@@ -18,6 +18,45 @@
 
 ## [未发布] — 2026-10-21
 
+### 路由器端修复
+
+- 修复 `uci-apply` 空操作 —— `modern-uci` 原来执行 `uci apply`，但 OpenWrt 的 uci
+  命令行没有这个子命令（真机退出码 255），CGI 忽略退出码返回成功，导致
+  「DHCP 与系统设置」页的静态租约、主机名、时区、syslog 大小保存后不生效。
+  现在改用 `/sbin/reload_config`（缺失时回退 `ubus call uci apply`），
+  只对真正变化的配置包触发 `config.change`。
+- 修复 `modern-proxy` 的 sid 校验 —— 它是 6 个 shell CGI 里唯一没有
+  `[A-Za-z0-9._~+/=-]` 白名单的，sid 会直接插进 ubus 的 JSON；现在与其余 CGI
+  一致，越界直接 401。
+- 修复 `modern-proxy` 切换失败的消息转义 —— mihomo 的 `message` 未转义就拼进
+  JSON，含引号时整个应答非法；现在走统一的控制字符转义。
+- 修复 `modern-sysupgrade` 的 `json_escape` —— 原来只处理 `\` 和 `"`，制表符与
+  其他控制字符会原样留下，可能让整个应答非法；现在与其它 CGI 用同一套处理。
+- 补 ShellCrash 服务启停的确认 —— `service` 现在与 `config-write` /
+  `override-toggle` / `sub-update` 一样要求 `confirm=yes`；前端
+  `runShellCrashService()` 在用户确认后带上该参数。
+- 修复 `modern-exec` 输出首行粘连 —— 换行符原来在行后输出且第一行不输出，
+  `ip route` 等多行结果的第一、二行会被拼在一起；现在改为行前输出。
+- 清理 `modern-shellcrash` 的 `fail()` / `ok()` —— 去掉 printf 格式串里的真实
+  换行，并删除未使用的 `_watch` 与错位注释。
+
+### 路由器端性能
+
+- 优化 JSON 转义 —— `esc_json` / `jstr` / `modern-exec` 的 `esc` /
+  `modern-sysupgrade` 的 `json_escape` 从逐字符拼接改为 `gsub` 多遍；真机实测
+  200 KB 输入的旧写法 20 秒仍未结束，新写法不到 1 秒。反斜杠用
+  `sprintf("%c", 92)` 构造，避免 BusyBox awk 与 gawk 对 gsub 替换串的不同解释。
+- 优化日志数组拼装 —— `modern-shellcrash` 的 `log` / `crash` /
+  `sub-update-state` 原来每行起一个 awk，200 行日志约 400–600 个进程；现在一次
+  awk 输出整个数组。真机回归：带引号 / 反斜杠 / 制表符的日志行回读与原文一致。
+- 优化 `modern-data` 的日志读取 —— `logread | tail -n N` 改为 `logread -l N`，
+  少一个进程，也不再缓冲整个环形缓冲区。
+- 优化 `modern-shellcrash` 的 overrides 统计 —— `file_mtime_epoch` 改用
+  `date -r`（原来解析 `ls --full-time` 再 `date -d`，多两个进程且依赖日期格式），
+  并把 `override_description` / `override_summary` 合并为一个函数。
+- 清理 `modern-pkg` 的缓存 —— 删除旧缓存时同时清掉 `.count` / `.free`，
+  不再留下孤儿文件。
+
 ### 开发工具
 
 - 新增 本地 mock 路由器 —— `tools/mock-router.mjs` 用合成数据提供 `/ubus` 与

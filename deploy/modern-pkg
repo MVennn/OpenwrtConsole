@@ -245,27 +245,21 @@ run_bg() {
 	return $_rs
 }
 
-# Escapes a file (or stdin) into a JSON string body, without the quotes.
+# Escapes a file (or stdin) into a JSON string body, without the quotes. The
+# backslash is built with sprintf because BusyBox awk and gawk disagree about
+# backslashes written literally in a gsub replacement.
 esc_json() {
 	awk '
-	BEGIN {
-		ctrl = "\001\002\003\004\005\006\007\010\013\014\016\017\020\021\022\023\024\025\026\027\030\031\032\033\034\035\036\037"
-	}
+	BEGIN { BS = sprintf("%c", 92); Q = sprintf("%c", 34) }
 	NR > 1 { printf "\\n" }
 	{
-		line = $0
-		out = ""
-		n = length(line)
-		for (i = 1; i <= n; i++) {
-			c = substr(line, i, 1)
-			if (c == "\\") out = out "\\\\"
-			else if (c == "\"") out = out "\\\""
-			else if (c == "\t") out = out "\\t"
-			else if (c == "\r") out = out "\\r"
-			else if (index(ctrl, c) > 0) out = out " "
-			else out = out c
-		}
-		printf "%s", out
+		s = $0
+		gsub(/\\/, BS BS BS BS, s)
+		gsub(/"/, BS BS Q, s)
+		gsub(/\t/, BS BS "t", s)
+		gsub(/\r/, BS BS "r", s)
+		gsub(/[\001-\037]/, " ", s)
+		printf "%s", s
 	}'
 }
 
@@ -471,11 +465,12 @@ cache_put() {
 		mv "$CACHE_DIR/$1.count.tmp" "$CACHE_DIR/$1.count" 2>/dev/null
 	cp "$4" "$CACHE_DIR/$1.free.tmp" 2>/dev/null &&
 		mv "$CACHE_DIR/$1.free.tmp" "$CACHE_DIR/$1.free" 2>/dev/null
-	# Keep the cache small: only the newest few entries survive.
+	# Keep the cache small: only the newest few entries survive. The count and
+	# free files of a dropped entry have to go with it.
 	for _f in "$CACHE_DIR"/*.json; do
 		[ -f "$_f" ] || continue
 		[ "$_f" = "$CACHE_DIR/$1.json" ] && continue
-		rm -f "$_f" 2>/dev/null
+		rm -f "$_f" "${_f%.json}.count" "${_f%.json}.free" 2>/dev/null
 	done
 	return 0
 }

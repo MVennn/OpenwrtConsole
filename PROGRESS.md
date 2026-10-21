@@ -213,3 +213,41 @@ LuCI 只保留为应急入口。
 ## 状态: 已完成
 
 ---
+
+# 2026-10-21 路由器端修复与性能优化
+
+## 背景
+- 全量审计 9 个 CGI（4376 行）后发现：`uci-apply` 在真机上是空操作、
+  `modern-proxy` 缺 sid 白名单、大输出转义是逐字符拼接（真机 200 KB 超 20 秒），
+  以及每行一个 awk 的 JSON 拼装（200 行日志约 400–600 个进程）。
+
+## 变更
+- [x] `modern-uci`：`uci-apply` 改为 `/sbin/reload_config`（回退 `ubus call uci apply`）
+- [x] `modern-proxy`：补 sid 字符白名单；mihomo 错误消息经统一转义
+- [x] `modern-sysupgrade`：`json_escape` 覆盖制表符与控制字符
+- [x] `modern-shellcrash`：`service` 要求 `confirm=yes`；日志 / 守护日志 / 订阅更新日志
+  改为单次 awk 输出数组；`jstr` 改 gsub；overrides 时间戳改用 `date -r`；
+  合并 `override_description` / `override_summary`；`fail`/`ok` 换行清理；
+  删除未使用的 `_watch` 与错位注释
+- [x] `modern-pkg`：`esc_json` 改 gsub；缓存清理同时删除 `.count` / `.free`
+- [x] `modern-exec`：转义改 gsub；修正多行输出第一、二行粘连
+- [x] `modern-data`：`logread -l N` 替代 `logread | tail -n N`
+- [x] 前端：`runShellCrashService()` 带 `confirm: 'yes'`
+- [x] 文档：WRITE-LAYER / CGI-CONTRACT / ARCHITECTURE / CHANGELOG 同步
+
+## 自检
+- `sh -n` 6 个 shell CGI ✓
+- 真机只读回归（CGI 复制到 `/tmp` 后运行，认证检查仅在这份临时副本里旁路；
+  线上文件与生产认证逻辑未改）：shellcrash `status/config/overrides/subs/crash/
+  ports/heal/log`、exec `routes`、pkg `stats`、sysupgrade `info/verify`、
+  uci `svc-list`、data `logs/stations`、proxy `/version` 全部合法 JSON；
+  坏 sid → 401；带引号 / 反斜杠 / 制表符的日志行回读与原文一致；
+  service 无 confirm → 403 ✓
+- 未执行写路径（服务启停 / `uci-apply` / 刷写 / 安装）
+- `npx vue-tsc --noEmit` ✓
+- `npm run build` ✓
+- `python tools/check-docs.py` ✓（23 篇）
+
+## 状态: 已完成
+
+---

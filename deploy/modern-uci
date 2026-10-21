@@ -175,7 +175,15 @@ case "$action" in
 		;;
 
 	uci-apply)
-		uci apply >/dev/null 2>&1
+		# The uci command line has no "apply" subcommand on OpenWrt. The
+		# reload_config helper compares the committed configs with the last
+		# applied state and sends config.change only for the packages that
+		# really changed, which is what makes the staged config take effect.
+		if [ -x /sbin/reload_config ]; then
+			/sbin/reload_config >/dev/null 2>&1
+		else
+			ubus call uci apply >/dev/null 2>&1
+		fi
 		ok '{"ok":true}'
 		;;
 

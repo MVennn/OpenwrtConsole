@@ -58,6 +58,24 @@ send_json() {
 	rm -f "$__sj_out" 2>/dev/null
 }
 
+# Escapes a value for the body of a JSON string (no surrounding quotes). The
+# backslash is built with sprintf because BusyBox awk and gawk disagree about
+# backslashes written literally in a gsub replacement.
+esc_json() {
+	awk '
+	BEGIN { BS = sprintf("%c", 92); Q = sprintf("%c", 34) }
+	{
+		s = $0
+		gsub(/\\/, BS BS BS BS, s)
+		gsub(/"/, BS BS Q, s)
+		gsub(/\t/, BS BS "t", s)
+		gsub(/\r/, BS BS "r", s)
+		gsub(/[\001-\037]/, " ", s)
+		if (NR > 1) printf " "
+		printf "%s", s
+	}'
+}
+
 fail() {
 	printf 'Status: %s\r\n' "$1"
 	printf 'Content-Type: application/json; charset=utf-8\r\n'
@@ -223,6 +241,12 @@ if [ -z "$sid" ]; then
 fi
 [ -n "$sid" ] || deny
 
+# Only characters that are inert inside the ubus JSON payload are accepted,
+# so a session id can never break out of the string it is placed in.
+case "$sid" in
+	*[!A-Za-z0-9._~+/=-]*) deny ;;
+esac
+
 ubus call session get "{\"ubus_rpc_session\":\"$sid\"}" 2>/dev/null | grep -q '"username"' || deny
 
 secret="$(sed -n 's/^secret=//p' "$CFG_FILE" 2>/dev/null | head -n 1)"
@@ -273,7 +297,7 @@ switch_node() {
 	_sw_msg=$(sed -n 's/.*"message"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$TMP/put.json" 2>/dev/null | head -n 1)
 	[ -n "$_sw_msg" ] || _sw_msg="switch failed"
 	send_head
-	printf '{"ok":false,"error":"%s"}' "$_sw_msg"
+	printf '{"ok":false,"error":"%s"}' "$(printf '%s' "$_sw_msg" | esc_json)"
 	exit 0
 }
 

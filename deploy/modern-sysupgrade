@@ -129,9 +129,22 @@ emit() {
 	send_json "$_payload"
 }
 
-# Escapes the characters that would break a JSON string.
+# Escapes a single value for a JSON string. The old sed version removed CR/LF
+# but left tabs and the other control characters in place, which makes the
+# whole answer invalid JSON.
 json_escape() {
-	printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g' | tr -d '\r\n'
+	printf '%s' "$1" | awk '
+	BEGIN { BS = sprintf("%c", 92); Q = sprintf("%c", 34) }
+	{
+		s = $0
+		gsub(/\\/, BS BS BS BS, s)
+		gsub(/"/, BS BS Q, s)
+		gsub(/\t/, BS BS "t", s)
+		gsub(/\r/, BS BS "r", s)
+		gsub(/[\001-\037]/, " ", s)
+		if (NR > 1) printf " "
+		printf "%s", s
+	}'
 }
 
 # ---------------------------------------------------------------- session ---

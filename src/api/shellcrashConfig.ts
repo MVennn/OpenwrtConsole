@@ -436,7 +436,12 @@ export async function writeShellCrashConfig(
 export async function runShellCrashService(
   action: ShellCrashServiceAction
 ): Promise<ShellCrashServiceResult> {
-  return runShellCrashAction<ShellCrashServiceResult>('service', { action })
+  // Service actions are the most dangerous writes of this CGI; the view asks
+  // the user first, this flag is the machine readable half of that question.
+  return runShellCrashAction<ShellCrashServiceResult>('service', {
+    action,
+    confirm: 'yes'
+  })
 }
 
 /** The override files and their state. */

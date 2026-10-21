@@ -352,6 +352,9 @@ curl -sk -X POST -H 'Content-Type: application/json'   -d '{"action":"status","p
   两者都没有 → `500 {"error":"系统缺少密码修改工具（chpasswd 或 passwd）"}`。
 - `reboot` / `factory-reset` / `backup-restore` 是**延迟执行**的（`sleep 1` 后在后台跑），
   返回 `{"ok":true}` 时设备**还没重启**。
+- `uci-apply` 执行 `/sbin/reload_config`（没有时回退 `ubus call uci apply`），
+  只对真正变化的配置包触发 `config.change`。**不要依赖 `uci apply`**：OpenWrt 的 uci
+  命令行没有这个子命令，写错的版本会把「应用」变成静默空操作。
 
 **其它**：`401 {"error":"unauthorized"}` · `405 {"error":"只接受 POST 请求"}` ·
 `400 {"error":"请求体为空"}` · `403 {"error":"令牌无效或已过期"}` ·
@@ -526,7 +529,7 @@ curl -sk -X POST -H 'Content-Type: application/json'   -d '{"action":"status","p
 | `status` | — | `{"ok":true,"installed":true,"running":true,"service_status":"…","pid":N,"core_version":"…","shellcrash_version":"…","redir_mod":"…","dns_mod":"…","firewall_mod":"…","ports":{"mixed":N,"redir":N,"tproxy":N,"socks":N,"dns":N,"controller":N},"subs_count":N,"autostart":true,"last_action":"…"}` |
 | `config` | — | `{"ok":true,"values":{…},"url_host":"…","secret_set":true}` |
 | `config-write` | 白名单键 + `confirm=yes` | `{"ok":true,"changed":["key=value",…],"backup":"/etc/ShellCrash/configs/ShellCrash.cfg.bak-20261020-101112","message":"需重启 ShellCrash 生效"}` |
-| `service` | `action`（`start\|stop\|restart\|enable\|disable`） | `{"ok":true,"action":"restart","started":true,"message":"操作已提交，路由器正在执行"}`（`enable`/`disable` 另带 `autostart` 布尔与不同 message） |
+| `service` | `action`（`start\|stop\|restart\|enable\|disable`）、`confirm=yes` | `{"ok":true,"action":"restart","started":true,"message":"操作已提交，路由器正在执行"}`（`enable`/`disable` 另带 `autostart` 布尔与不同 message） |
 | `overrides` | — | `{"ok":true,"files":[{"name":"config.yaml","enabled":true,"description":"…"}],"global_disabled":false}` |
 | `override-toggle` | `file`、`enable=yes\|no`、`confirm=yes` | `{"ok":true,"file":"rules.yaml","enabled":true,"message":"覆写文件已启用，需重启 ShellCrash 生效"}` |
 | `subs` | — | `{"ok":true,"count":N,"url_count":N,"provider_count":N,"url_id":"…","update_source":"…","alias":"…","subs":[…],"providers":[…]}` |

@@ -145,7 +145,9 @@ if (params.what == "logs") {
 
 	let output = [];
 	try {
-		let pipe = fs.popen(sprintf("logread | tail -n %d", lines));
+		// logread -l returns only the last N messages; piping the whole ring
+		// buffer through tail needed a second process for the same result.
+		let pipe = fs.popen(sprintf("logread -l %d", lines));
 		if (pipe != null) {
 			let content = pipe.read("all");
 			if (type(content) == "string" && length(content) > 0) {
