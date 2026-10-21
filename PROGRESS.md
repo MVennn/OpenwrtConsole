@@ -247,6 +247,9 @@ LuCI 只保留为应急入口。
 - `npx vue-tsc --noEmit` ✓
 - `npm run build` ✓
 - `python tools/check-docs.py` ✓（23 篇）
+- 已部署到 `root@10.0.0.1`：入口 chunk 与本地 `dist/` 一致；
+  9 个 CGI 的 sha256 本地 / 线上逐一一致；线上 `sh -n` ✓；
+  `https://10.0.0.1/modern/` 返回 200
 
 ## 状态: 已完成
 
