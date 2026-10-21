@@ -778,9 +778,16 @@
     font-size: 11px;
   }
 
+  /* A router can carry dozens of groups. Without a cap the left card grows
+     far past the right column and the page looks broken; the list scrolls
+     inside the card instead. */
   .group-list {
     display: flex;
     flex-direction: column;
+    max-height: clamp(320px, 56vh, 560px);
+    padding-right: 4px;
+    overflow-y: auto;
+    scrollbar-gutter: stable;
   }
 
   .group-row {
@@ -788,6 +795,7 @@
     align-items: center;
     justify-content: space-between;
     gap: 12px;
+    min-width: 0;
     padding: 10px 0;
     border-bottom: 1px solid var(--border);
   }
@@ -804,15 +812,22 @@
   .group-main {
     flex: 1 1 auto;
     min-width: 0;
+    /* A long group name or node name must never paint over the controls on
+       the right; every child is clipped to this column. */
+    overflow: hidden;
   }
 
   .group-name-row {
     display: flex;
     align-items: center;
     gap: 7px;
+    min-width: 0;
   }
 
   .group-name {
+    flex: 0 1 auto;
+    min-width: 0;
+    max-width: 100%;
     color: var(--text);
     font-size: var(--text-sm);
     font-weight: 500;
@@ -836,6 +851,13 @@
     margin-top: 1px;
     color: var(--text-muted);
     font-size: 11.5px;
+  }
+
+  /* The node name takes the remaining width and truncates; the delay badge
+     keeps its intrinsic width. */
+  .group-now > .truncate {
+    flex: 1 1 auto;
+    min-width: 0;
   }
 
   .group-delay {
@@ -870,21 +892,40 @@
     display: flex;
     align-items: center;
     gap: 8px;
-    flex-shrink: 0;
+    flex: 0 1 auto;
+    min-width: 0;
   }
 
   .group-count {
+    flex-shrink: 0;
     color: var(--text-muted);
     font-size: 11px;
+    white-space: nowrap;
   }
 
   .group-speed {
+    flex-shrink: 0;
     min-height: 24px;
     padding: 0 2px;
   }
 
+  /* 220px is the comfortable width; below that the select shrinks instead of
+     pushing the row past the card edge. */
   .group-switch {
+    flex: 0 1 220px;
     width: 220px;
+    min-width: 140px;
+    max-width: 100%;
+  }
+
+  /* Element Plus does not always ellipsize the selected label, especially for
+     long node names. */
+  .group-switch :deep(.el-select__selected-item),
+  .group-switch :deep(.el-select__placeholder) {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
   .group-hint {
