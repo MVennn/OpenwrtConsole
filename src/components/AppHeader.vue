@@ -8,7 +8,7 @@
         <PanelLeftClose :size="18" />
       </button>
       <nav class="crumbs" aria-label="面包屑">
-        <span class="crumb-group">OpenWrt</span>
+        <span class="crumb-group">{{ crumbParent }}</span>
         <ChevronRight :size="13" class="crumb-sep" />
         <span class="crumb-current">{{ title }}</span>
       </nav>
@@ -20,6 +20,7 @@
         实时监控
       </span>
       <button
+        v-if="showRefresh"
         class="icon-btn"
         :class="{ 'is-spinning': spinning }"
         aria-label="刷新数据"
@@ -74,6 +75,7 @@
   } from 'lucide-vue-next'
   import { useTheme } from '@/composables/useTheme'
   import { triggerRefresh } from '@/composables/useRefresh'
+  import { workspaceOf } from '@/navigation'
   import { logout } from '@/stores/session'
 
   defineEmits<{
@@ -87,6 +89,13 @@
   const spinning = ref(false)
 
   const title = computed(() => (route.meta.title as string) || '控制台')
+  const workspace = computed(() => workspaceOf(route.name))
+  /** Do not repeat the workspace name when it is also the page title. */
+  const crumbParent = computed(() =>
+    workspace.value && workspace.value.label !== title.value ? workspace.value.label : 'OpenWrt'
+  )
+  /** Pages without polled data hide the refresh action instead of doing nothing. */
+  const showRefresh = computed(() => route.meta.noRefresh !== true)
 
   function refresh(): void {
     spinning.value = true
@@ -110,6 +119,10 @@
     top: 0;
     z-index: 50;
     display: flex;
+    /* The main column is a flex container with overflow; without this the
+       header shrinks below --header-h and the sticky tab strip (which pins to
+       that value) overlaps the page title. */
+    flex-shrink: 0;
     align-items: center;
     justify-content: space-between;
     height: var(--header-h);

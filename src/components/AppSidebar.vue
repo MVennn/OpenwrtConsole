@@ -14,27 +14,24 @@
     </div>
 
     <nav class="nav" aria-label="主导航">
-      <template v-for="group in groups" :key="group.label">
-        <p v-if="showText" class="nav-label">{{ group.label }}</p>
-        <RouterLink
-          v-for="item in group.items"
-          :key="item.name"
-          :to="{ name: item.name }"
-          class="nav-item"
-          active-class="is-active"
-          :title="collapsed ? item.label : undefined"
-        >
-          <component :is="item.icon" :size="18" :stroke-width="1.9" />
-          <span v-if="showText">{{ item.label }}</span>
-        </RouterLink>
-      </template>
+      <RouterLink
+        v-for="workspace in workspaces"
+        :key="workspace.key"
+        :to="{ name: workspace.tabs[0].name }"
+        class="nav-item"
+        :class="{ 'is-active': activeKey === workspace.key }"
+        :title="collapsed ? workspace.label : undefined"
+      >
+        <component :is="workspace.icon" :size="18" :stroke-width="1.9" />
+        <span v-if="showText">{{ workspace.label }}</span>
+      </RouterLink>
     </nav>
 
     <div class="sidebar-foot">
       <div v-if="showText" class="router-card">
         <div class="router-card-head">
-          <span class="router-dot" />
-          <span>管理连接</span>
+          <span class="router-dot" :class="{ offline: !online }" />
+          <span>{{ online ? '管理连接' : '网络已断开' }}</span>
         </div>
         <p class="router-address mono">{{ host }}</p>
         <a v-if="luciAvailable" class="router-link" :href="luciUrl">
@@ -58,34 +55,12 @@
 </template>
 
 <script setup lang="ts">
-  import { computed } from 'vue'
-  import { RouterLink } from 'vue-router'
+  import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+  import { RouterLink, useRoute } from 'vue-router'
+  import { ChevronLeft, ExternalLink, Router as RouterIcon, X } from 'lucide-vue-next'
   import { useLuciAvailability } from '@/composables/useLuciAvailability'
   import { useMediaQuery } from '@/composables/useMediaQuery'
-  import {
-    Activity,
-    ChartLine,
-    ChevronLeft,
-    ExternalLink,
-    Globe,
-    LayoutDashboard,
-    Network,
-    Package,
-    RadioTower,
-    Rocket,
-    Router as RouterIcon,
-    ServerCog,
-    Settings,
-    Shield,
-    ShieldCheck,
-    SlidersHorizontal,
-    Smartphone,
-    Wand2,
-    Wifi,
-    Wrench,
-    Zap,
-    X
-  } from 'lucide-vue-next'
+  import { WORKSPACES, workspaceOf } from '@/navigation'
 
   const props = defineProps<{
     collapsed: boolean
@@ -97,6 +72,7 @@
     close: []
   }>()
 
+  const route = useRoute()
   const isMobile = useMediaQuery('(max-width: 900px)')
   const showText = computed(() => !props.collapsed || isMobile.value)
 
@@ -105,46 +81,29 @@
   /** Not every image carries LuCI; the emergency entry is only offered when it does. */
   const luciAvailable = useLuciAvailability()
 
-  const groups = [
-    {
-      label: '状态',
-      items: [
-        { name: 'dashboard', label: '概览', icon: LayoutDashboard },
-        { name: 'config-monitor', label: '监控与流量', icon: ChartLine }
-      ]
-    },
-    {
-      label: '网络',
-      items: [
-        { name: 'network', label: '网络', icon: Network },
-        { name: 'wireless', label: '无线', icon: Wifi },
-        { name: 'clients', label: '客户端', icon: Smartphone },
-        { name: 'dns', label: 'DNS', icon: Globe },
-        { name: 'config-network', label: '网络配置', icon: SlidersHorizontal },
-        { name: 'config-wireless', label: '无线配置', icon: RadioTower },
-        { name: 'config-firewall', label: '防火墙配置', icon: Shield }
-      ]
-    },
-    {
-      label: '服务',
-      items: [
-        { name: 'proxy', label: '代理', icon: ShieldCheck },
-        { name: 'config-shellcrash', label: 'ShellCrash', icon: Zap },
-        { name: 'diagnostics', label: '诊断', icon: Activity }
-      ]
-    },
-    {
-      label: '系统',
-      items: [
-        { name: 'system', label: '系统', icon: Settings },
-        { name: 'config-system', label: '系统设置', icon: Wrench },
-        { name: 'config-packages', label: '软件包管理', icon: Package },
-        { name: 'config-firmware', label: '固件升级', icon: Rocket },
-        { name: 'operations', label: '服务运维', icon: ServerCog },
-        { name: 'setup', label: '首次配置', icon: Wand2 }
-      ]
-    }
-  ]
+  const workspaces = WORKSPACES
+  const activeKey = computed(() => workspaceOf(route.name)?.key)
+
+  /**
+   * The dot used to be green no matter what, which made a broken uplink look
+   * like a healthy management connection. It now follows the browser's own
+   * online state — the router itself is checked by every page request.
+   */
+  const online = ref(navigator.onLine)
+
+  function updateOnline(): void {
+    online.value = navigator.onLine
+  }
+
+  onMounted(() => {
+    window.addEventListener('online', updateOnline)
+    window.addEventListener('offline', updateOnline)
+  })
+
+  onBeforeUnmount(() => {
+    window.removeEventListener('online', updateOnline)
+    window.removeEventListener('offline', updateOnline)
+  })
 </script>
 
 <style scoped>
@@ -213,23 +172,15 @@
     flex: 1;
     flex-direction: column;
     gap: 2px;
-    padding: 8px 12px;
+    padding: 10px 12px;
     overflow-y: auto;
-  }
-
-  .nav-label {
-    padding: 8px 10px 6px;
-    color: var(--text-faint);
-    font-size: 11px;
-    font-weight: 500;
-    letter-spacing: 0.08em;
   }
 
   .nav-item {
     display: flex;
     align-items: center;
     gap: 10px;
-    height: 40px;
+    height: 42px;
     padding: 0 10px;
     color: var(--text-secondary);
     font-size: var(--text-sm);
@@ -254,7 +205,7 @@
 
   .sidebar.collapsed .nav {
     align-items: center;
-    padding: 8px 10px;
+    padding: 10px;
   }
 
   .sidebar.collapsed .nav-item {
@@ -289,6 +240,10 @@
     height: 6px;
     background: var(--success);
     border-radius: 50%;
+  }
+
+  .router-dot.offline {
+    background: var(--danger);
   }
 
   .router-address {
@@ -376,7 +331,7 @@
 
     .sidebar.collapsed .nav {
       align-items: stretch;
-      padding: 8px 12px;
+      padding: 10px 12px;
     }
 
     .sidebar.collapsed .nav-item {

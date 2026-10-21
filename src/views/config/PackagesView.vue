@@ -388,6 +388,7 @@
     Terminal
   } from 'lucide-vue-next'
   import { ElMessage, ElMessageBox } from 'element-plus'
+  import { useRefreshSignal } from '@/composables/useRefresh'
   import PageHeader from '@/components/PageHeader.vue'
   import PanelCard from '@/components/PanelCard.vue'
   import StatCard from '@/components/StatCard.vue'
@@ -1011,6 +1012,10 @@
     if (!second) return
     await runJob('upgrade', {}, '正在升级全部软件包', '升级全部软件包')
   }
+
+  // The header refresh button is global; without this subscription it would
+  // spin and do nothing on this page.
+  watch(useRefreshSignal(), () => void refresh())
 
   onMounted(() => {
     void bootstrap()

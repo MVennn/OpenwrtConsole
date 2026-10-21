@@ -520,7 +520,7 @@
 </template>
 
 <script setup lang="ts">
-  import { computed, onMounted, ref } from 'vue'
+  import { computed, onMounted, ref, watch } from 'vue'
   import { useRouter } from 'vue-router'
   import {
     Clock,
@@ -551,6 +551,7 @@
   import SysLeaseDialog from '@/components/config-sys/SysLeaseDialog.vue'
   import { useDraft, useUnsavedGuard } from '@/composables/useDraft'
   import { usePolling } from '@/composables/usePolling'
+  import { useRefreshSignal } from '@/composables/useRefresh'
   import { uciChanges, type UciChange } from '@/api/uci'
   import {
     buildPendingEntries,
@@ -947,6 +948,10 @@
     if (!snapshot.value) await loadConfig()
     await Promise.all([refreshLeases(), refreshOnlineDevices()])
   }, 10000)
+
+  // The header refresh button is global; without this subscription it would
+  // spin and do nothing on this page.
+  watch(useRefreshSignal(), () => void reloadAll())
 
   onMounted(() => {
     void (async () => {

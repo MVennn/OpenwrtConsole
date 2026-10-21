@@ -2,7 +2,6 @@
   <div class="page">
     <PageHeader title="系统" description="固件信息、资源占用与系统日志">
       <el-button :icon="RefreshCw" :loading="refreshing" @click="refresh">刷新</el-button>
-      <el-button type="primary" @click="goSystemConfig">系统设置</el-button>
     </PageHeader>
 
     <el-alert v-if="error" type="error" :title="error?.message || '操作失败'" :closable="false" show-icon />
@@ -134,6 +133,7 @@
               <el-button link type="primary" size="small" @click="goPackages">软件包</el-button>
               <el-button link type="primary" size="small" @click="goOperations">启动项</el-button>
               <el-button link type="primary" size="small" @click="goFirmware">备份 / 固件</el-button>
+              <el-button link type="primary" size="small" @click="goSetup">首次配置向导</el-button>
             </div>
           </div>
         </div>
@@ -258,10 +258,6 @@
     }
   }
 
-  function goSystemConfig(): void {
-    void router.push({ name: 'config-system' })
-  }
-
   function goPackages(): void {
     void router.push({ name: 'config-packages' })
   }
@@ -272,6 +268,10 @@
 
   function goFirmware(): void {
     void router.push({ name: 'config-firmware' })
+  }
+
+  function goSetup(): void {
+    void router.push({ name: 'setup' })
   }
 
   async function reboot(): Promise<void> {
@@ -296,6 +296,9 @@
       ElMessage.success('重启指令已发送，请等待路由器恢复')
     } catch (err) {
       ElMessage.error(err instanceof Error ? err.message : '重启失败')
+    } finally {
+      // The command was accepted or rejected; either way the button must not
+      // stay in its loading state forever.
       rebooting.value = false
     }
   }

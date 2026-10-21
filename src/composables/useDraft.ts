@@ -1,4 +1,4 @@
-import { onBeforeUnmount, onMounted, ref, watch, type Ref } from 'vue'
+import { nextTick, onBeforeUnmount, onMounted, ref, watch, type Ref } from 'vue'
 
 /**
  * Keeps a form draft in localStorage so a page refresh does not throw away
@@ -18,19 +18,30 @@ export function useDraft<T extends object>(key: string, initial: T): Draft<T> {
   const value = ref({ ...initial }) as Ref<T>
   const dirty = ref(false)
   const savedAt = ref<string | null>(null)
+  /**
+   * Restoring the draft assigns `value`, which would otherwise run the watcher
+   * below and overwrite `savedAt` with the current time. Keep the original
+   * timestamp so the notice still says when the draft was written.
+   */
+  let restoring = false
 
-  function read(): void {
+  async function read(): Promise<void> {
     try {
       const raw = localStorage.getItem(storageKey)
       if (!raw) return
       const parsed = JSON.parse(raw) as T & { savedAt?: string }
       if (!parsed || typeof parsed !== 'object') return
       const { savedAt: stamp, ...rest } = parsed
+      restoring = true
       value.value = { ...value.value, ...rest }
       savedAt.value = stamp ?? null
       dirty.value = true
+      // The deep watcher flushes before the next tick; release the flag after.
+      await nextTick()
     } catch {
       localStorage.removeItem(storageKey)
+    } finally {
+      restoring = false
     }
   }
 
@@ -54,13 +65,16 @@ export function useDraft<T extends object>(key: string, initial: T): Draft<T> {
   watch(
     value,
     () => {
+      if (restoring) return
       dirty.value = true
       persist()
     },
     { deep: true }
   )
 
-  onMounted(read)
+  onMounted(() => {
+    void read()
+  })
 
   return { value, dirty, savedAt, clear, persist }
 }

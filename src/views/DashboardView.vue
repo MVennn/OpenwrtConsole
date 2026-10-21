@@ -297,7 +297,7 @@
 </template>
 
 <script setup lang="ts">
-  import { computed, onBeforeUnmount, reactive, ref, shallowRef, watch } from 'vue'
+  import { computed, onBeforeUnmount, onMounted, reactive, ref, shallowRef, watch } from 'vue'
   import { RouterLink, useRouter } from 'vue-router'
   import {
     Activity,
@@ -401,6 +401,7 @@
   let previous: { rx: number; tx: number; at: number } | null = null
   let proxyTick = 0
   let seedTimer: number | undefined
+  let proxySeedTimer: number | undefined
   let delayProbe = false
   let shellCrashTick = 0
 
@@ -704,8 +705,15 @@
     void loadShellCrash()
   })
 
+  onMounted(() => {
+    // The first full poll waits for seven parallel calls; seed the proxy card
+    // earlier so it does not sit in the empty state for a whole round.
+    proxySeedTimer = window.setTimeout(() => void loadProxy(), 1200)
+  })
+
   onBeforeUnmount(() => {
     if (seedTimer) window.clearTimeout(seedTimer)
+    if (proxySeedTimer) window.clearTimeout(proxySeedTimer)
   })
 
   const trafficOption = computed<EChartsCoreOption>(() => {
@@ -810,8 +818,6 @@
   function goNetworkConfig(): void {
     void router.push({ name: 'config-network' })
   }
-
-  window.setTimeout(() => void loadProxy(), 1200)
 </script>
 
 <style scoped>

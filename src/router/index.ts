@@ -80,7 +80,8 @@ const router = createRouter({
           path: 'diagnostics',
           name: 'diagnostics',
           component: () => import('@/views/diagnostics/DiagnosticsView.vue'),
-          meta: { title: '诊断', group: '工具' }
+          // Nothing on this page is polled, so a header refresh would do nothing.
+          meta: { title: '诊断', group: '工具', noRefresh: true }
         },
         {
           path: 'system',
@@ -148,7 +149,8 @@ const router = createRouter({
       path: '/setup',
       name: 'setup',
       component: () => import('@/views/setup/SetupWizardView.vue'),
-      meta: { title: '首次配置' }
+      // The wizard has no polled data and its own toolbar.
+      meta: { title: '首次配置', noRefresh: true }
     },
     { path: '/:pathMatch(.*)*', redirect: '/dashboard' }
   ]

@@ -2,7 +2,6 @@
   <div class="page">
     <PageHeader title="网络" description="接口地址、网关、DNS 与设备流量">
       <el-button :icon="RefreshCw" :loading="refreshing" @click="refresh">刷新</el-button>
-      <el-button type="primary" @click="goNetworkConfig">网络配置</el-button>
     </PageHeader>
 
     <el-alert v-if="error" type="error" :title="error?.message || '操作失败'" :closable="false" show-icon />

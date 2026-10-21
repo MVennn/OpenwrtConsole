@@ -2,7 +2,6 @@
   <div class="page">
     <PageHeader title="无线" description="射频、SSID 与关联终端的信号质量">
       <el-button :icon="RefreshCw" :loading="refreshing" @click="refresh">刷新</el-button>
-      <el-button type="primary" @click="goWirelessConfig">无线配置</el-button>
     </PageHeader>
 
     <el-alert v-if="error" type="error" :title="error?.message || '操作失败'" :closable="false" show-icon />
