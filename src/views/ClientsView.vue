@@ -76,6 +76,19 @@
                 <span class="mono table-mono">{{ row.ip }}</span>
               </template>
             </el-table-column>
+            <el-table-column label="类型" min-width="160">
+              <template #default="{ row }">
+                <div class="type-cell">
+                  <el-tag size="small" :type="identityTagType(row)">
+                    {{ identityLabel(row) }}
+                  </el-tag>
+                  <span class="type-vendor">{{ identityVendor(row) }}</span>
+                  <button class="type-refresh" title="重新识别" @click.stop="reprobe(row)">
+                    <RefreshCw :size="12" />
+                  </button>
+                </div>
+              </template>
+            </el-table-column>
             <el-table-column label="接入方式" min-width="110">
               <template #default="{ row }">
                 <el-tag v-if="row.wireless" size="small" type="success">
@@ -132,6 +145,10 @@
               <span>MAC</span>
               <span class="mono">{{ row.mac }}</span>
             </div>
+            <div class="mobile-line">
+              <span>类型</span>
+              <span>{{ identityLabel(row) }} · {{ identityVendor(row) }}</span>
+            </div>
             <div v-if="row.wireless" class="mobile-line">
               <span>信号</span>
               <span class="signal-cell">
@@ -180,9 +197,14 @@
   import { usePolling } from '@/composables/usePolling'
   import { useRefreshSignal } from '@/composables/useRefresh'
   import { api } from '@/api/openwrt'
+  import { identifyDevice } from '@/api/identify'
+  import type { IdentifyProbe } from '@/api/identify'
   import type { DhcpLease, HostHint, Station, WirelessRadio } from '@/api/types'
   import { formatAgo, formatLinkRate, formatUptime, signalLevel } from '@/utils/format'
   import { buildWifiMeta, mergeClients } from '@/utils/clients'
+  import type { ClientRow } from '@/utils/clients'
+  import { identify } from '@/utils/identify'
+  import type { DeviceIdentity } from '@/utils/identify'
 
   defineOptions({ name: 'ClientsView' })
 
@@ -193,10 +215,20 @@
   const stations = shallowRef<Record<string, Station[]>>({})
   const hints = shallowRef<Record<string, HostHint>>({})
   const wireless = shallowRef<Record<string, WirelessRadio>>({})
+  const probes = ref<Record<string, IdentifyProbe | null>>({})
+  const probing = ref<Record<string, boolean>>({})
   const search = ref('')
   const filter = ref<Filter>('all')
   const refreshSignal = useRefreshSignal()
   const router = useRouter()
+
+  // Probe results are cached per MAC, not per IP: a device keeps its identity
+  // when DHCP moves it, and a changed IP invalidates the cache explicitly.
+  const PROBE_TTL = 7 * 24 * 60 * 60 * 1000
+  const MAX_PROBES = 2
+  const pending: Array<{ mac: string; ip: string }> = []
+  const queued = new Set<string>()
+  let activeProbes = 0
 
   const filters: Array<{ value: Filter; label: string }> = [
     { value: 'all', label: '全部' },
@@ -208,6 +240,132 @@
   const clients = computed(() =>
     mergeClients(leases.value, stations.value, hints.value, wifiMeta.value)
   )
+
+  interface ProbeCache {
+    at: number
+    ip: string
+    probe: IdentifyProbe
+  }
+
+  function cacheKey(mac: string): string {
+    return `owrt-identify:${mac.toUpperCase()}`
+  }
+
+  function readCache(mac: string, ip: string): IdentifyProbe | null {
+    try {
+      const raw = localStorage.getItem(cacheKey(mac))
+      if (!raw) return null
+      const cached = JSON.parse(raw) as ProbeCache
+      if (!cached?.at || cached.ip !== ip || Date.now() - cached.at > PROBE_TTL) return null
+      return cached.probe ?? null
+    } catch {
+      return null
+    }
+  }
+
+  function writeCache(mac: string, ip: string, probe: IdentifyProbe): void {
+    try {
+      const payload: ProbeCache = { at: Date.now(), ip, probe }
+      localStorage.setItem(cacheKey(mac), JSON.stringify(payload))
+    } catch {
+      // Private mode or a full quota: the probe still works for this visit.
+    }
+  }
+
+  function dropCache(mac: string): void {
+    try {
+      localStorage.removeItem(cacheKey(mac))
+    } catch {
+      // Nothing to do; the in-memory entry is dropped by the caller.
+    }
+  }
+
+  function pump(): void {
+    while (activeProbes < MAX_PROBES && pending.length > 0) {
+      const job = pending.shift()
+      if (!job) break
+      queued.delete(job.mac)
+      activeProbes += 1
+      probing.value[job.mac] = true
+      void identifyDevice(job.ip)
+        .then((probe) => {
+          probes.value[job.mac] = probe
+          if (probe) writeCache(job.mac, job.ip, probe)
+        })
+        .catch(() => {
+          probes.value[job.mac] = null
+        })
+        .finally(() => {
+          activeProbes -= 1
+          delete probing.value[job.mac]
+          pump()
+        })
+    }
+  }
+
+  function enqueue(mac: string, ip: string): void {
+    const key = mac.toUpperCase()
+    if (queued.has(key) || probing.value[key] || probes.value[key] !== undefined) return
+    if (!/^\d{1,3}(\.\d{1,3}){3}$/.test(ip)) return
+    queued.add(key)
+    pending.push({ mac: key, ip })
+    pump()
+  }
+
+  const identities = computed<Record<string, DeviceIdentity>>(() => {
+    const map: Record<string, DeviceIdentity> = {}
+    for (const row of clients.value) {
+      const key = row.mac.toUpperCase()
+      map[key] = identify({
+        mac: row.mac,
+        hostname: row.hostname,
+        band: row.band,
+        ht: row.ht,
+        vht: row.vht,
+        he: row.he,
+        probe: probes.value[key]
+      })
+    }
+    return map
+  })
+
+  function identityOf(row: ClientRow): DeviceIdentity | undefined {
+    return identities.value[row.mac.toUpperCase()]
+  }
+
+  function identityLabel(row: ClientRow): string {
+    const key = row.mac.toUpperCase()
+    if (probing.value[key] && probes.value[key] === undefined) return '识别中…'
+    return identityOf(row)?.label ?? '未知设备'
+  }
+
+  function identityVendor(row: ClientRow): string {
+    return identityOf(row)?.vendor ?? '未知厂商'
+  }
+
+  function identityTagType(row: ClientRow): 'success' | 'info' | 'warning' | 'danger' {
+    switch (identityOf(row)?.kind) {
+      case 'phone':
+      case 'tablet':
+        return 'success'
+      case 'tv':
+      case 'iot':
+        return 'warning'
+      case 'camera':
+        return 'danger'
+      default:
+        return 'info'
+    }
+  }
+
+  function reprobe(row: ClientRow): void {
+    const key = row.mac.toUpperCase()
+    if (probing.value[key]) return
+    dropCache(key)
+    delete probes.value[key]
+    enqueue(key, row.ip)
+  }
+
   const wirelessCount = computed(() => clients.value.filter((row) => row.wireless).length)
   const otherCount = computed(() => Math.max(0, clients.value.length - wirelessCount.value))
 
@@ -242,10 +400,13 @@
         if (filter.value === 'wireless' && !row.wireless) return false
         if (filter.value === 'wired' && row.wireless) return false
         if (!term) return true
+        const identity = identities.value[row.mac.toUpperCase()]
         return (
           row.hostname.toLowerCase().includes(term) ||
           row.ip.toLowerCase().includes(term) ||
-          row.mac.toLowerCase().includes(term)
+          row.mac.toLowerCase().includes(term) ||
+          (identity?.label.toLowerCase().includes(term) ?? false) ||
+          (identity?.vendor.toLowerCase().includes(term) ?? false)
         )
       })
       .sort((a, b) => {
@@ -282,6 +443,25 @@
   }, 10000)
 
   watch(refreshSignal, () => void refresh())
+
+  // Identify each client once. Cached results survive reloads; a row whose IP
+  // changed is probed again, and the per-row button forces a fresh probe.
+  watch(
+    clients,
+    (rows) => {
+      for (const row of rows) {
+        const key = row.mac.toUpperCase()
+        if (probes.value[key] !== undefined || probing.value[key] || queued.has(key)) continue
+        const cached = readCache(key, row.ip)
+        if (cached) {
+          probes.value[key] = cached
+          continue
+        }
+        enqueue(key, row.ip)
+      }
+    },
+    { immediate: true }
+  )
 </script>
 
 <style scoped>
@@ -399,6 +579,40 @@
     gap: 7px;
     color: var(--text-secondary);
     font-size: 12px;
+  }
+
+  .type-cell {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+  }
+
+  .type-vendor {
+    overflow: hidden;
+    color: var(--text-muted);
+    font-size: 11.5px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .type-refresh {
+    display: inline-flex;
+    flex-shrink: 0;
+    align-items: center;
+    justify-content: center;
+    width: 22px;
+    height: 22px;
+    color: var(--text-muted);
+    cursor: pointer;
+    background: transparent;
+    border: 0;
+    border-radius: var(--radius-sm);
+  }
+
+  .type-refresh:hover {
+    color: var(--text);
+    background: var(--surface-2);
   }
 
   .mobile-list {

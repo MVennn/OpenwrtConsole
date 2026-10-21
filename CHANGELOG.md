@@ -16,7 +16,24 @@
 
 ---
 
-## [未发布] — 2026-10-21
+## [未发布] — 2026-10-22
+
+### 客户端设备识别（2026-10-22）
+
+无线客户端页新增「类型」列：新设备首次接入时自动识别一次，给出类别与厂商，
+不再只显示一句「无线设备」。
+
+- 新增 接口 —— `modern-data?what=identify&ip=<ipv4>`：路由器端用 Lua + nixio
+  （LuCI 自带，不装包）做 TCP 端口 / miIO 握手 / 小米电视与网关 / SSDP / mDNS 探测，
+  单台约 1 秒，只发少量单播包，不做网段扫描
+- 新增 识别 —— `src/utils/identify.ts` + `src/utils/oui.ts`：主动信号优先，
+  OUI 厂商 / 主机名 / 2.4G 11n 能力兜底；输出 手机 / 平板 / 电脑 / 电视 / 摄像头 /
+  打印机 / NAS / 智能家居 / 未知
+- 新增 界面 —— 客户端页「类型」列（标签 + 厂商 + 单行重新识别）；结果按 MAC 缓存 7 天，
+  IP 变化自动重新探测
+- 新增 工具 —— `tools/gen-oui.mjs`：从 IEEE OUI 注册表生成消费品牌前缀表
+- 调整 部署 —— `deploy.sh` 增加 `/usr/lib/modern/probe.lua`；
+  `docs/CGI-CONTRACT.md` / `ARCHITECTURE.md` / `FEATURES.md` / `LIMITS.md` / `MAINTENANCE.md` 同步
 
 ### 门面统一批次（2026-10-21）
 

@@ -280,3 +280,36 @@ LuCI 只保留为应急入口。
 
 ---
 
+# 2026-10-22 客户端设备识别（类型列）
+
+## 背景
+- 无线客户端原来只有主机名 / IP / 信号，用户看不出「这是什么东西」。
+- `10.0.0.26` 的小米智能插座只能显示「无线设备」；需要在新设备接入时给出类别与厂商，
+  且不只覆盖智能插座。
+
+## 完成项
+- [x] `modern-data` 新增 `what=identify&ip=<ipv4>`：调用 `/usr/lib/modern/probe.lua`
+  （Lua + nixio，随 LuCI 提供，不装任何包），做 TCP 端口 / miIO 握手 / 小米电视与网关 /
+  SSDP / mDNS 探测；只发少量单播包，约 0.6–1 秒/台，不做网段扫描
+- [x] `src/utils/oui.ts`：从 IEEE OUI 注册表裁剪消费品牌（12196 个前缀），
+  `tools/gen-oui.mjs` 可重新生成
+- [x] `src/utils/identify.ts`：主动信号优先，OUI / 主机名 / 2.4G 11n 能力兜底，
+  输出 手机 / 平板 / 电脑 / 电视 / 摄像头 / 打印机 / NAS / 智能家居 / 未知
+- [x] 客户端页新增「类型」列（标签 + 厂商 + 单行重新识别）；首次见到新 MAC 自动探测，
+  结果按 MAC 缓存 7 天（IP 变化会重新探测）
+- [x] `deploy.sh` 增加 `modern-probe.lua` 部署；mock 路由器补 `what=identify`
+- [x] 文档同步：CGI-CONTRACT / ARCHITECTURE / FEATURES / LIMITS / MAINTENANCE
+- [x] 顺带把 `10.0.0.26` 的静态保留（`xiaomi-plug`）写进 dnsmasq，控制台直接显示名字
+
+## 自检
+- `npx vue-tsc --noEmit` ✓；`npm run build` ✓；`python tools/check-docs.py` ✓（26 篇）
+- 真机：`modern-data?what=identify&ip=10.0.0.26` → `miio.did=2028639220`；
+  非法 IP → 400；无 sid → 401
+- 浏览器端到端：客户端页 5 台设备，`xiaomi-plug` → 智能家居 · 小米，
+  `Xiaomi-17-Pro` / `MEIZU-20` → 手机，`Xiaomi-Pad-7S-Pro` → 平板，`MVenn-PC` → 电脑
+- 已部署到 `root@10.0.0.1`（`/usr/lib/modern/probe.lua` + `modern-data` 更新）
+
+## 状态: 已完成
+
+---
+

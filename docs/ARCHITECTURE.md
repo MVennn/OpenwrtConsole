@@ -77,7 +77,7 @@ ubus 对象）、`curl`（代理页与固件更新检查 / 下载）、`apk`（�
 | 1 | `/ubus`（`system` / `network.interface` / `service` / `uci`） | JSON-RPC `POST /ubus`，`params[0] = sid` | ubus 对象方法的返回值 | 板卡 / 系统信息、接口表、服务列表、UCI 配置 | 白名单 UCI 配置的 `set/add/delete/commit/changes/apply` | 会话 ACL；UCI **按配置文件名**授权，只有 `dhcp`/`firewall`/`network`/`system`/`wireless`/`dropbear`/`luci`/`opkg`/`ntp`/`timeserver` 可写；`uci.revert` **不可用** |
 | 2 | `/ubus`（`luci-rpc`） | 同上 | JSON 对象 | `getNetworkDevices`、`getWirelessDevices`、`getDHCPLeases`、`getHostHints` | 无（只读对象） | 会话 ACL；对象由 `rpcd-mod-luci` 提供（随 `luci-base` 安装，精简固件需单独装） |
 | 3 | `/ubus`（`luci`） | 同上 | JSON 对象 | `getProcessList`、`getMountPoints`、`getBlockDevices`、`getConntrackList`、`getLEDs`、`getTimezones` | 无（只读对象） | 会话 ACL |
-| 4 | CGI `modern-data` | `GET ?what=stations\|logs` | `{stations:{iface:[…]}}` / `{lines:[…]}` | 无线关联终端（信号、速率）、系统日志 | 无 | sid 校验（`ubus session get`） |
+| 4 | CGI `modern-data` | `GET ?what=stations\|logs\|identify` | `{stations:{iface:[…]}}` / `{lines:[…]}` / `{ip,tcp:[…],miio,mitv,gateway,ssdp,mdns:[…]}` | 无线关联终端（信号、速率）、系统日志、**设备指纹**（TCP 端口 / miIO / SSDP / mDNS） | 无 | sid 校验（`ubus session get`）；`identify` 只接受 IPv4，探测由 `/usr/lib/modern/probe.lua` 执行，不做网段扫描 |
 | 5 | CGI `modern-read` | `GET ?what=leases\|hosts\|resolv\|neighbors` | `{leases:[…]}` / `{hosts:[…]}` / `{nameservers:[…],search:[…]}` / `{neighbors:[{ip,mac,device,state}]}` | dnsmasq 运行时状态、内核邻居表（IPv4 ARP + IPv6 NDP） | 无 | sid 校验；路径是**字面常量**，请求不能自带路径 |
 | 6 | CGI `modern-exec` | `POST {tool,target,…}` | `{tool,target,command,params,output,exit_code,duration_ms,truncated}` | ping / nslookup / traceroute / 路由表 / 监听端口 | 无（只执行白名单命令） | sid 校验；工具名白名单 5 个；目标字符集 `[A-Za-z0-9._:-]`；单次超时 ping 30 秒 / DNS 15 秒 / 路由跟踪 120 秒 / 路由表与监听端口 10 秒；输出 >200 KB 截断 |
 | 7 | CGI `modern-proxy` | `GET ?path=…` / `POST {group,node}` | 核心的原始 JSON | `/version` `/configs` `/proxies` `/connections`、单组详情、延迟探测 | **切换策略组节点**（PUT `/proxies/<组>`） | sid 校验；控制口端口取自 `/tmp/ShellCrash/config.yaml`（回退 9999）；名字白名单（可打印字符，去掉 `"` `\` `/` `..`）；真正的授权是**向核心回读组成员表**；延迟探测 URL 只允许三个固定地址；缺 `curl` → 503 |
@@ -102,7 +102,7 @@ ubus 对象）、`curl`（代理页与固件更新检查 / 下载）、`apk`（�
 | 文件 | 运行时 | 职责 | 写操作 |
 | --- | --- | --- | --- |
 | `deploy/modern-login` | ucode | 用 root 密码换取 ubus 会话（`sid` + `expires`） | 创建会话 |
-| `deploy/modern-data` | ucode | 无线关联终端（luci-rpc → `iwinfo devices` → sysfs 逐级探测）与系统日志（`logread`） | 无 |
+| `deploy/modern-data` | ucode | 无线关联终端（luci-rpc → `iwinfo devices` → sysfs 逐级探测）、系统日志（`logread`）与设备指纹（`what=identify`，转 `/usr/lib/modern/probe.lua`） | 无 |
 | `deploy/modern-read` | ucode | dnsmasq 租约、自定义 hosts、解析器配置、内核邻居表（`ip neigh` / `ip -6 neigh`） | 无 |
 | `deploy/modern-exec` | sh | ping / nslookup / traceroute / 路由表 / 监听端口 | 只执行白名单命令 |
 | `deploy/modern-proxy` | sh | 转发核心控制口 API（端口取自运行时配置）、测速、切换策略组节点 | 切换节点（PUT `/proxies`） |
@@ -151,8 +151,8 @@ OpenwrtConsole/
 │  ├─ router/         路由表与路由守卫
 │  ├─ stores/         全局状态（会话）
 │  ├─ styles/         设计令牌(tokens.css) / Element Plus 覆盖 / 布局
-│  └─ utils/          纯函数工具（格式化、客户端合并、代理组解析、WAN 角色识别）
-├─ deploy/            路由器端：9 个 CGI + 2 个部署脚本（不是 Node 代码）
+│  └─ utils/          纯函数工具（格式化、客户端合并、代理组解析、WAN 角色识别、OUI 与设备类型识别）
+├─ deploy/            路由器端：9 个 CGI + 1 个探测助手（modern-probe.lua）+ 2 个部署脚本（不是 Node 代码）
 ├─ docs/              本目录
 ├─ public/            静态资源（favicon）
 ├─ index.html         含首屏主题脚本与启动守卫

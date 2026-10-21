@@ -4,6 +4,7 @@
 /*
  * GET /cgi-bin/modern-data?what=stations&sid=<session>
  * GET /cgi-bin/modern-data?what=logs&lines=120&sid=<session>
+ * GET /cgi-bin/modern-data?what=identify&ip=<ipv4>&sid=<session>
  * The sid may also arrive in the owrt_sid cookie. It is validated against
  * rpcd before anything is returned.
  */
@@ -132,6 +133,45 @@ if (params.what == "stations") {
 	}
 
 	respond("200 OK", { stations: stations });
+	exit(0);
+}
+
+if (params.what == "identify") {
+	let ip = params.ip != null ? params.ip : "";
+	if (!match(ip, /^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$/)) {
+		respond("400 Bad Request", { error: "invalid ip" });
+		exit(0);
+	}
+	for (let part in split(ip, ".")) {
+		if (+part > 255) {
+			respond("400 Bad Request", { error: "invalid ip" });
+			exit(0);
+		}
+	}
+
+	// The helper path is a constant; the request may only carry an address.
+	let raw = "";
+	try {
+		let pipe = fs.popen("/usr/lib/modern/probe.lua " + ip);
+		if (pipe != null)
+			raw = pipe.read("all");
+	} catch (e) {
+		raw = "";
+	}
+
+	let result = null;
+	try {
+		result = json(raw);
+	} catch (e) {
+		result = null;
+	}
+
+	if (result == null || type(result) != "object") {
+		respond("500 Internal Server Error", { error: "probe failed" });
+		exit(0);
+	}
+
+	respond("200 OK", result);
 	exit(0);
 }
 

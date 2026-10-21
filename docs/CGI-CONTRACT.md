@@ -123,10 +123,11 @@ curl -sk -X POST -H 'Content-Type: application/json'   -d '{"action":"status","p
 
 ---
 
-## 2. `modern-data` —— 无线终端与系统日志
+## 2. `modern-data` —— 无线终端、系统日志与设备识别
 
 **路径**：`GET /cgi-bin/modern-data?what=stations[&sid=]`
 **路径**：`GET /cgi-bin/modern-data?what=logs&lines=<n>[&sid=]`
+**路径**：`GET /cgi-bin/modern-data?what=identify&ip=<ipv4>[&sid=]`
 **运行时**：ucode。
 
 **`what=stations` 响应 `200`**
@@ -147,6 +148,19 @@ curl -sk -X POST -H 'Content-Type: application/json'   -d '{"action":"status","p
 ```
 
 - `lines` 参数默认 **120**，上限 **500**。
+
+**`what=identify` 响应 `200`**
+
+```json
+{ "ip": "10.0.0.26", "tcp": [], "miio": { "did": 2028639220 }, "mitv": null, "gateway": null, "ssdp": null, "mdns": [] }
+```
+
+- 只接受 IPv4；非法或越界 → `400 {"error":"invalid ip"}`。
+- 由 `/usr/lib/modern/probe.lua` 执行（Lua + **nixio**，随 LuCI 提供）：TCP 端口指纹、
+  miIO 握手、小米电视 / 网关 UDP 应答、SSDP、mDNS 服务发现。只发少量单播 / 广播包，
+  **不做网段扫描**；单个目标约 **1 秒**。
+- 助手缺失、超时或输出不是合法 JSON → `500 {"error":"probe failed"}`。
+- 接口只回**事实**（端口、应答字段），分类与展示在前端完成。
 
 **其它**：`401 {"error":"unauthorized"}` · `400 {"error":"unknown action"}`。
 

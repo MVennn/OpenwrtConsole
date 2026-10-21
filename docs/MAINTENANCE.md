@@ -43,11 +43,12 @@ ROUTER_HOST=root@<路由器IP> ./deploy/deploy.sh
 > `ROUTER_HOST` / `ROUTER_WEB` 都是环境变量；不设时默认 `root@10.0.0.1` 与 `/www/modern`
 > （`10.0.0.1` 只是默认网关的通行默认值，按你的设备地址替换）。
 
-脚本做三件事：
+脚本做四件事：
 
 1. `tar` 打包 `dist/` → 通过 SSH 传到路由器 `/tmp/modern-payload.tgz`；
 2. 把 `deploy/install-remote.sh` 传到路由器并执行（解包 + 世代保留 + 原子换目录）；
-3. 逐个把 9 个 `deploy/modern-*` 传到 `/www/cgi-bin/`（**同目录临时文件 + rename**）。
+3. 逐个把 9 个 `deploy/modern-*` 传到 `/www/cgi-bin/`（**同目录临时文件 + rename**）；
+4. 把 `deploy/modern-probe.lua` 传到 `/usr/lib/modern/probe.lua`（设备识别助手，同样 rename）。
 
 > ✅ **`deploy/deploy.sh` 的字面 `\n` 缺陷已修** —— for 循环已改成真换行 + 续行反斜杠，
 > `sh -n` 通过，循环实测展开为 **9 个 CGI**（`modern-login` / `modern-data` / `modern-proxy` /
@@ -71,6 +72,11 @@ for f in modern-login modern-data modern-proxy modern-read modern-exec modern-uc
     < "deploy/$f"
 done
 
+ssh root@<路由器IP> 'mkdir -p /usr/lib/modern'
+ssh root@<路由器IP> \
+  'cat > /usr/lib/modern/.probe.lua.new && chmod +x /usr/lib/modern/.probe.lua.new && mv /usr/lib/modern/.probe.lua.new /usr/lib/modern/probe.lua' \
+  < deploy/modern-probe.lua
+
 ssh root@<路由器IP> 'chown -R root:root /www/modern && chmod -R a+rX /www/modern'
 ```
 
@@ -83,6 +89,7 @@ ssh root@<路由器IP> 'chown -R root:root /www/modern && chmod -R a+rX /www/mod
 ```bash
 ssh root@<路由器IP> 'ls /www/cgi-bin/modern-* | wc -l'      # 期望 9
 ssh root@<路由器IP> 'head -1 /www/cgi-bin/modern-uci | od -c | head -1'   # 期望无 \r
+ssh root@<路由器IP> 'test -x /usr/lib/modern/probe.lua && echo ok'        # 期望 ok
 curl -sk https://<路由器IP>/modern/ | head -5             # 期望能看到 <!doctype html>
 ```
 

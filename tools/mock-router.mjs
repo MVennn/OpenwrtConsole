@@ -1483,6 +1483,13 @@ function handleCgi(pathname, query, body, method) {
   }
   if (pathname === '/cgi-bin/modern-data') {
     const what = query.get('what') || 'stations'
+    if (what === 'identify') {
+      const ip = query.get('ip') || ''
+      if (ip === '192.0.2.101') return { ip, tcp: [62078], mdns: [] }
+      if (ip === '192.0.2.102') return { ip, tcp: [8009], mdns: ['_googlecast._tcp.local'] }
+      if (ip === '192.0.2.103') return { ip, tcp: [22, 445, 32400], mdns: [] }
+      return { ip, tcp: [], miio: null, mitv: null, gateway: null, ssdp: null, mdns: [] }
+    }
     if (what === 'stations') return { stations }
     if (what === 'logs') {
       return {

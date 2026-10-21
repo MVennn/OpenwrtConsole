@@ -1,0 +1,193 @@
+#!/usr/bin/env node
+/*
+ * Regenerates src/utils/oui.ts from the IEEE OUI registry.
+ *
+ *   curl -sO https://standards-oui.ieee.org/oui/oui.csv
+ *   node tools/gen-oui.mjs oui.csv
+ *
+ * The registry has ~39k prefixes; the console only needs the consumer brands
+ * it is likely to meet on a home LAN. Keeping the curated subset small also
+ * keeps the bundle small — an unknown prefix means "not in the list", not
+ * "not registered".
+ */
+
+import fs from 'node:fs'
+import path from 'node:path'
+import { fileURLToPath } from 'node:url'
+
+const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
+const source = process.argv[2]
+if (!source) {
+  console.error('usage: node tools/gen-oui.mjs <oui.csv>')
+  process.exit(1)
+}
+
+const BRANDS = [
+  [/beijing xiaomi mobile|xiaomi communications|xiaomi electronics|xiaomi inc/i, '小米'],
+  [/apple/i, 'Apple'],
+  [/samsung/i, '三星'],
+  [/huawei/i, '华为'],
+  [/honor device|honor technologies/i, '荣耀'],
+  [/guangdong oppo|oppo mobile/i, 'OPPO'],
+  [/vivo mobile|vivo communication/i, 'vivo'],
+  [/oneplus/i, '一加'],
+  [/realme/i, 'realme'],
+  [/meizu/i, '魅族'],
+  [/lenovo/i, '联想'],
+  [/motorola mobility|motorola/i, '摩托罗拉'],
+  [/nokia/i, '诺基亚'],
+  [/sony/i, '索尼'],
+  [/lg electronics|lg innotek/i, 'LG'],
+  [/google/i, 'Google'],
+  [/amazon technologies|amazon\.com/i, 'Amazon'],
+  [/espressif/i, 'Espressif'],
+  [/tuya/i, '涂鸦'],
+  [/realtek/i, 'Realtek'],
+  [/mediatek/i, '联发科'],
+  [/intel/i, 'Intel'],
+  [/broadcom/i, 'Broadcom'],
+  [/qualcomm/i, '高通'],
+  [/tp-link|tplink/i, 'TP-Link'],
+  [/d-link/i, 'D-Link'],
+  [/netgear/i, 'Netgear'],
+  [/asustek|asus/i, 'ASUS'],
+  [/new h3c|h3c technologies/i, 'H3C'],
+  [/ruijie/i, '锐捷'],
+  [/tenda/i, 'Tenda'],
+  [/mercury communication/i, '水星'],
+  [/ubiquiti/i, 'Ubiquiti'],
+  [/mikrotik/i, 'MikroTik'],
+  [/raspberry pi/i, '树莓派'],
+  [/synology/i, '群晖'],
+  [/qnap/i, 'QNAP'],
+  [/hewlett packard|hp inc/i, 'HP'],
+  [/canon/i, 'Canon'],
+  [/seiko epson|epson/i, 'Epson'],
+  [/brother industries/i, 'Brother'],
+  [/ricoh/i, 'Ricoh'],
+  [/xerox/i, 'Xerox'],
+  [/sonos/i, 'Sonos'],
+  [/roku/i, 'Roku'],
+  [/nintendo/i, 'Nintendo'],
+  [/microsoft/i, 'Microsoft'],
+  [/dell/i, 'Dell'],
+  [/acer/i, 'Acer'],
+  [/gigabyte/i, '技嘉'],
+  [/micro-star|msi/i, 'MSI'],
+  [/philips/i, '飞利浦'],
+  [/yeelight/i, 'Yeelight'],
+  [/lumi united|aqara/i, 'Aqara'],
+  [/roborock/i, '石头'],
+  [/dreame/i, '追觅'],
+  [/ecovacs/i, '科沃斯'],
+  [/anker innovations|eufy/i, 'Anker'],
+  [/ring llc|ring labs/i, 'Ring'],
+  [/nest labs/i, 'Nest'],
+  [/wyze/i, 'Wyze'],
+  [/allterco|shelly/i, 'Shelly'],
+  [/govee/i, 'Govee'],
+  [/broadlink/i, 'Broadlink'],
+  [/orvibo/i, '欧瑞博'],
+  [/itead/i, 'Sonoff'],
+  [/texas instruments/i, 'TI'],
+  [/nordic semiconductor/i, 'Nordic'],
+  [/silicon laboratories/i, 'Silicon Labs'],
+  [/azurewave/i, 'AzureWave'],
+  [/murata/i, 'Murata'],
+  [/lite-on|liteon/i, 'Lite-On'],
+  [/hon hai|foxconn/i, '富士康'],
+  [/compal/i, 'Compal'],
+  [/quanta computer/i, 'Quanta'],
+  [/pegatron/i, 'Pegatron'],
+  [/wistron/i, 'Wistron'],
+  [/inventec/i, 'Inventec'],
+  [/nvidia/i, 'NVIDIA'],
+  [/netis/i, 'Netis'],
+  [/totolink/i, 'TOTOLINK'],
+  [/zyxel/i, 'ZyXEL'],
+  [/aruba networks/i, 'Aruba'],
+  [/cisco/i, 'Cisco'],
+  [/juniper/i, 'Juniper'],
+  [/fortinet/i, 'Fortinet'],
+  [/goodix/i, 'Goodix'],
+  [/synaptics/i, 'Synaptics'],
+  [/shenzhen tencent|tencent/i, '腾讯'],
+  [/alibaba/i, '阿里'],
+  [/baidu/i, '百度'],
+  [/hikvision/i, '海康威视'],
+  [/dahua/i, '大华'],
+  [/xiaoyi|yitu|imilk/i, '小米生态']
+]
+
+function parseCsvLine(line) {
+  const out = []
+  let current = ''
+  let quoted = false
+  for (let index = 0; index < line.length; index += 1) {
+    const char = line[index]
+    if (quoted) {
+      if (char === '"') {
+        if (line[index + 1] === '"') {
+          current += '"'
+          index += 1
+        } else {
+          quoted = false
+        }
+      } else {
+        current += char
+      }
+    } else if (char === '"') {
+      quoted = true
+    } else if (char === ',') {
+      out.push(current)
+      current = ''
+    } else {
+      current += char
+    }
+  }
+  out.push(current)
+  return out
+}
+
+function brandFor(organization) {
+  for (const [pattern, label] of BRANDS) {
+    if (pattern.test(organization)) return label
+  }
+  return null
+}
+
+const lines = fs.readFileSync(source, 'utf8').split(/\r?\n/)
+const table = new Map()
+for (const line of lines) {
+  if (!line || line.startsWith('Registry,')) continue
+  const fields = parseCsvLine(line)
+  if (fields.length < 3) continue
+  const prefix = (fields[1] || '').trim().toUpperCase()
+  const organization = (fields[2] || '').trim()
+  if (!/^[0-9A-F]{6}$/.test(prefix)) continue
+  const brand = brandFor(organization)
+  if (brand) table.set(prefix, brand)
+}
+
+const sorted = [...table.entries()].sort(([left], [right]) => left.localeCompare(right))
+const body = sorted.map(([prefix, brand]) => `  '${prefix}': '${brand}'`).join(',\n')
+
+const output = `// Generated by tools/gen-oui.mjs from the IEEE OUI registry.
+// Do not edit by hand; re-run the generator to refresh the table.
+// Only consumer-facing vendors are kept, so an unknown prefix means
+// "not in the curated list", not "not registered".
+
+export const OUI_VENDORS: Record<string, string> = {
+${body}
+}
+
+/** Returns the curated vendor label for a MAC, if its prefix is known. */
+export function vendorOf(mac: string): string | undefined {
+  const prefix = mac.replace(/[^0-9a-fA-F]/g, '').slice(0, 6).toUpperCase()
+  return OUI_VENDORS[prefix]
+}
+`
+
+const target = path.join(root, 'src/utils/oui.ts')
+fs.writeFileSync(target, output)
+console.log(`wrote ${target}: ${sorted.length} prefixes, ${(output.length / 1024).toFixed(1)} KiB`)

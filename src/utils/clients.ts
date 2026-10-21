@@ -18,6 +18,10 @@ export interface ClientRow {
   connected?: number
   inactive?: number
   lease?: number
+  /** 802.11 capabilities, used to tell small IoT clients from phones/PCs. */
+  ht?: boolean
+  vht?: boolean
+  he?: boolean
 }
 
 export interface WifiMeta {
@@ -72,6 +76,7 @@ export function mergeClients(
       const key = station.mac.toUpperCase()
       const existing = map.get(key)
       const hint = hints[key]
+      const caps = station.rx || station.tx
       map.set(key, {
         mac: station.mac,
         hostname: existing?.hostname || hint?.name || '无线设备',
@@ -84,7 +89,10 @@ export function mergeClients(
         rate: Math.max(station.rx?.rate || 0, station.tx?.rate || 0),
         connected: station.connected_time,
         inactive: station.inactive,
-        lease: existing?.lease
+        lease: existing?.lease,
+        ht: caps?.ht,
+        vht: caps?.vht,
+        he: caps?.he
       })
     }
   }

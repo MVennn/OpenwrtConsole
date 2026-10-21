@@ -23,5 +23,9 @@ for file in modern-login modern-data modern-proxy modern-read modern-exec modern
 	ssh "$HOST" "cat > /www/cgi-bin/.$file.new && chmod +x /www/cgi-bin/.$file.new && mv /www/cgi-bin/.$file.new /www/cgi-bin/$file" < "$ROOT/deploy/$file"
 done
 
+# The probe helper lives outside /www so it cannot be requested directly; it
+# needs nixio, which ships with LuCI (already a console dependency).
+ssh "$HOST" "mkdir -p /usr/lib/modern && cat > /usr/lib/modern/.probe.lua.new && chmod +x /usr/lib/modern/.probe.lua.new && mv /usr/lib/modern/.probe.lua.new /usr/lib/modern/probe.lua" < "$ROOT/deploy/modern-probe.lua"
+
 echo "deployed to $HOST:$DEST (CGI helpers in /www/cgi-bin)"
 echo "open https://${HOST#*@}/modern/"

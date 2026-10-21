@@ -177,6 +177,7 @@ export interface StationRxTx {
   he?: boolean
   vht?: boolean
   ht?: boolean
+  eht?: boolean
   failed?: number
 }
 
