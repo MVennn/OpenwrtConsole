@@ -12,6 +12,23 @@ ROUTER_URL=https://192.168.1.1 npm run dev   # 指向你自己的路由器
 打开 <http://localhost:5173/modern/>。`ROUTER_URL` 不设时默认 `https://10.0.0.1`
 （默认网关的通行默认值）。开发时 Vite 会把 `/ubus` 与 `/cgi-bin` 代理到路由器。
 
+### 本地 UI 开发（不需要路由器）
+
+没有路由器、没有 root 密码时，用随仓的 mock 路由器跑完整界面：
+
+```bash
+node tools/mock-router.mjs                    # 终端 1：合成数据，监听 127.0.0.1:5199
+ROUTER_URL=http://127.0.0.1:5199 npm run dev  # 终端 2：Vite
+```
+
+打开 <http://localhost:5173/modern/>，**用户名和密码随便填**。mock 覆盖
+`/ubus` 与 `/cgi-bin/modern-*`，数据全部是合成的（文档地址段、假 MAC、假 SSID、
+假节点名），不会碰到真实设备。
+
+- `MOCK_PORT=5199` 改端口；`MOCK_NO_LUCI=1` 模拟未安装 LuCI 的精简固件。
+- mock **只监听 127.0.0.1**，且接受任意登录，**不要**把它暴露到 LAN 或用在生产。
+- 它不参与构建：`tools/` 不在 Vite 的入口里，`dist/` 不会包含它。
+
 ## 组件规范
 
 - 视图文件统一 `XxxView.vue`，并在里面写 `defineOptions({ name: 'XxxView' })` ——

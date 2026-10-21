@@ -64,6 +64,11 @@ npm run dev
 ROUTER_URL=https://192.168.1.1 npm run dev
 ```
 
+没有路由器也能跑完整界面：先用 `node tools/mock-router.mjs` 起一个合成数据的
+mock 路由器，再 `ROUTER_URL=http://127.0.0.1:5199 npm run dev`，用户名密码随便填。
+mock 只监听 `127.0.0.1`，数据全部是假的，不会碰真实设备；用法见
+[CONTRIBUTING](CONTRIBUTING.md#本地-ui-开发不需要路由器)。
+
 > `base` 固定为 `/modern/`，本地也是 `/modern/` 路径，别用 `/` 打开。
 
 ### 构建与部署

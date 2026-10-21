@@ -113,3 +113,28 @@ LuCI 只保留为应急入口。
 ## 状态: 已完成
 
 ---
+
+# 2026-10-21 本地开发模式（mock 路由器）
+
+## 背景
+- 控制台登录必须用 root 密码换 ubus 会话，SSH key 不提供密码；没有路由器时无法做浏览器端到端。
+- 目标：不引入生产后门，用 dev-only 的 mock 路由器提供完整界面数据。
+
+## 完成项
+- [x] 新增 `tools/mock-router.mjs`：零依赖，监听 `127.0.0.1:5199`，覆盖 `/ubus` 与
+  `/cgi-bin/modern-*`；数据全部合成（文档地址段 / 假 MAC / 假 SSID / 假节点名）
+- [x] mock 覆盖登录、概览、无线（含 6 GHz）、客户端、网络、系统、代理、ShellCrash、
+  软件包、固件、运维、DNS、配置页、监控、诊断、首次配置
+- [x] `CONTRIBUTING.md` 与根 README 补 mock 用法；`CHANGELOG` 记入 `[未发布]`
+- [x] 验证：浏览器登录后逐页渲染；诊断执行 Ping；系统设置改主机名出现待生效改动，
+  「放弃修改」确认后回滚；端口转发命中流量显示 1 条连接 / 259.3 KB
+
+## 自检
+- `node --check tools/mock-router.mjs` ✓
+- `npx vue-tsc --noEmit` ✓（源码未改）
+- `python tools/check-docs.py` ✓
+- mock 与 dev server 只在本地运行，未部署到路由器
+
+## 状态: 已完成
+
+---
