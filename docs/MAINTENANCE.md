@@ -218,8 +218,8 @@ ssh root@<路由器IP> 'cat > /www/cgi-bin/.modern-uci.new && chmod +x /www/cgi-
 | 你改了什么 | 必须同时改 |
 | --- | --- |
 | 加 / 删 / 改一个 CGI | [CGI-CONTRACT.md](CGI-CONTRACT.md) · [ARCHITECTURE.md](ARCHITECTURE.md) 的 CGI 清单 |
-| 加 / 删 / 改一个数据通道 | [ARCHITECTURE.md](ARCHITECTURE.md) 的通道表 · 根 [../README.md](../README.md) 的「数据来源」表 |
-| 加 / 删一个视图 | 根 [../README.md](../README.md) 的「功能」表 · [ARCHITECTURE.md](ARCHITECTURE.md) §4 |
+| 加 / 删 / 改一个数据通道 | [ARCHITECTURE.md](ARCHITECTURE.md) 的通道表 · [FEATURES.md](FEATURES.md) 的分区表（若因此多了一个分区） |
+| 加 / 删一个视图 | [FEATURES.md](FEATURES.md) 的分区表 · [ARCHITECTURE.md](ARCHITECTURE.md) §4 |
 | 改「暂存 → 提交 → 应用」范式（`src/api/configPending.ts` / `src/composables/useDraft.ts` / `src/components/cfg-pending/` / `src/components/DraftNotice.vue`） | [WRITE-LAYER.md](WRITE-LAYER.md) §2（写入范式与「放弃修改」的两层）· [CGI-CONTRACT.md](CGI-CONTRACT.md) 的对应 action（`uci-revert` / `uci-commit` / `uci-apply` / `net-reload` / `wifi-reload` / `firewall-reload`） |
 | 改构建 / 部署 | 本篇 · 根 [../DEPLOY.md](../DEPLOY.md)（同步窗口） |
 

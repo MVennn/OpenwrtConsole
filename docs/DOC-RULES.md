@@ -12,7 +12,7 @@ docs/ 分四类（索引见 [README.md](README.md)）：
 | 类别 | 收什么 | 现有成员 |
 |---|---|---|
 | 架构与契约 | 数据流怎么走、通道各能干什么、CGI 的请求响应形状 | ARCHITECTURE、CGI-CONTRACT |
-| 功能与实现 | 一块具体能力的实现约束（怎么写、写到哪、谁能写） | WRITE-LAYER |
+| 功能与实现 | 一块具体能力的实现约束（怎么写、写到哪、谁能写），以及功能与限制的清单 | FEATURES、LIMITS、WRITE-LAYER |
 | 流程与规范 | 构建、发版、维护、排错、文档规则 | MAINTENANCE、TROUBLESHOOTING、DOC-RULES |
 | 参考资料 | Release 说明、历史契约、仓库根的其它文档 | release-notes/、V2-CONTRACT、V3-CONTRACT |
 
@@ -34,6 +34,8 @@ docs/ 分四类（索引见 [README.md](README.md)）：
 |---|---|
 | 三层数据流、通道能力边界、目录分层 | [ARCHITECTURE.md](ARCHITECTURE.md) |
 | CGI 请求 / 响应 JSON 形状、错误码、令牌机制 | [CGI-CONTRACT.md](CGI-CONTRACT.md) |
+| 功能分区清单、每个分区能做什么 | [FEATURES.md](FEATURES.md) |
+| 已知限制与设计边界 | [LIMITS.md](LIMITS.md) |
 | rpcd 的 UCI 授权白名单、写入范式、令牌动作清单 | [WRITE-LAYER.md](WRITE-LAYER.md) |
 | 部署链、世代保留机制、回退步骤、组件规范 | [MAINTENANCE.md](MAINTENANCE.md) |
 | 排错步骤 | [TROUBLESHOOTING.md](TROUBLESHOOTING.md) |
@@ -54,6 +56,9 @@ docs/ 分四类（索引见 [README.md](README.md)）：
 3. **授权白名单双写**：[WRITE-LAYER.md](WRITE-LAYER.md) 与 [V3-CONTRACT.md](V3-CONTRACT.md)
    都写了那 10 个可写配置文件名。约定：**白名单以 [WRITE-LAYER.md](WRITE-LAYER.md) 为准**，
    `V3-CONTRACT.md` 作为历史文档不再维护。
+4. **功能清单与限制清单曾整份写在根 `README.md`**（面向使用者却塞了开发者内容）。
+   门面化后根 README 只留一句概述 + 链接，正本分别落在
+   [FEATURES.md](FEATURES.md) 与 [LIMITS.md](LIMITS.md)。
 
 > 历史文档（`V2-CONTRACT.md` / `V3-CONTRACT.md`）里保留旧结论是**允许**的 ——
 > 那是当时的事实。但凡**指向现役文档的链接**必须始终指向现役文档。
@@ -89,8 +94,8 @@ docs/ 分四类（索引见 [README.md](README.md)）：
 | 改一个 CGI 的请求 / 响应形状或错误码 | [CGI-CONTRACT.md](CGI-CONTRACT.md) 对应小节 |
 | 改 UCI 授权白名单 | [WRITE-LAYER.md](WRITE-LAYER.md) §1 |
 | 新增 / 删除一个危险动作或令牌用途 | [WRITE-LAYER.md](WRITE-LAYER.md) §3 的令牌表、[CGI-CONTRACT.md](CGI-CONTRACT.md) 对应小节 |
-| 新增 / 删除一个数据通道 | [ARCHITECTURE.md](ARCHITECTURE.md) 的通道表、根 [../README.md](../README.md) 的「数据来源」表 |
-| 新增 / 删除 / 改名一个视图 | [ARCHITECTURE.md](ARCHITECTURE.md) §4 的目录结构、根 [../README.md](../README.md) 的「功能」表 |
+| 新增 / 删除一个数据通道 | [ARCHITECTURE.md](ARCHITECTURE.md) 的通道表、[FEATURES.md](FEATURES.md) 的分区表（若因此多了一个分区） |
+| 新增 / 删除 / 改名一个视图 | [ARCHITECTURE.md](ARCHITECTURE.md) §4 的目录结构、[FEATURES.md](FEATURES.md) 的分区表 |
 | 新增 / 删除一个 Element Plus 组件 | [../DESIGN.md](../DESIGN.md) 与 `src/plugins/element.ts`（样式清单）、[TROUBLESHOOTING.md](TROUBLESHOOTING.md) 的「元素样式丢失」节 |
 | 改构建 / 部署 / 部署脚本 | [MAINTENANCE.md](MAINTENANCE.md) 对应段、根 [../DEPLOY.md](../DEPLOY.md)（同步窗口） |
 | 发版 | 根 [../CHANGELOG.md](../CHANGELOG.md)、[release-notes/<版本>.md](release-notes/README.md) |

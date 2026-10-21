@@ -18,6 +18,8 @@
 
 | 文档 | 一句话定位 |
 |---|---|
+| [FEATURES.md](FEATURES.md) | 功能清单**正本**：每个分区能做什么、读与写的分界、已验证环境 |
+| [LIMITS.md](LIMITS.md) | 限制清单**正本**：十二条设计边界（授权白名单、诊断白名单、只支持 apk 等）与为什么 |
 | [WRITE-LAYER.md](WRITE-LAYER.md) | 写入层：rpcd 的 UCI 授权白名单、写入范式（读现状 → 本地草稿 → 暂存 → 提交 → 应用）、必须走 root CGI 且需要令牌 + 确认词的七类动作 |
 
 ## 三、流程与规范
@@ -41,7 +43,7 @@
 | 仓库根 [CHANGELOG.md](../CHANGELOG.md) | 开发者记录：变更历史 + **待修缺陷清单**（含「待补」项）；**版本号本身**在这里维护，规则见 [VERSIONING.md](VERSIONING.md) |
 | 仓库根 [DEPLOY.md](../DEPLOY.md) | 部署细则：前置条件与运行时依赖、一键 / 手动部署、CGI 清单、缓存与回退、排障 |
 | 仓库根 [DESIGN.md](../DESIGN.md) | 设计令牌与组件规范（源目录副本，**待同步**：只读/可写的旧结论已过期） |
-| 仓库根 [README.md](../README.md) | 门面：这是什么、适用环境、快速开始、功能、限制、反馈、免责声明、开源鸣谢、许可证 |
+| 仓库根 [README.md](../README.md) | 门面（面向使用者）：这是什么、环境要求、安装、反馈、免责声明、开源鸣谢、许可证 |
 | 仓库根 [AGENTS.md](../AGENTS.md) | 机器协议：给自动化代理看的三条硬约定 |
 | 仓库根 [LICENSE](../LICENSE) | 许可证全文（**MIT**）—— 与根 [NOTICE](../NOTICE) 的第三方声明配套；本仓**不含**任何 GPL-3.0 派生件（ShellCrash 的 GPL-3.0 派生件在 `ShellcrashRules` 仓） |
 | 仓库根 [third-party/](../third-party/README.md) | **随仓分发的上游文件**：每个子目录一份 `UPSTREAM.md`（来源 URL / 钉住的 commit / 许可 / 怎么用 / 怎么更新） |
@@ -52,6 +54,8 @@
 |---|---|
 | 三层数据流、通道能力、目录分层 | [ARCHITECTURE.md](ARCHITECTURE.md) |
 | CGI 的请求 / 响应 JSON 形状、错误码 | [CGI-CONTRACT.md](CGI-CONTRACT.md) |
+| 功能分区清单、能做什么 | [FEATURES.md](FEATURES.md) |
+| 已知限制与设计边界 | [LIMITS.md](LIMITS.md) |
 | UCI 授权白名单、写入范式、令牌动作清单 | [WRITE-LAYER.md](WRITE-LAYER.md) |
 | 部署链、世代保留、回退步骤 | [MAINTENANCE.md](MAINTENANCE.md) |
 | 排错步骤 | [TROUBLESHOOTING.md](TROUBLESHOOTING.md) |

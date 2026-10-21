@@ -5,12 +5,21 @@
 ## 把它跑起来
 
 ```bash
-npm ci
-ROUTER_URL=https://192.168.1.1 npm run dev   # 指向你自己的路由器
+npm install          # 或 npm ci（锁文件已入库）
+npm run dev
 ```
 
-打开 <http://localhost:5173/modern/>。`ROUTER_URL` 不设时默认 `https://10.0.0.1`
-（默认网关的通行默认值）。开发时 Vite 会把 `/ubus` 与 `/cgi-bin` 代理到路由器。
+打开 <http://localhost:5173/modern/>。
+
+- `base` 固定为 `/modern/`，**本地也是 `/modern/` 路径**，别用 `/` 打开。
+- 开发时 Vite 会把 `/ubus` 与 `/cgi-bin` 代理到路由器（见 `vite.config.ts`），
+  所以本地开发直接吃真实路由器数据，登录密码就是路由器 root 密码。
+- 默认代理目标是 `https://10.0.0.1`（默认网关的通行默认值，按你的设备地址替换）；
+  指向别的设备用环境变量覆盖：
+
+  ```bash
+  ROUTER_URL=https://192.168.1.1 npm run dev
+  ```
 
 ### 本地 UI 开发（不需要路由器）
 
