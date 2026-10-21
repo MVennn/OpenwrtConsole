@@ -203,7 +203,7 @@
 </template>
 
 <script setup lang="ts">
-  import { computed, ref, watch } from 'vue'
+  import { computed, ref, shallowRef, watch } from 'vue'
   import { useRouter } from 'vue-router'
   import {
     ArrowUpDown,
@@ -239,11 +239,12 @@
 
   type Filter = string
 
-  const wireless = ref<Record<string, WirelessRadio>>({})
-  const stations = ref<Record<string, Station[]>>({})
-  const hints = ref<Record<string, HostHint>>({})
-  const leases = ref<DhcpLease[]>([])
-  const devices = ref<NetworkDevice[]>([])
+  // Replaced wholesale on every poll; deep reactivity would only add proxies.
+  const wireless = shallowRef<Record<string, WirelessRadio>>({})
+  const stations = shallowRef<Record<string, Station[]>>({})
+  const hints = shallowRef<Record<string, HostHint>>({})
+  const leases = shallowRef<DhcpLease[]>([])
+  const devices = shallowRef<NetworkDevice[]>([])
   const filter = ref<Filter>('all')
   const refreshSignal = useRefreshSignal()
   const router = useRouter()

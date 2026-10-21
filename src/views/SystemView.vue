@@ -149,7 +149,7 @@
 </template>
 
 <script setup lang="ts">
-  import { computed, nextTick, ref, watch } from 'vue'
+  import { computed, nextTick, ref, shallowRef, watch } from 'vue'
   import { useRouter } from 'vue-router'
   import {
     Activity,
@@ -171,9 +171,10 @@
 
   defineOptions({ name: 'SystemView' })
 
-  const board = ref<BoardInfo>()
-  const info = ref<SystemInfo>()
-  const logs = ref<string[]>([])
+  // Replaced wholesale on every poll; deep reactivity would only add proxies.
+  const board = shallowRef<BoardInfo>()
+  const info = shallowRef<SystemInfo>()
+  const logs = shallowRef<string[]>([])
   const logCount = ref(80)
   const logView = ref<HTMLElement>()
   const rebooting = ref(false)

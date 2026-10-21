@@ -275,7 +275,7 @@
 </template>
 
 <script setup lang="ts">
-  import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+  import { computed, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue'
   import { RouterLink } from 'vue-router'
   import {
     ArrowDown,
@@ -324,9 +324,10 @@
   const version = ref('')
   /** The controller port of the running core; 9999 is the ShellCrash default. */
   const controllerPort = ref(9999)
-  const configs = ref<ShellCrashConfigs>()
-  const proxies = ref<Record<string, ShellCrashProxy>>({})
-  const connections = ref<ShellCrashConnection[]>([])
+  // Replaced wholesale on every poll; deep reactivity would only add proxies.
+  const configs = shallowRef<ShellCrashConfigs>()
+  const proxies = shallowRef<Record<string, ShellCrashProxy>>({})
+  const connections = shallowRef<ShellCrashConnection[]>([])
   const upTotal = ref(0)
   const downTotal = ref(0)
   const refreshSignal = useRefreshSignal()

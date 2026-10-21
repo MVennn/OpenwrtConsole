@@ -25,6 +25,16 @@
   不参与构建。用法见 [CONTRIBUTING](CONTRIBUTING.md#本地-ui-开发不需要路由器)。
 - 调整 开发文档 —— 根 README 的「本地开发」与 CONTRIBUTING 补 mock 用法。
 
+### 优化
+
+- 优化 前端内存 —— 概览 / 无线 / 客户端 / 网络 / 系统 / 监控 / 代理的 ubus 返回
+  改用 `shallowRef`，避免 Vue 对整棵返回对象做深层代理；`BaseChart` 的 option
+  watch 去掉 `deep`，不再每轮轮询遍历整个图表配置。
+- 实测口径 —— 路由器上 `uhttpd` RSS 约 **1.8 MB**（控制台是静态 SPA，不在路由器里跑），
+  真正的大头是 CrashCore 约 **58 MB**；浏览器稳态 JS 堆约 **13–30 MB**，遍历全部页面
+  来回切换无增长。本地开发时 Vite（约 270 MB）与 mock（约 60 MB）才是内存大头，
+  与产物无关。
+
 ---
 
 ## [0.2.0] — 2026-10-21

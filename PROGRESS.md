@@ -138,3 +138,27 @@ LuCI 只保留为应急入口。
 ## 状态: 已完成
 
 ---
+
+# 2026-10-21 内存占用核查与前端优化
+
+## 测量
+- 路由器：总 239 MB，已用约 155 MB；`uhttpd` RSS 1.8 MB；`CrashCore` RSS 58 MB
+  —— 控制台是静态 SPA，不在路由器进程里跑，主题不是路由器内存大头。
+- 浏览器（生产构建）：概览页 GC 后约 13 MB；遍历全部页面后约 30 MB；
+  来回切换无增长，canvas 始终 1 个，没有图表泄漏。
+- 本地开发：Vite dev 约 271 MB、mock 约 60 MB、preview 约 242 MB；
+  preview 已在测量后停止，dev/mock 保留供查看。
+
+## 完成项
+- [x] 概览 / 无线 / 客户端 / 网络 / 系统 / 监控 / 代理的 ubus 数据改用 `shallowRef`
+- [x] `BaseChart` 的 option watch 去掉 `deep`，避免每轮轮询深度遍历
+- [x] 测量结论写入 CHANGELOG 的 `[未发布]`
+
+## 自检
+- `npx vue-tsc --noEmit` ✓
+- `npm run build` ✓
+- mock 下逐页渲染无报错，`NaN` / `undefined` / `Cannot read` 均为 0
+
+## 状态: 已完成
+
+---

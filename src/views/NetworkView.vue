@@ -212,7 +212,7 @@
 </template>
 
 <script setup lang="ts">
-  import { computed, ref, watch } from 'vue'
+  import { computed, shallowRef, watch } from 'vue'
   import { useRouter } from 'vue-router'
   import { ArrowDown, ArrowUp, RefreshCw } from 'lucide-vue-next'
   import PageHeader from '@/components/PageHeader.vue'
@@ -227,8 +227,9 @@
 
   defineOptions({ name: 'NetworkView' })
 
-  const interfaces = ref<NetworkInterface[]>([])
-  const devices = ref<NetworkDevice[]>([])
+  // Replaced wholesale on every poll; deep reactivity would only add proxies.
+  const interfaces = shallowRef<NetworkInterface[]>([])
+  const devices = shallowRef<NetworkDevice[]>([])
   const refreshSignal = useRefreshSignal()
   const router = useRouter()
 

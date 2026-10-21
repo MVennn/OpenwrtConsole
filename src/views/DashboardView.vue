@@ -297,7 +297,7 @@
 </template>
 
 <script setup lang="ts">
-  import { computed, onBeforeUnmount, reactive, ref, watch } from 'vue'
+  import { computed, onBeforeUnmount, reactive, ref, shallowRef, watch } from 'vue'
   import { RouterLink, useRouter } from 'vue-router'
   import {
     Activity,
@@ -367,14 +367,16 @@
   const refreshSignal = useRefreshSignal()
   const router = useRouter()
 
-  const board = ref<BoardInfo>()
-  const info = ref<SystemInfo>()
-  const interfaces = ref<NetworkInterface[]>([])
-  const devices = ref<NetworkDevice[]>([])
-  const wireless = ref<Record<string, WirelessRadio>>({})
-  const leases = ref<DhcpLease[]>([])
-  const hints = ref<Record<string, HostHint>>({})
-  const stations = ref<Record<string, Station[]>>({})
+  // The ubus payloads are replaced wholesale on every poll, so a shallow ref
+  // is enough and keeps Vue from deep-proxying every nested object.
+  const board = shallowRef<BoardInfo>()
+  const info = shallowRef<SystemInfo>()
+  const interfaces = shallowRef<NetworkInterface[]>([])
+  const devices = shallowRef<NetworkDevice[]>([])
+  const wireless = shallowRef<Record<string, WirelessRadio>>({})
+  const leases = shallowRef<DhcpLease[]>([])
+  const hints = shallowRef<Record<string, HostHint>>({})
+  const stations = shallowRef<Record<string, Station[]>>({})
   const proxy = reactive({
     running: false,
     version: '',

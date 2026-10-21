@@ -32,10 +32,12 @@
     observer.observe(host.value)
   })
 
+  // The callers build a fresh option object on every update, so watching the
+  // reference is enough. A deep watch would walk the whole chart option on
+  // every poll for no benefit.
   watch(
     () => props.option,
-    (option) => chart?.setOption(option, { notMerge: true }),
-    { deep: true }
+    (option) => chart?.setOption(option, { notMerge: true })
   )
 
   onBeforeUnmount(() => {

@@ -169,7 +169,7 @@
 </template>
 
 <script setup lang="ts">
-  import { computed, ref, watch } from 'vue'
+  import { computed, ref, shallowRef, watch } from 'vue'
   import { useRouter } from 'vue-router'
   import { Cable, RefreshCw, Search, Users, Wifi } from 'lucide-vue-next'
   import PageHeader from '@/components/PageHeader.vue'
@@ -188,10 +188,11 @@
 
   type Filter = 'all' | 'wireless' | 'wired'
 
-  const leases = ref<DhcpLease[]>([])
-  const stations = ref<Record<string, Station[]>>({})
-  const hints = ref<Record<string, HostHint>>({})
-  const wireless = ref<Record<string, WirelessRadio>>({})
+  // Replaced wholesale on every poll; deep reactivity would only add proxies.
+  const leases = shallowRef<DhcpLease[]>([])
+  const stations = shallowRef<Record<string, Station[]>>({})
+  const hints = shallowRef<Record<string, HostHint>>({})
+  const wireless = shallowRef<Record<string, WirelessRadio>>({})
   const search = ref('')
   const filter = ref<Filter>('all')
   const refreshSignal = useRefreshSignal()

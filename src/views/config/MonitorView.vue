@@ -319,7 +319,7 @@
 </template>
 
 <script setup lang="ts">
-  import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+  import { computed, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue'
   import { Activity, ArrowDownUp, MemoryStick, Network, RefreshCw, Users } from 'lucide-vue-next'
   import type { EChartsCoreOption } from 'echarts/core'
   import PageHeader from '@/components/PageHeader.vue'
@@ -388,13 +388,15 @@
   const refreshing = ref(false)
   const error = ref<Error | null>(null)
 
-  const info = ref<SystemInfo>()
-  const devices = ref<NetworkDevice[]>([])
-  const interfaces = ref<NetworkInterface[]>([])
-  const wireless = ref<Record<string, WirelessRadio>>({})
-  const stations = ref<Record<string, Station[]>>({})
-  const hints = ref<Record<string, HostHint>>({})
-  const leases = ref<DhcpLease[]>([])
+  // The topology and counters are replaced wholesale; the ring buffers below
+  // are mutated in place and stay deep refs.
+  const info = shallowRef<SystemInfo>()
+  const devices = shallowRef<NetworkDevice[]>([])
+  const interfaces = shallowRef<NetworkInterface[]>([])
+  const wireless = shallowRef<Record<string, WirelessRadio>>({})
+  const stations = shallowRef<Record<string, Station[]>>({})
+  const hints = shallowRef<Record<string, HostHint>>({})
+  const leases = shallowRef<DhcpLease[]>([])
 
   /** Ring buffers: the resource curve and one rate curve per interface/client. */
   const resourceSamples = ref<ResourceSample[]>([])
