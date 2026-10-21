@@ -16,7 +16,7 @@
 
 ---
 
-## [未发布] — 2026-10-21
+## [0.3.0] — 2026-10-21
 
 ### 路由器端修复
 
@@ -106,6 +106,13 @@
 
 **验证**：`npx vue-tsc --noEmit` 零报错、`npm run build` 通过；mock 下 18 条路由逐页
 回归，工作区标签激活态、面包屑、刷新按钮与页面渲染均正常，console 无错误。
+
+### 整理批次（2026-10-21）
+
+- 调整 工具 —— `tools/check-docs.py` 跳过 `.work/` 与 `.codegraph/`，本地工作区草稿与
+  本机索引不再参与版本库文档检查。
+- 调整 配置 —— `.gitignore` 补 `__pycache__/` / `*.py[cod]`（`tools/` 下的 Python 脚本
+  会生成字节码缓存），并删除指向已不存在的 `PRIVACY-INVENTORY.md` 的空段注释。
 
 ---
 
@@ -527,6 +534,8 @@
 - **`docs/V2-CONTRACT.md` / `docs/V3-CONTRACT.md` 是一次性开发契约** ——
   其中的「文件归属表」已失效。V3 里长期有效的部分（rpcd 授权边界 + 写入范式）
   已提炼进 [docs/WRITE-LAYER.md](docs/WRITE-LAYER.md)，归档动作待办。
+
+面向用户的说明见 [docs/release-notes/v0.2.0.md](docs/release-notes/v0.2.0.md)。
 
 ---
 

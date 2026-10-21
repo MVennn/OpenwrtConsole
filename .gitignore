@@ -15,6 +15,10 @@ dist/
 .cache/
 *.tsbuildinfo
 
+# Python 字节码缓存（tools/ 下的自检与资源生成脚本会生成）
+__pycache__/
+*.py[cod]
+
 # ---------------------------------------------------------------------------
 # 环境与本地配置
 # ---------------------------------------------------------------------------
@@ -103,8 +107,6 @@ router-*.json
 !third-party/**
 third-party/**/node_modules/
 third-party/**/dist/
-
-# ---- 脱敏未完成前的临时拦截（见 PRIVACY-INVENTORY.md）----
 
 # CodeGraph 索引（本机生成，不入库）
 /.codegraph/
