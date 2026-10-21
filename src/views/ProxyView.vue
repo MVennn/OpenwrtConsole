@@ -892,11 +892,16 @@
     color: var(--text-faint);
   }
 
+  /* The control cluster must keep its intrinsic width. Once the node chips are
+     rendered, .group-main's flex basis grows large; with flex-shrink: 1 the
+     shrink was split across both columns and squeezed this side below the
+     combined min-width of the count, the test button and the select — the
+     overflow then widened the card and added a horizontal scrollbar. */
   .group-side {
     display: flex;
     align-items: center;
     gap: 8px;
-    flex: 0 1 auto;
+    flex: 0 0 auto;
     min-width: 0;
   }
 
