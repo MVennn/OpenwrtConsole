@@ -870,10 +870,15 @@
     {
       key: 'firewall_area',
       label: '防火墙区域',
-      type: 'number',
-      hint: '1 本机代理 / 2 旁路由 / 3 主路由 / 4 纯模式 / 5 主旁转发',
-      min: 1,
-      max: 5
+      type: 'select',
+      hint: '决定哪些流量交给核心劫持：1 仅局域网（本机直连）、2 仅本机、3 两者都劫持、4 不劫持、5 旁路转发',
+      options: [
+        { label: '1 · 仅局域网（本机直连）', value: '1' },
+        { label: '2 · 仅本机', value: '2' },
+        { label: '3 · 局域网 + 本机', value: '3' },
+        { label: '4 · 纯净模式（不劫持）', value: '4' },
+        { label: '5 · 旁路转发', value: '5' }
+      ]
     },
     {
       key: 'release_type',
