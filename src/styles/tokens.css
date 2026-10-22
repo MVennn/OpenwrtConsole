@@ -172,6 +172,38 @@
   --el-color-primary-light-8: #22325c;
   --el-color-primary-light-9: #1b2540;
   --el-color-primary-dark-2: #3b60d8;
+
+  /* Element Plus' semantic colours keep their light-mode ramp unless the
+     dark stylesheet is imported: alert / tag / message take their background
+     from *-light-9, which is almost white and glares on the dark cards. The
+     base colours stay the library defaults (solid buttons rely on them for
+     white text), only the light-3…light-9 steps are the official dark ramp. */
+  --el-color-success-light-3: #4e8e2f;
+  --el-color-success-light-5: #3e6b27;
+  --el-color-success-light-7: #2d481f;
+  --el-color-success-light-8: #25371c;
+  --el-color-success-light-9: #1c2518;
+  --el-color-warning-light-3: #a77730;
+  --el-color-warning-light-5: #7d5b28;
+  --el-color-warning-light-7: #533f20;
+  --el-color-warning-light-8: #3e301c;
+  --el-color-warning-light-9: #292218;
+  --el-color-danger-light-3: #b25252;
+  --el-color-danger-light-5: #854040;
+  --el-color-danger-light-7: #582e2e;
+  --el-color-danger-light-8: #412626;
+  --el-color-danger-light-9: #2a1d1d;
+  --el-color-error-light-3: #b25252;
+  --el-color-error-light-5: #854040;
+  --el-color-error-light-7: #582e2e;
+  --el-color-error-light-8: #412626;
+  --el-color-error-light-9: #2a1d1d;
+  --el-color-info-light-3: #6b6d71;
+  --el-color-info-light-5: #525457;
+  --el-color-info-light-7: #393a3c;
+  --el-color-info-light-8: #2d2d2f;
+  --el-color-info-light-9: #202121;
+
   --el-text-color-primary: var(--text);
   --el-text-color-regular: var(--text-secondary);
   --el-text-color-secondary: var(--text-muted);
