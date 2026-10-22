@@ -129,6 +129,7 @@
                     size="small"
                     effect="plain"
                     class="pkg-tag-upgrade"
+                    disable-transitions
                   >
                     可升级
                   </el-tag>
@@ -266,6 +267,7 @@
                       size="small"
                       effect="plain"
                       class="pkg-tag"
+                      disable-transitions
                     >
                       已安装
                     </el-tag>
@@ -304,6 +306,18 @@
               </el-table>
             </div>
 
+            <div v-if="repoPackages.length" class="pkg-pager desktop-only">
+              <el-pagination
+                v-model:current-page="repoPage"
+                v-model:page-size="repoPageSize"
+                :page-sizes="[50, 100, 200]"
+                :total="repoTotal"
+                layout="total, sizes, prev, pager, next"
+                :disabled="repoLoading || busy !== ''"
+                background
+              />
+            </div>
+
             <div v-if="repoPackages.length" class="mobile-only mobile-list">
               <div v-for="row in repoPackages" :key="row.name" class="mobile-row">
                 <div class="mobile-row-head">
@@ -332,6 +346,17 @@
                     {{ row.installed ? '已安装' : '安装' }}
                   </el-button>
                 </div>
+              </div>
+
+              <div class="pkg-pager">
+                <el-pagination
+                  v-model:current-page="repoPage"
+                  :page-size="repoPageSize"
+                  :total="repoTotal"
+                  layout="prev, pager, next"
+                  :disabled="repoLoading || busy !== ''"
+                  background
+                />
               </div>
             </div>
 
@@ -415,7 +440,6 @@
   const repoPackages = ref<PackageInfo[]>([])
   const installedCount = ref(0)
   const availableCount = ref(0)
-  const repoMatchCount = ref(0)
   const upgradableCount = ref(0)
   const indexUpdatedAt = ref(0)
   /** The packages a newer version exists for: name → new version. */
@@ -429,6 +453,13 @@
   const repoLoaded = ref(false)
   const repoStale = ref(false)
   const installedStale = ref(false)
+  /** The page of the repository list on screen, and the rows one page holds. */
+  const repoPage = ref(1)
+  const repoPageSize = ref(100)
+  /** The number of entries the current keyword matches in the whole repository. */
+  const repoTotal = ref(0)
+  /** True once the missing repository index was downloaded automatically. */
+  let indexAutoTried = false
 
   const busy = ref('')
   const jobTitle = ref('')
@@ -552,27 +583,32 @@
       }
       return `共 ${installedCount.value} 个软件包`
     }
-    if (repoLoading.value) return '正在搜索仓库…'
+    if (repoLoading.value) return '正在读取仓库…'
     if (statsFailed.value) return '仓库信息读取失败，请刷新重试'
     if (!statsLoaded.value) return '正在读取仓库信息…'
-    if (repoTerm.value) {
-      return repoMatchCount.value > repoPackages.value.length
-        ? `匹配 ${repoMatchCount.value} 个，显示前 ${repoPackages.value.length} 个`
-        : `匹配 ${repoMatchCount.value} 个`
+    if (!repoTotal.value) {
+      return repoTerm.value ? '匹配 0 个' : '仓库共 0 个软件包'
     }
-    return `仓库共 ${availableCount.value} 个软件包`
+    // The pager shows the same numbers on the desktop; on the phone the
+    // layout has no total, so the range is part of the hint.
+    const from = (repoPage.value - 1) * repoPageSize.value + 1
+    const to = from + repoPackages.value.length - 1
+    const head = repoTerm.value ? `匹配 ${repoTotal.value} 个` : `仓库共 ${repoTotal.value} 个`
+    return `${head} · 当前 ${from}–${to}`
   })
 
   const repoEmptyHint = computed(() => {
     if (repoTerm.value) return '仓库里没有匹配的软件包，换个关键词试试。'
-    if (!indexUpdatedAt.value) return '仓库索引尚未下载，请先点击「更新仓库索引」。'
+    if (!indexUpdatedAt.value) return '仓库索引尚未下载，页面会自动从软件源下载索引。'
     return '仓库里没有可安装的软件包，请先更新仓库索引。'
   })
 
   const availableMeta = computed(() => {
     if (statsFailed.value) return '读取失败，请点击刷新重试'
     if (!statsLoaded.value) return '正在读取仓库信息…'
-    if (repoTerm.value) return `当前匹配 ${repoMatchCount.value} 个`
+    // repoTotal only describes the keyword while the repository view is open;
+    // before that the card keeps the general hint.
+    if (repoTerm.value && repoLoaded.value) return `当前匹配 ${repoTotal.value} 个`
     return '搜索可查询仓库中的全部软件包'
   })
 
@@ -681,18 +717,30 @@
     }
   }
 
-  /** The repository page. The keyword is matched on the router. */
+  /**
+   * The repository page. The keyword is matched on the router and only the
+   * rows of the current page are sent back. The counters are read first: they
+   * share the parsed repository with the list, so the router only builds it
+   * once.
+   */
   async function loadRepoList(): Promise<void> {
     const id = ++repoRequestId
     repoLoading.value = true
     try {
-      // The counters are read first: they share the cached parse of the
-      // repository index with the list, so the router only walks it once.
       await ensureStats()
-      const result = await fetchRepositoryPackages(repoTerm.value)
+      if (id !== repoRequestId) return
+      // An empty index means the repository cache was never filled: /tmp is a
+      // ramdisk and a reboot clears it. Download it once instead of showing an
+      // empty list; the job reloads this view when it finishes.
+      if (!indexUpdatedAt.value && startIndexBootstrap()) return
+      const result = await fetchRepositoryPackages(repoTerm.value, {
+        offset: (repoPage.value - 1) * repoPageSize.value,
+        limit: repoPageSize.value
+      })
       if (id !== repoRequestId) return
       repoPackages.value = result.packages ?? []
-      repoMatchCount.value = result.matchedCount ?? result.availableCount ?? repoPackages.value.length
+      repoTotal.value =
+        result.matchedCount ?? result.availableCount ?? repoPackages.value.length
       repoLoaded.value = true
       repoStale.value = false
     } catch (err) {
@@ -701,6 +749,18 @@
     } finally {
       if (id === repoRequestId) repoLoading.value = false
     }
+  }
+
+  /**
+   * Downloads the repository index when the router has none. True means a job
+   * was started: the caller must not ask for a page that is known to be empty,
+   * because the job reloads the list itself when it finishes.
+   */
+  function startIndexBootstrap(): boolean {
+    if (indexAutoTried || busy.value) return false
+    indexAutoTried = true
+    void runJob('update', {}, '正在下载仓库索引', '更新仓库索引')
+    return true
   }
 
   /** Loads what the view needs, if it is not on screen yet. */
@@ -800,8 +860,28 @@
       repoTerm.value = term
       // The list on screen does not match the keyword any more.
       repoStale.value = true
-      if (activeView.value === 'repo') void loadRepoList()
+      // A new keyword starts at the first page. Resetting the page reloads the
+      // list through the watcher below; otherwise it has to be asked for.
+      if (repoPage.value !== 1) {
+        repoPage.value = 1
+      } else if (activeView.value === 'repo') {
+        void loadRepoList()
+      }
     }, 400)
+  })
+
+  watch(repoPage, () => {
+    if (activeView.value === 'repo') void loadRepoList()
+  })
+
+  watch(repoPageSize, () => {
+    // A smaller page can leave the current offset past the end of the list, so
+    // the size change always returns to the first page.
+    if (repoPage.value !== 1) {
+      repoPage.value = 1
+    } else if (activeView.value === 'repo') {
+      void loadRepoList()
+    }
   })
 
   // -------------------------------------------------------------- write ---
@@ -837,6 +917,7 @@
     startElapsedTimer()
     lastOutput.value = ''
     outputVisible.value = true
+    let finishedOk = false
 
     try {
       const job = await startPackageJob(action, params)
@@ -851,12 +932,13 @@
       if (final.state === 'timeout') {
         lastAction.value = { label: `${label}超时`, ok: false, at: Date.now() }
         ElMessage.error(`${label}超时，任务已被强制终止`)
-      } else if ((final.exitCode ?? 0) !== 0) {
+      } else if (final.state === 'failed' || (final.exitCode ?? 0) !== 0) {
         lastAction.value = { label: `${label}失败`, ok: false, at: Date.now() }
         const hint = failureHint(final.output || '')
         ElMessage.error(`${label}失败${hint ? `：${hint}` : ''}`)
       } else {
         lastAction.value = { label: `${label}成功`, ok: true, at: Date.now() }
+        finishedOk = true
         ElMessage.success(`${label}成功`)
       }
     } catch (err) {
@@ -876,6 +958,14 @@
         await reloadAfterAction()
       } catch (err) {
         error.value = messageOf(err)
+      }
+      // apk can report a successful update and still leave the cache empty
+      // when a repository was unreachable; without this check the page would
+      // keep saying "成功" while the repository stays empty.
+      if (action === 'update' && finishedOk && !indexUpdatedAt.value) {
+        ElMessage.warning(
+          '索引任务已完成，但路由器上仍没有索引文件，请确认路由器能访问软件源'
+        )
       }
     }
   }
@@ -1171,6 +1261,21 @@
 
   .pkg-skeleton {
     padding: 20px 16px;
+  }
+
+  /* The pager closes the repository table; the repository is read page by
+     page, so the control is part of the card, not of the page footer. */
+  .pkg-pager {
+    display: flex;
+    justify-content: flex-end;
+    padding: 12px 16px;
+    border-top: 1px solid var(--border);
+  }
+
+  .mobile-list .pkg-pager {
+    justify-content: center;
+    padding: 14px 0 2px;
+    border-top: 0;
   }
 
   .mobile-list {

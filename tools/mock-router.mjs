@@ -1419,12 +1419,20 @@ function handleShellCrash(body) {
 function handlePackages(body) {
   const action = String(body.action || '')
   const params = body.params || {}
+  // The router answers in snake_case (job_id / exit_code) and pages the
+  // repository; the mock mirrors that so a field-name mismatch shows up here.
+  const page = (list) => {
+    const offset = Math.max(0, Number(params.offset || 0) || 0)
+    const limit = Math.min(400, Math.max(1, Number(params.limit || 400) || 400))
+    return { packages: list.slice(offset, offset + limit), offset, limit }
+  }
+  const free = availablePackages.filter((pkg) => !pkg.installed).length
   if (action === 'stats') {
     return {
       ok: true,
       installedCount: installedPackages.length,
-      availableCount: 100,
-      matchedCount: 100 + installedPackages.length,
+      availableCount: free,
+      matchedCount: availablePackages.length,
       upgradableCount: 0,
       indexUpdatedAt: NOW - 3600
     }
@@ -1433,19 +1441,35 @@ function handlePackages(body) {
     return { ok: true, packages: installedPackages, installedCount: installedPackages.length }
   }
   if (action === 'available') {
-    return { ok: true, packages: availablePackages, availableCount: 100 }
+    return {
+      ok: true,
+      ...page(availablePackages),
+      matchedCount: availablePackages.length,
+      availableCount: free,
+      installedCount: installedPackages.length,
+      indexUpdatedAt: NOW - 3600
+    }
   }
   if (action === 'search') {
     const keyword = String(params.keyword || '').toLowerCase()
-    const packages = [...installedPackages, ...availablePackages].filter((pkg) =>
+    const scope = String(params.scope || '')
+    const base = scope === 'available' ? availablePackages : [...installedPackages, ...availablePackages]
+    const packages = base.filter((pkg) =>
       `${pkg.name} ${pkg.description || ''}`.toLowerCase().includes(keyword)
     )
-    return { ok: true, packages, matchedCount: packages.length }
+    return {
+      ok: true,
+      ...page(packages),
+      matchedCount: packages.length,
+      availableCount: packages.filter((pkg) => !pkg.installed).length,
+      installedCount: installedPackages.length,
+      indexUpdatedAt: NOW - 3600
+    }
   }
   if (action === 'status') {
-    return { ok: true, status: 'done', exitCode: 0, output: 'mock job finished' }
+    return { ok: true, job_id: String(params.job || 'mock-job'), status: 'done', exit_code: 0, output: 'mock job finished' }
   }
-  return { ok: true, jobId: 'mock-job', status: 'running' }
+  return { ok: true, job_id: 'mock-job', status: 'running', output: 'mock job started', packages: [] }
 }
 
 function handleFirmware(body) {

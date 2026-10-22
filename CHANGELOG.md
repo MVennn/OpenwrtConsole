@@ -18,6 +18,32 @@
 
 ## [未发布] — 2026-10-22
 
+### 软件包仓库修复（2026-10-22）
+
+软件包页的「更新仓库索引」以前必然报「路由器没有返回任务编号」，仓库列表也只能看到
+字母序前 400 个包；现在索引能正常更新、仓库可翻页浏览，重启后索引丢失时打开仓库会自动补下载。
+
+- 修复 任务编号 —— CGI 返回 `job_id` / `exit_code`（snake_case），页面读的是
+  `jobId` / `exitCode`，`startPackageJob` 因此把每次写操作都判成失败（任务其实已在路由器上跑完）；
+  `src/api/packages.ts` 在解析响应后统一归一化，`status` 轮询的 `exit_code` 也一并生效
+- 修复 仓库列表 —— 原来一次最多 400 条且没有翻页，1.1 万个包只能看到字母序前 400 个；
+  `modern-pkg` 新增 `offset` / `limit`，页面加 50/100/200 每页的分页条，
+  `matchedCount` 是真实总数（不随分页变化）
+- 优化 解析缓存 —— 整表解析成「一行一个包」的 pool 缓存到 `/tmp/modern-pkg-cache`，
+  翻页/检索从每次重扫 3.3 MB（约 4 秒）降到 `grep` + 按行切片（0.2–1 秒）
+- 修复 重启后仓库为空 —— `/tmp` 是内存盘，重启后 apk 索引没了，`available` 只回空列表；
+  前端发现 `indexUpdatedAt=0` 会自动触发一次 `update` 任务，完成后自动刷新列表
+- 修复 升级提示消失 —— `apk query --upgradable` 没带 `--cache-dir`，读的是 `/var/cache/apk`，
+  重启后为空 → 所有包都显示「已是最新」；现在与其它查询共用同一索引缓存
+- 修复 `indexUpdatedAt` 误报 —— 不再回落到 `/var/cache/apk`（apk 不读那个目录），
+  避免「显示索引已下载、列表却是空的」
+- 修复 表格标签残留 —— 翻页/换关键字后 `el-tag` 的过渡类卡住，新行被误标成「已安装」；
+  表内标签改用 `disable-transitions`
+- 验证 —— `npx vue-tsc --noEmit` ✓、`npm run build` ✓；真机临时副本（绕过 sid）：
+  `stats` 冷 8 s / 热 2 s，`available` 翻页 0–1 s，`aria2` 检索 1 s，
+  分页 / 检索 / 已装列表 / `status` 的响应全部通过 `jsonfilter -e '@'`；
+  浏览器端到端（mock 数据）验证「索引缺失 → 自动建索引 → 分页 → 翻页 → 关键字检索」
+
 ### 深色模式修复（2026-10-22）
 
 - 修复 深色模式 —— Element Plus 的语义色 `*-light-3…9` 没有接入暗色主题：

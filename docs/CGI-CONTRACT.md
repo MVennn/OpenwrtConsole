@@ -401,9 +401,9 @@ curl -sk -X POST -H 'Content-Type: application/json'   -d '{"action":"status","p
 | `action` | 参数 | 响应 `200` |
 | --- | --- | --- |
 | `list` | — | `{"ok":true,"output":"…","packages":[…],"installedCount":N,"upgradableCount":N,"indexUpdatedAt":N}` |
-| `available` | `keyword`（可选）、`limit`（可选） | `{"ok":true,"output":"…","packages":[…],"availableCount":N,"installedCount":N,"indexUpdatedAt":N}` |
-| `stats` | — | `{"ok":true,"installedCount":N,"availableCount":N,"upgradableCount":N,"indexUpdatedAt":N}` |
-| `search` | `keyword`、`scope`（`available` 或默认已装） | 同 `list` / `available` |
+| `available` | `keyword`（可选）、`offset`（可选）、`limit`（可选） | `{"ok":true,"output":"…","packages":[…],"availableCount":N,"matchedCount":N,"installedCount":N,"indexUpdatedAt":N,"offset":N,"limit":N}` |
+| `stats` | — | `{"ok":true,"installedCount":N,"availableCount":N,"matchedCount":N,"upgradableCount":N,"indexUpdatedAt":N}` |
+| `search` | `keyword`、`scope`（`available` 或默认已装）、`offset`、`limit` | 同 `list` / `available` |
 | `install` | `name`、`confirm=yes` | `{"ok":true,"job_id":"…","status":"running","output":"正在安装 <name>","packages":[]}` |
 | `remove` | `name`、`confirm=yes` | `{"ok":true,"job_id":"…","status":"running","output":"正在卸载 <name>","packages":[]}` |
 | `update` | `confirm=yes` | `{"ok":true,"job_id":"…","status":"running","output":"正在更新仓库索引","packages":[]}` |
@@ -426,11 +426,32 @@ curl -sk -X POST -H 'Content-Type: application/json'   -d '{"action":"status","p
 ```
 
 - `installed-size` → `installedSize`，`file-size` → `fileSize`；其余字段保留 apk 原名。
-- `available` 列表只取 `name / version / description / installed-size` 四个字段（仓库一万多个包，全字段太重）。
-- 上限：已装最多 **600** 条，仓库最多 **300** 条（超出部分被丢弃，但**计数是真实总数**）。
+- `available` / `search` 列表只取 `name / version / description / installed-size / depends`
+  五个字段（仓库一万多个包，全字段太重）。
+- **仓库列表按页返回**：`offset` 是第一条的序号（默认 0），`limit` 是每页条数
+  （默认 400，上限 400）。`matchedCount` 是**全部匹配数**，不随分页变化，前端据此算总页数；
+  `availableCount` 是其中**未安装**的条数。已装列表最多 **600** 条，`installedCount` 同样是真实总数。
+
+**仓库缓存与索引**
+
+- 仓库索引（`APKINDEX.*`）放在 `/tmp/modern-pkg-cache/apk`（`apk --cache-dir`），
+  `/tmp` 是内存盘，**重启后为空**：此时 `availableCount` / `matchedCount` 都是 0、
+  `indexUpdatedAt` 是 0、`output` 里带 apk 的 `WARNING: opening from cache …`。
+  前端见到 `indexUpdatedAt=0` 会自动调用一次 `update`，不需要用户先点按钮。
+- `indexUpdatedAt` **只统计这个缓存目录**（不回落 `/var/cache/apk`：那是别的工具写的索引，
+  apk 根本不会读）。
+- 解析后的仓库整表缓存在 `/tmp/modern-pkg-cache/<key>.pool`（一行一个包），
+  翻页与关键字检索只是 `wc -l` / `grep` / 按行切片，不再每次重扫一万多条；
+  key 由索引时间 + 已装包名校验和组成，索引更新或装卸软件包后自动失效。
+- `upgradableCount` 与 `apk query --upgradable` 也使用同一个 `--cache-dir`，
+  否则重启后 `/var/cache/apk` 为空，所有包都会显示成「已是最新」。
 
 **写动作是后台任务**：`apk upgrade` 可能跑好几分钟，uhttpd 会断连接，
 所以写动作立刻返回 `job_id`，前端用 `status` 轮询直到 `status` 变成 `done` / `failed`。
+
+> 任务字段名是 **`job_id` / `exit_code`**（snake_case）。`src/api/packages.ts`
+> 解析后统一归一化成 `jobId` / `exitCode`，页面只读驼峰字段 ——
+> 2026-10-22 之前页面直接读 `jobId`，导致写动作永远报「路由器没有返回任务编号」。
 
 **校验规则**
 

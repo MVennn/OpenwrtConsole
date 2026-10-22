@@ -12,6 +12,11 @@
 #   search     the same lists filtered by a keyword
 #   stats      counters only (installed/installable/upgradable/index time)
 #
+# The repository holds more than ten thousand entries, so "available" and
+# "search" take an optional offset and limit and answer with one page. Every
+# answer still carries the real number of matches (matchedCount), so the
+# console can page through the whole repository instead of a hard cut.
+#
 # Every package of a list carries two extra fields:
 #   "installed"    true when the package is already on the router
 #   "dependencies" number of packages the repository entry depends on
@@ -188,6 +193,7 @@ pkg_name="$(json_string name)"
 keyword="$(json_string keyword)"
 scope="$(json_string scope)"
 limit_raw="$(json_string limit)"
+offset_raw="$(json_string offset)"
 confirm="$(json_string confirm)"
 job_id="$(json_string job)"
 
@@ -264,25 +270,18 @@ esc_json() {
 }
 
 # awk program that turns the JSON array produced by `apk query --format json`
-# back into a JSON array. The objects are passed through unchanged (only the
-# field names are normalised), so the descriptions keep their escaping. One
-# field is added to every object:
+# into one object per line (JSON lines). The objects are passed through
+# unchanged except for the two renamed size fields, and every line starts with
+# the "installed" flag:
 #
-#   "installed"    true when the name is in the list of installed packages
+#   {"installed":false,"name":"curl","version":"...","description":"...",...}
 #
-# The "depends" array of the repository entry is part of the object, so the
-# console can count the dependencies of a package itself.
+# The repository has more than ten thousand entries and one pass over it costs
+# seconds on the router, so the result is cached as a single file: paging and
+# the keyword search are then `wc -l`, `grep` and a line slice instead of
+# another parse. No value is re-escaped here - the apk output is already JSON.
 #
-#   -v limit      maximum number of objects to emit (0 = no limit)
-#   -v keyword    case insensitive filter, matched against name and body
 #   -v installed  file with the names of the installed packages
-#   -v countfile  file that receives the number of matching objects
-#   -v freefile   file that receives the number of matching objects that are
-#                 not installed yet
-#
-# Every match is counted, but only the first `limit` objects are emitted, so
-# the caller learns the real size of the repository while the answer stays
-# small.
 PARSE_PROG='
 BEGIN {
 	if (installed != "") {
@@ -291,12 +290,7 @@ BEGIN {
 		}
 		close(installed)
 	}
-	kw = tolower(keyword)
-	have_kw = (kw != "")
-	first = 1
-	count = 0
-	free_count = 0
-	printf "[\n"
+	started = 0
 }
 {
 	line = $0
@@ -306,54 +300,25 @@ BEGIN {
 	}
 	if (line == "]") next
 	head = substr(line, 1, 3)
-	if (head == "  {") {
-		body = ""; n = 0; nm = ""
-		# The body is only needed for the packages that are sent to the
-		# console and for the keyword search. Building it for the other ten
-		# thousand packages of the repository would cost seconds.
-		want_body = (have_kw || limit <= 0 || count < limit)
-		next
-	}
+	if (head == "  {") { body = ""; nm = ""; n = 0; next }
 	if (head == "  }") {
-		keep = 1
-		if (have_kw) {
-			if (index(tolower(nm), kw) == 0 && index(tolower(body), kw) == 0) keep = 0
-		}
-		if (keep) {
-			count++
-			is_inst = (nm in inst) ? 1 : 0
-			if (!is_inst) free_count++
-			if (limit <= 0 || count <= limit) emit(body, is_inst)
-		}
+		if (nm != "") emit(nm, body)
 		# The line "  }, {" closes one object and opens the next one, so the
 		# state has to be cleared here as well.
-		body = ""
-		n = 0
-		nm = ""
+		body = ""; nm = ""; n = 0
 		next
 	}
 	if (n == 0) nm = name_of(line)
 	n++
-	if (want_body) body = (body == "") ? line : body "\n" line
+	ln = line
+	sub(/^[ \t]+/, "", ln)
+	body = (body == "") ? ln : body " " ln
 }
-END {
-	printf "]\n"
-	if (countfile != "") printf "%d", count > countfile
-	if (freefile != "") printf "%d", free_count > freefile
-}
-function emit(b, inst_flag,   i, cnt, parts, ln) {
-	if (!first) printf ",\n"
-	first = 0
-	printf "  {\n"
-	printf "    \"installed\": %s,\n", (inst_flag ? "true" : "false")
-	cnt = split(b, parts, "\n")
-	for (i = 1; i <= cnt; i++) {
-		ln = parts[i]
-		gsub(/"installed-size"[[:space:]]*:/, "\"installedSize\":", ln)
-		gsub(/"file-size"[[:space:]]*:/, "\"fileSize\":", ln)
-		printf "%s\n", ln
-	}
-	printf "  }"
+function emit(nm, b,   inst_flag) {
+	inst_flag = (nm in inst) ? "true" : "false"
+	gsub(/"installed-size"[[:space:]]*:/, "\"installedSize\":", b)
+	gsub(/"file-size"[[:space:]]*:/, "\"fileSize\":", b)
+	printf "{\"installed\":%s,%s}\n", inst_flag, b
 }
 # The name is the first field of every object. Plain string handling is used
 # on purpose: a regular expression would be evaluated for each of the more
@@ -372,28 +337,37 @@ function name_of(ln,   p, rest, q, r) {
 }
 '
 
-# Splits the apk JSON into the packages array and the count files.
-#   $1 json file, $2 array file, $3 count file, $4 free file,
-#   $5 limit, $6 keyword, $7 installed names file
-parse_packages() {
-	awk -v limit="$5" -v keyword="$6" -v installed="$7" \
-		-v countfile="$3" -v freefile="$4" \
-		"$PARSE_PROG" "$1" > "$2" 2>/dev/null
+# Builds the JSON lines file. $1 apk JSON, $2 target file, $3 installed names.
+build_pool() {
+	awk -v installed="$3" "$PARSE_PROG" "$1" > "$2" 2>/dev/null
+}
+
+# Copies one page out of the JSON lines file. $1 source, $2 offset,
+# $3 limit, $4 target (a JSON array).
+render_page() {
+	awk -v off="$2" -v lim="$3" '
+	BEGIN { first = 1; printf "[" }
+	{
+		if (NR > off && n < lim) {
+			if (first) printf "\n"
+			else printf ",\n"
+			first = 0
+			printf "%s", $0
+			n++
+		}
+	}
+	END { if (!first) printf "\n"; printf "]" }
+	' "$1" > "$4" 2>/dev/null
 }
 
 # Prints the epoch of the newest repository index, or 0 when it is missing.
+# Only the cache directory this CGI passes to apk counts: /var/cache/apk holds
+# indexes written by other tools, and reporting one of those as the index
+# would claim a repository that the queries below never read.
 index_updated_at() {
-	_f=""
-	for _d in "$APK_CACHE_DIR" "$APK_CACHE_DIR"/* /var/cache/apk /var/cache/apk/*; do
-		[ -d "$_d" ] || continue
-		_c="$(ls -t "$_d"/APKINDEX.* 2>/dev/null | head -n 1)"
-		if [ -n "$_c" ]; then
-			_f="$_c"
-			break
-		fi
-	done
-	[ -n "$_f" ] || { printf '0'; return; }
-	date -r "$_f" +%s 2>/dev/null || printf '0'
+	_c="$(ls -t "$APK_CACHE_DIR"/APKINDEX.* 2>/dev/null | head -n 1)"
+	[ -n "$_c" ] || { printf '0'; return; }
+	date -r "$_c" +%s 2>/dev/null || printf '0'
 }
 
 # Writes the installed package names, one per line, into $2.
@@ -441,44 +415,64 @@ load_available() {
 		apk --cache-dir "$APK_CACHE_DIR" query --available --format json --fields "$APK_FIELDS_AVAIL" "*"
 }
 
-# The parsed answer is cached, because building it needs a full pass over the
-# repository index. The key contains the age of the index and a checksum of
-# the installed package names, so the cache is dropped as soon as the router
+# The parsed repository is cached, because building it needs a full pass over
+# the index. The key contains the age of the index and a checksum of the
+# installed package names, so the cache is dropped as soon as the router
 # installs or removes something.
 cache_key() {
 	_k="$(printf '%s' "$1" | md5sum | cut -c1-12)"
 	printf '%s-%s' "$_k" "$(md5sum "$2" 2>/dev/null | cut -c1-12)"
 }
 
-cache_get() {
-	[ -f "$CACHE_DIR/$1.json" ] || return 1
-	[ -f "$CACHE_DIR/$1.count" ] || return 1
-	[ -f "$CACHE_DIR/$1.free" ] || return 1
-	return 0
+# True when the JSON lines file of a key exists.
+pool_get() {
+	[ -f "$CACHE_DIR/$1.pool" ]
 }
 
-cache_put() {
+# Stores the JSON lines file of a key and drops every other one: a pool is a
+# few megabytes, and only the state of the current index is worth keeping.
+pool_put() {
 	mkdir -p "$CACHE_DIR" 2>/dev/null || return 0
-	cp "$2" "$CACHE_DIR/$1.json.tmp" 2>/dev/null &&
-		mv "$CACHE_DIR/$1.json.tmp" "$CACHE_DIR/$1.json" 2>/dev/null
-	cp "$3" "$CACHE_DIR/$1.count.tmp" 2>/dev/null &&
-		mv "$CACHE_DIR/$1.count.tmp" "$CACHE_DIR/$1.count" 2>/dev/null
-	cp "$4" "$CACHE_DIR/$1.free.tmp" 2>/dev/null &&
-		mv "$CACHE_DIR/$1.free.tmp" "$CACHE_DIR/$1.free" 2>/dev/null
-	# Keep the cache small: only the newest few entries survive. The count and
-	# free files of a dropped entry have to go with it.
-	for _f in "$CACHE_DIR"/*.json; do
+	cp "$2" "$CACHE_DIR/$1.pool.tmp" 2>/dev/null &&
+		mv "$CACHE_DIR/$1.pool.tmp" "$CACHE_DIR/$1.pool" 2>/dev/null
+	for _f in "$CACHE_DIR"/*.pool; do
 		[ -f "$_f" ] || continue
-		[ "$_f" = "$CACHE_DIR/$1.json" ] && continue
-		rm -f "$_f" "${_f%.json}.count" "${_f%.json}.free" 2>/dev/null
+		[ "$_f" = "$CACHE_DIR/$1.pool" ] && continue
+		rm -f "$_f" 2>/dev/null
 	done
+	# The previous format cached one page per keyword and limit; those files are
+	# dead now and would only keep the memory of the tmpfs.
+	rm -f "$CACHE_DIR"/*.json "$CACHE_DIR"/*.count "$CACHE_DIR"/*.free 2>/dev/null
 	return 0
 }
 
-# Counts the packages that a newer version exists for.
+# Prints the path of the JSON lines file for the current index and installed
+# packages, building it when it is missing.
+ensure_pool() {
+	_p_it="$(index_updated_at)"
+	_p_key="$(cache_key "$_p_it" "$1")"
+	if pool_get "$_p_key"; then
+		printf '%s' "$CACHE_DIR/$_p_key.pool"
+		return 0
+	fi
+	load_available
+	build_pool "$WORK/available.json" "$WORK/pool.ndjson" "$1"
+	pool_put "$_p_key" "$WORK/pool.ndjson"
+	if pool_get "$_p_key"; then
+		printf '%s' "$CACHE_DIR/$_p_key.pool"
+	else
+		printf '%s' "$WORK/pool.ndjson"
+	fi
+}
+
+# Counts the packages that a newer version exists for. The index cache has to
+# be the one the other queries use: the default cache of the firmware is a
+# different directory and is empty after a reboot, which silently turns every
+# package into "up to date".
 upgradable_count() {
+	apk_env
 	run_bg "$T_READ" "$WORK/upgradable.json" \
-		apk query --upgradable --format json --fields name,version "*"
+		apk --cache-dir "$APK_CACHE_DIR" query --upgradable --format json --fields name,version "*"
 	_n="$(grep -c '"name"' "$WORK/upgradable.json" 2>/dev/null)"
 	case "$_n" in ''|*[!0-9]*) _n=0 ;; esac
 	printf '%s' "$_n"
@@ -496,18 +490,26 @@ upgradable_list() {
 	printf '%s' "$_ug"
 }
 
-# $1 = keyword. The installed packages, optionally filtered.
+# $1 = keyword. The installed packages, optionally filtered. The whole list is
+# small, so it is parsed on every request and never cached.
 action_installed() {
 	_kw="$(safe_keyword "$1")"
 
 	load_installed
 	installed_names "$WORK/installed.json" "$WORK/installed.names"
+	build_pool "$WORK/installed.json" "$WORK/installed.ndjson" "$WORK/installed.names"
 
-	parse_packages "$WORK/installed.json" "$WORK/packages.json" "$WORK/count" "$WORK/free" \
-		"$MAX_INSTALLED" "$_kw" "$WORK/installed.names"
+	if [ -n "$_kw" ]; then
+		grep -iF -e "$_kw" "$WORK/installed.ndjson" > "$WORK/matched.ndjson" 2>/dev/null
+		_src="$WORK/matched.ndjson"
+	else
+		_src="$WORK/installed.ndjson"
+	fi
 
-	_cnt="$(cat "$WORK/count" 2>/dev/null)"
+	_cnt="$(wc -l < "$_src" 2>/dev/null)"
 	case "$_cnt" in ''|*[!0-9]*) _cnt=0 ;; esac
+
+	render_page "$_src" 0 "$MAX_INSTALLED" "$WORK/packages.json"
 
 	_uc="$(upgradable_count)"
 	_ug="$(upgradable_list)"
@@ -525,6 +527,10 @@ $_note"
 # $1 = keyword. The packages offered by the repositories. The packages that
 # are already installed are part of the list and are marked as such, so the
 # console can tell the user that there is nothing to install.
+#
+# The whole repository is one cached file; offset and limit only select the
+# slice that is sent back. matchedCount is the real number of matches, so the
+# console can page through every entry instead of a hard cut.
 action_available() {
 	_kw="$(safe_keyword "$1")"
 
@@ -535,29 +541,33 @@ action_available() {
 	esac
 	[ "$_lim" -le "$MAX_AVAILABLE" ] || _lim="$MAX_AVAILABLE"
 
+	_off=0
+	case "$offset_raw" in
+		''|*[!0-9]*) ;;
+		*) _off="$offset_raw" ;;
+	esac
+
 	load_installed
 	installed_names "$WORK/installed.json" "$WORK/installed.names"
 	_ic="$(wc -l < "$WORK/installed.names" 2>/dev/null)"
 	case "$_ic" in ''|*[!0-9]*) _ic=0 ;; esac
 
 	_it="$(index_updated_at)"
+	_pool="$(ensure_pool "$WORK/installed.names")"
 
-	_key="$(cache_key "$_it-$_kw-$_lim" "$WORK/installed.names")"
-	if cache_get "$_key"; then
-		cp "$CACHE_DIR/$_key.json" "$WORK/packages.json" 2>/dev/null
-		cp "$CACHE_DIR/$_key.count" "$WORK/count" 2>/dev/null
-		cp "$CACHE_DIR/$_key.free" "$WORK/free" 2>/dev/null
+	if [ -n "$_kw" ]; then
+		grep -iF -e "$_kw" "$_pool" > "$WORK/matched.ndjson" 2>/dev/null
+		_src="$WORK/matched.ndjson"
 	else
-		load_available
-		parse_packages "$WORK/available.json" "$WORK/packages.json" "$WORK/count" "$WORK/free" \
-			"$_lim" "$_kw" "$WORK/installed.names"
-		cache_put "$_key" "$WORK/packages.json" "$WORK/count" "$WORK/free"
+		_src="$_pool"
 	fi
 
-	_cnt="$(cat "$WORK/count" 2>/dev/null)"
+	_cnt="$(wc -l < "$_src" 2>/dev/null)"
 	case "$_cnt" in ''|*[!0-9]*) _cnt=0 ;; esac
-	_free="$(cat "$WORK/free" 2>/dev/null)"
+	_free="$(grep -c '"installed":false' "$_src" 2>/dev/null)"
 	case "$_free" in ''|*[!0-9]*) _free=0 ;; esac
+
+	render_page "$_src" "$_off" "$_lim" "$WORK/packages.json"
 
 	_out="仓库中可安装 $_free 个软件包"
 	[ -n "$_kw" ] && _out="仓库中匹配「$_kw」的软件包 $_cnt 个（可安装 $_free 个）"
@@ -565,12 +575,11 @@ action_available() {
 	[ -n "$_note" ] && _out="$_out
 $_note"
 
-	ok "{\"ok\":true,\"output\":\"$(printf '%s' "$_out" | esc_json)\",\"packages\":$(cat "$WORK/packages.json"),\"availableCount\":$_free,\"matchedCount\":$_cnt,\"installedCount\":$_ic,\"indexUpdatedAt\":$_it}"
+	ok "{\"ok\":true,\"output\":\"$(printf '%s' "$_out" | esc_json)\",\"packages\":$(cat "$WORK/packages.json"),\"availableCount\":$_free,\"matchedCount\":$_cnt,\"installedCount\":$_ic,\"indexUpdatedAt\":$_it,\"offset\":$_off,\"limit\":$_lim}"
 }
 
-# The counters of the page. The number of installable packages can only be
-# known after the repository index has been parsed, so the cached parse of the
-# unfiltered available list is reused and only the counters are sent back.
+# The counters of the page. They are read from the cached repository file, so
+# opening the page does not parse the index again.
 action_stats() {
 	load_installed
 	installed_names "$WORK/installed.json" "$WORK/installed.names"
@@ -578,23 +587,11 @@ action_stats() {
 	case "$_ic" in ''|*[!0-9]*) _ic=0 ;; esac
 
 	_it="$(index_updated_at)"
+	_pool="$(ensure_pool "$WORK/installed.names")"
 
-	# This is the key of the unfiltered available list, so both actions share
-	# one parse of the repository index.
-	_key="$(cache_key "$_it--$MAX_AVAILABLE" "$WORK/installed.names")"
-	if cache_get "$_key"; then
-		cp "$CACHE_DIR/$_key.count" "$WORK/count" 2>/dev/null
-		cp "$CACHE_DIR/$_key.free" "$WORK/free" 2>/dev/null
-	else
-		load_available
-		parse_packages "$WORK/available.json" "$WORK/packages.json" "$WORK/count" "$WORK/free" \
-			"$MAX_AVAILABLE" "" "$WORK/installed.names"
-		cache_put "$_key" "$WORK/packages.json" "$WORK/count" "$WORK/free"
-	fi
-
-	_cnt="$(cat "$WORK/count" 2>/dev/null)"
+	_cnt="$(wc -l < "$_pool" 2>/dev/null)"
 	case "$_cnt" in ''|*[!0-9]*) _cnt=0 ;; esac
-	_free="$(cat "$WORK/free" 2>/dev/null)"
+	_free="$(grep -c '"installed":false' "$_pool" 2>/dev/null)"
 	case "$_free" in ''|*[!0-9]*) _free=0 ;; esac
 
 	_uc="$(upgradable_count)"

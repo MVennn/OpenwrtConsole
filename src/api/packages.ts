@@ -35,7 +35,7 @@ export type PackageAction =
   | 'upgrade'
   | 'status'
 
-export type PackageJobState = 'running' | 'done' | 'timeout'
+export type PackageJobState = 'running' | 'done' | 'failed' | 'timeout'
 
 export interface PackageJob {
   jobId: string
@@ -63,6 +63,17 @@ export interface PackageListResult {
   error?: string
   /** Machine readable error code, e.g. "unsupported_action". */
   code?: string
+  /** The first entry of the returned page (the repository list is paged). */
+  offset?: number
+  /** The number of entries the page can hold. */
+  limit?: number
+  /**
+   * The CGI answers in snake_case; these are normalised into jobId and
+   * exitCode right after the answer is parsed, so the rest of the console
+   * only ever reads the camelCase field.
+   */
+  job_id?: string
+  exit_code?: number
 }
 
 /**
@@ -86,6 +97,21 @@ export class PackageError extends Error {
     this.code = code
     this.status = status
   }
+}
+
+/**
+ * The CGI names the job fields after the shell variables it writes, so an
+ * answer carries `job_id` and `exit_code`. Copying them onto the camelCase
+ * fields here keeps every caller free of that detail.
+ */
+function normalizeResult(result: PackageListResult): PackageListResult {
+  if (result.jobId === undefined && result.job_id !== undefined) {
+    result.jobId = result.job_id
+  }
+  if (result.exitCode === undefined && result.exit_code !== undefined) {
+    result.exitCode = result.exit_code
+  }
+  return result
 }
 
 /** Runs one action of the package CGI. */
@@ -127,7 +153,7 @@ export async function runPackageAction(
   let result: PackageListResult | null = null
   if (text) {
     try {
-      result = JSON.parse(text) as PackageListResult
+      result = normalizeResult(JSON.parse(text) as PackageListResult)
     } catch {
       result = null
     }
@@ -161,15 +187,27 @@ export async function fetchInstalledPackages(): Promise<PackageListResult> {
   return runPackageAction('list')
 }
 
+/** One page of the repository list. */
+export interface RepositoryPageOptions {
+  /** Index of the first entry of the page. */
+  offset?: number
+  /** Maximum number of entries the page may hold. */
+  limit?: number
+}
+
 /**
- * The head of the repository list, or the packages matching a keyword. The
- * repository holds more than ten thousand packages, so the keyword is matched
- * on the router — the browser never sees more than the returned page.
+ * One page of the repository list, or of the packages matching a keyword.
+ * The repository holds more than ten thousand packages, so the page is
+ * selected on the router — the browser never sees more than one page.
  */
-export async function fetchRepositoryPackages(keyword?: string): Promise<PackageListResult> {
+export async function fetchRepositoryPackages(
+  keyword?: string,
+  options: RepositoryPageOptions = {}
+): Promise<PackageListResult> {
   const term = normalizeKeyword(keyword || '')
-  if (!term) return runPackageAction('available')
-  return runPackageAction('search', { keyword: term, scope: 'available' })
+  const page = { offset: options.offset, limit: options.limit }
+  if (!term) return runPackageAction('available', page)
+  return runPackageAction('search', { ...page, keyword: term, scope: 'available' })
 }
 
 /**
@@ -224,7 +262,10 @@ export async function startPackageJob(
 ): Promise<PackageJob> {
   const result = await runPackageAction(action, { ...params, confirm: 'yes' })
   if (!result.jobId) {
-    throw new PackageError('路由器没有返回任务编号', 'job')
+    throw new PackageError(
+      '路由器没有返回任务编号（路由器上的 CGI 可能还是旧版，请重新部署）',
+      'job'
+    )
   }
   return {
     jobId: result.jobId,
@@ -238,9 +279,21 @@ export async function fetchPackageJob(jobId: string): Promise<PackageJob> {
   const result = await runPackageAction('status', { job: jobId })
   return {
     jobId: result.jobId || jobId,
-    state: (result.status as PackageJobState) || 'running',
+    state: toJobState(result.status),
     exitCode: result.exitCode,
     output: result.output || ''
+  }
+}
+
+/** The CGI only knows these states; anything else means "still running". */
+function toJobState(value: string | undefined): PackageJobState {
+  switch (value) {
+    case 'done':
+    case 'failed':
+    case 'timeout':
+      return value
+    default:
+      return 'running'
   }
 }
 
@@ -261,7 +314,7 @@ export function waitForPackageJob(
       try {
         const job = await fetchPackageJob(jobId)
         onTick?.(job)
-        if (job.state === 'done' || job.state === 'timeout') {
+        if (job.state === 'done' || job.state === 'failed' || job.state === 'timeout') {
           resolve(job)
           return
         }

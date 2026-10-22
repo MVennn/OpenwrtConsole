@@ -359,3 +359,34 @@ LuCI 只保留为应急入口。
 
 ---
 
+
+---
+
+# 2026-10-22 软件包页：索引更新与仓库分页
+
+## 背景
+- 「更新仓库索引」点下去必报「路由器没有返回任务编号」，但 `apk update` 其实在路由器上跑完了。
+- 仓库 11083 个包只返回字母序前 400 个，没有翻页；重启后 `/tmp` 清空，仓库列表直接变成 0。
+- 需要：索引更新有反馈、仓库能翻页找包、索引丢了能自愈。
+
+## 完成项
+- [x] `modern-pkg`：仓库解析改为「一行一个包」的 pool 缓存（`/tmp/modern-pkg-cache/<key>.pool`），
+  新增 `offset` / `limit`，`available` / `search` / `stats` 共用；`render_page` 按行切片
+- [x] `modern-pkg`：`upgradable_count` 带上 `--cache-dir`；`index_updated_at` 只看该缓存目录
+- [x] `src/api/packages.ts`：`job_id` / `exit_code` 归一化成 `jobId` / `exitCode`；
+  新增 `RepositoryPageOptions`；`failed` 也算终态
+- [x] `PackagesView.vue`：索引缺失时自动 `update` 一次；分页条（50/100/200）；
+  提示改成「共 N 个 · 当前 x–y」；表内 `el-tag` 关过渡
+- [x] 文档：CGI-CONTRACT §7 / FEATURES / CHANGELOG
+
+## 自检
+- `npx vue-tsc --noEmit` ✓、`npm run build` ✓
+- 真机临时副本：`stats`（冷 8 s / 热 2 s）、`available`（offset 0/100，0–1 s）、
+  `search=aria2`（44 条，1 s）、无索引场景（0 条 + `indexUpdatedAt=0` + apk WARNING）
+- 线上 CGI（`/www/cgi-bin/modern-pkg`）sha256 与仓库一致；写动作返回 `job_id`，
+  `status` 返回 `done` / `exit_code=0`
+- 浏览器（mock 数据）：自动建索引 → 仓库 100 行/页，翻到第 2 页 101–200，
+  检索 "package 12" 回到第 1 页 45 条；翻页后不再残留「已安装」标签
+- 已部署到 `root@10.0.0.1`
+
+## 状态: 已完成
