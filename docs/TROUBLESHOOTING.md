@@ -607,5 +607,50 @@ ssh root@<路由器IP> 'ubus call system board'
 | --- | --- |
 | 固件没装 LuCI | 装 `luci-base`（或对应 LuCI 包）后刷新页面 |
 | LuCI 已装，但入口仍显示「未安装」 | 入口探测只把 **404** 当作未安装；200/302/403/405 都算已安装（LuCI 未登录时返回 403）。若仍隐藏，检查请求是否被代理或 uhttpd 改写成了 404 |
-| 探测超时 | 探测上限 2 秒，路由器极慢时会判为未安装；刷新页面会重新探测 |
+| 检测超时 | 探测上限 2 秒，路由器极慢时会判为未安装；刷新页面会重新探测 |
 | HTTPS 提示不对 | 登录页按 `window.location.protocol` 显示：HTTPS 显示「HTTPS 已启用」，HTTP 显示「HTTP 连接（建议 HTTPS）」 |
+
+---
+
+## 20. 内核有新版本，但 ShellCrash 菜单里没有
+
+### 现象
+
+「ShellCrash 设置 → 内核更新」显示 GitHub 已有新版本（例如 `v1.19.33`），
+但 ShellCrash 菜单的「更新内核」仍显示已是最新（版本表停在 `v1.19.28`）。
+
+### 排查步骤
+
+1. 在路由器上确认三个版本：
+
+   ```bash
+   ssh root@<路由器IP> '
+   grep "^core_v=" /etc/ShellCrash/configs/ShellCrash.cfg
+   curl -sI https://github.com/MetaCubeX/mihomo/releases/latest | grep -i "^location:"
+   curl -s https://raw.githubusercontent.com/juewuy/ShellCrash/update/bin/version
+   '
+   ```
+
+   第三行里的 `meta_v` 就是 ShellCrash 菜单会提供的版本。
+
+2. 看 ShellCrash 上游的自动构建任务：
+
+   ```bash
+   gh run list -R juewuy/ShellCrash --workflow core_auto_update.yml --limit 5
+   ```
+
+   `core_auto_update` 每 3 天 18:00 UTC 跑一次；`sing-box` 构建失败会连带跳过
+   `needs:` 的 meta 构建，`bin/version` 的 `meta_v` 就不会前进。
+
+### 原因 / 解法
+
+| 原因 | 解法 |
+| --- | --- |
+| 上游构建失败 / 尚未发布 | **等** `bin/version` 的 `meta_v` 前进后，在 ShellCrash 菜单里更新。这是最稳的路径：UPX 布局、`configs/command.env`、启动脚本都由 ShellCrash 自己处理 |
+| 急于上官方最新版 | 不推荐：官方 release 只有 `.gz` 裸二进制（解压后几十 MB），这台机器 overlay 只剩约 37 MB、tmpfs 约 44 MB；需要先在 PC 上做 UPX 压缩，再替换 `CrashCore.upx` 并同步 `core_v`。动手前先 `df -h /` 与 `df -h /tmp` |
+| 更新后内存变紧 | 确认 `configs/command.env` 仍有 `GOMEMLIMIT=64MiB`，且 `core_v` 与二进制实际版本一致 |
+| 更新后有两个 CrashCore | `netstat -lntp | grep -E ':(7890\|7892\|1053)'` 看端口归属；没绑端口的是 procd 僵尸实例，按 [§11](#11-重启-shellcrash-后状态不更新) 处理，并保持 `/etc/init.d/shellcrash` disabled |
+
+> **为什么控制台不直接替你更新**：内核替换要同时处理压缩布局、`command.env`、
+> 单实例与端口验收，失败时代理会整体中断。控制台只负责「发现有新版 + 说明为什么
+> ShellCrash 还没收录」，替换动作留在路由器上执行。

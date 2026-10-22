@@ -1007,6 +1007,23 @@ const shellCrashHeal = {
   ]
 }
 
+const shellCoreCheck = {
+  ok: true,
+  installed: 'v1.19.28',
+  binary: '',
+  latest: 'v1.19.33',
+  listed: 'v1.19.28',
+  latest_ok: true,
+  listed_ok: true,
+  update_available: true,
+  shellcrash_behind: true,
+  release_url: 'https://github.com/MetaCubeX/mihomo/releases/tag/v1.19.33',
+  checked_at: NOW - 120,
+  cached: false,
+  stale: false,
+  error: ''
+}
+
 /* ------------------------------------------------------------------ *
  * Packages and firmware
  * ------------------------------------------------------------------ */
@@ -1356,6 +1373,7 @@ function handleShellCrash(body) {
   if (action === 'overrides') return shellCrashOverrides
   if (action === 'subs') return shellCrashSubs
   if (action === 'crash') return shellCrashCrash
+  if (action === 'core-check') return shellCoreCheck
   if (action === 'ports') return shellCrashPorts
   if (action === 'heal') return shellCrashHeal
   if (action === 'log') {

@@ -24,6 +24,7 @@ export type ShellCrashAction =
   | 'subs'
   | 'log'
   | 'crash'
+  | 'core-check'
   | 'ports'
   | 'heal'
   | 'sub-update'
@@ -211,6 +212,43 @@ export interface ShellCrashCrashResult {
   start_error: boolean
   guardian_cron: string
   guardian_log: string[]
+}
+
+/**
+ * The answer of the core update check. Three versions are compared:
+ * `installed` comes from ShellCrash.cfg, `latest` is the newest mihomo release
+ * on GitHub and `listed` is the version ShellCrash's own update list offers.
+ *
+ * `latest > listed` means ShellCrash has not caught up yet: its menu will not
+ * offer the release even though GitHub has it. The console only reports this,
+ * it never replaces the core on its own.
+ */
+export interface ShellCrashCoreCheck {
+  ok: boolean
+  /** The core version recorded in ShellCrash.cfg (`core_v`). */
+  installed: string
+  /** The version the binary reports, empty when the core is running. */
+  binary: string
+  /** The latest mihomo release tag on GitHub, empty when unreachable. */
+  latest: string
+  /** The version in ShellCrash's own update list, empty when unreachable. */
+  listed: string
+  /** A usable `latest` value is present. */
+  latest_ok: boolean
+  /** A usable `listed` value is present. */
+  listed_ok: boolean
+  update_available: boolean
+  /** GitHub is newer than ShellCrash's own list. */
+  shellcrash_behind: boolean
+  release_url: string
+  /** Epoch seconds of the check the values come from. */
+  checked_at: number
+  /** The answer came from the one hour cache. */
+  cached: boolean
+  /** At least one value is old because the request failed. */
+  stale: boolean
+  /** A readable reason when a value could not be fetched. */
+  error: string
 }
 
 export interface ShellCrashWriteResult {
@@ -486,6 +524,15 @@ export async function fetchShellCrashLog(file?: string): Promise<ShellCrashLogRe
 export async function fetchShellCrashCrash(): Promise<ShellCrashCrashResult> {
   const data = await runShellCrashAction<ShellCrashCrashResult>('crash')
   return { ...data, guardian_log: data.guardian_log ?? [] }
+}
+
+/**
+ * Compares the installed core with the newest mihomo release and with the
+ * version list ShellCrash uses. The router caches the answer for an hour;
+ * `force` bypasses the cache for the "check now" button.
+ */
+export async function fetchShellCrashCoreCheck(force = false): Promise<ShellCrashCoreCheck> {
+  return runShellCrashAction<ShellCrashCoreCheck>('core-check', force ? { force: 'yes' } : {})
 }
 
 /**

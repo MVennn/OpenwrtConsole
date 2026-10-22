@@ -550,6 +550,24 @@ curl -sk -X POST -H 'Content-Type: application/json'   -d '{"action":"status","p
 | `ports` | — | `{"ok":true,"ports":[{"port":7890,"listening":true,"pid":9998,"process":"CrashCore"}]}` |
 | `log` | `file`（可选） | `{"ok":true,"file":"…","lines":[…],"files":[…]}` |
 | `crash` | — | `{"ok":true,"running":true,"pid":N,"core_version":"…","start_time":N,"uptime":N,"alive_ts":N,"alive_age":N,"probe_ts":N,"last_fallback_heal":N,"start_error":false,"guardian_cron":"…","guardian_log":[…]}` |
+| `core-check` | `force=yes`（可选） | `{"ok":true,"installed":"v1.19.28","binary":"","latest":"v1.19.33","listed":"v1.19.28","latest_ok":true,"listed_ok":true,"update_available":true,"shellcrash_behind":true,"release_url":"…","checked_at":N,"cached":false,"stale":false,"error":""}` |
+
+**`core-check` 的三个版本**
+
+- `installed`：`ShellCrash.cfg` 的 `core_v`，与 `status.core_version` 同源。
+  核心**停止**时还会执行一次 `CrashCore -v`，把二进制实际版本放在 `binary`；
+  核心在运行时**不执行**（UPX 版会短暂多占几十 MB，256 MB 的机器上不值得）。
+- `latest`：GitHub `MetaCubeX/mihomo` 的最新 release。优先读
+  `/releases/latest` 的 **302 Location**（不消耗 REST API 配额），失败才回退 REST API。
+- `listed`：ShellCrash 自己的 `bin/version`（`update` 分支，按 `crashcore` 取
+  `meta_v` / `singbox_v` / `singboxr_v` / `clash_v`）。ShellCrash 菜单读的是同一份文件。
+- `latest > listed` → `shellcrash_behind=true`：GitHub 有新内核，但 ShellCrash 的版本表
+  还没收录，所以 **ShellCrash 菜单里看不到这个更新**。
+- 两个来源都优先直连；直连的应答**不含预期标记**（例如被运营商门户页拦截）且核心在运行时，
+  再经 `mixed-port`（默认 7890）重试。
+- 结果缓存在 `/tmp/ShellCrash/modern-core-check`，TTL **1 小时**；`force=yes` 跳过缓存。
+  只有一半来源成功时**不重写缓存**，保留旧值并置 `stale=true`。
+- **只检测，不更新**：这个 action 不下载、不替换内核，也不改任何配置。
 
 **`ports` 的端口集合**
 
@@ -590,7 +608,8 @@ config.yaml proxies.yaml proxy-groups.yaml rules.yaml user.yaml
 `400 {"error":"值不合法：<key>"}` · `400 {"error":"没有需要修改的项"}` ·
 `400 {"error":"不支持的服务"}` · `400 {"error":"不支持的动作"}` ·
 `404 {"error":"ShellCrash 服务不存在"}` · `404 {"error":"找不到 ShellCrash 配置文件"}` ·
-`500 {"error":"备份配置失败"}` · `500 {"error":"写入配置失败"}`。
+`500 {"error":"备份配置失败"}` · `500 {"error":"写入配置失败"}` ·
+`503 {"ok":false,"error":"缺少 curl，无法检查内核更新。…","code":"curl_missing"}`（仅 `core-check`）。
 
 > 服务启停是**后台执行**（核心要下载配置，可能要一分钟），请求立刻返回，
 > 前端靠轮询 `status` 感知结果。

@@ -14,6 +14,8 @@
 #   subs             subscription overview without the tokens
 #   log              tail of the ShellCrash / guardian log
 #   crash            CrashCore and guardian state
+#   core-check       installed core vs the latest mihomo release vs the
+#                    version list of ShellCrash (read only, cached for an hour)
 #   ports            who listens on the five ShellCrash ports
 #   heal             the self healing history (guardian log + state files)
 #   sub-update       hot update of the online subscription (requires confirm=yes)
@@ -49,6 +51,11 @@ ACTION_RC_FILE="/tmp/ShellCrash/modern-shellcrash.last"
 TASK_SH="/etc/ShellCrash/task/task.sh"
 SUB_UPDATE_STATE="/tmp/ShellCrash/modern-shellcrash.subupdate"
 SUB_UPDATE_LOG="/tmp/ShellCrash/modern-shellcrash.subupdate.log"
+CORE_CHECK_CACHE="/tmp/ShellCrash/modern-core-check"
+CORE_CHECK_TTL=3600
+MIHOMO_RELEASES_LATEST="https://github.com/MetaCubeX/mihomo/releases/latest"
+MIHOMO_API_LATEST="https://api.github.com/repos/MetaCubeX/mihomo/releases/latest"
+SC_VERSION_URL="https://raw.githubusercontent.com/juewuy/ShellCrash/update/bin/version"
 
 # The ports the console asks about. They are the ShellCrash defaults; the
 # runtime configuration may use other ones. action_ports looks at the union
@@ -179,6 +186,14 @@ if command -v jsonfilter >/dev/null 2>&1; then
 	HAVE_JSONFILTER=1
 else
 	HAVE_JSONFILTER=0
+fi
+
+# The core update check talks to GitHub. Every other action works without
+# curl, so the dependency is only enforced inside core-check.
+if command -v curl >/dev/null 2>&1; then
+	HAVE_CURL=1
+else
+	HAVE_CURL=0
 fi
 
 json_string() {
@@ -313,6 +328,125 @@ runtime_host_port() {
 # The host part of a URL, without the scheme, the path and the token.
 url_host() {
 	printf '%s' "$1" | sed -e 's#^[A-Za-z][A-Za-z0-9+.-]*://##' -e 's#/.*##' -e 's#^[^@]*@##'
+}
+
+# The mixed port of the running core, used as the download proxy. The core
+# configuration is the truth here; 7890 is only the ShellCrash default.
+core_mixed_port() {
+	_port=$(runtime_num 'mixed-port')
+	case "$_port" in
+		'' | *[!0-9]*) _port=7890 ;;
+	esac
+	printf '%s' "$_port"
+}
+
+# Fetches a URL. The direct request comes first; when the answer does not
+# contain the expected marker and the core is running, the request is retried
+# through the mix port. The marker matters: a captive portal answers with a
+# non-empty HTML page, and that must not be mistaken for the real content.
+# $1 = url, $2 = marker the answer must contain, rest = extra curl arguments.
+fetch_url() {
+	_url="$1"
+	_needle="$2"
+	shift 2
+	[ "$HAVE_CURL" = 1 ] || return 1
+
+	_out=$(curl -s --connect-timeout 3 --max-time 6 "$@" "$_url" 2>/dev/null)
+	case "$_out" in
+		*"$_needle"*) printf '%s' "$_out"; return 0 ;;
+	esac
+
+	if [ -n "$(running_pid)" ]; then
+		_out=$(curl -s --connect-timeout 3 --max-time 6 \
+			-x "http://127.0.0.1:$(core_mixed_port)" "$@" "$_url" 2>/dev/null)
+		case "$_out" in
+			*"$_needle"*) printf '%s' "$_out"; return 0 ;;
+		esac
+	fi
+	return 1
+}
+
+# $1 > $2 ? Only the leading numeric fields are compared, a leading "v" and
+# suffixes such as "-alpha.1" are ignored. Prints nothing, only the exit code
+# matters.
+version_gt() {
+	awk -v a="$1" -v b="$2" 'BEGIN {
+		sub(/^[vV]/, "", a)
+		sub(/^[vV]/, "", b)
+		na = split(a, x, "[.-]")
+		nb = split(b, y, "[.-]")
+		n = (na > nb ? na : nb)
+		for (i = 1; i <= n; i++) {
+			ai = x[i] + 0
+			bi = y[i] + 0
+			if (ai > bi) exit 0
+			if (ai < bi) exit 1
+		}
+		exit 1
+	}'
+}
+
+valid_version() {
+	case "$1" in
+		v[0-9]* | [0-9]*) ;;
+		*) return 1 ;;
+	esac
+	case "$1" in
+		*[!A-Za-z0-9._-]*) return 1 ;;
+	esac
+	[ "${#1}" -le 32 ]
+}
+
+# The latest release tag without the REST API: GitHub answers /releases/latest
+# with a redirect to /releases/tag/<tag>. This avoids the 60 requests per hour
+# limit of the anonymous API.
+latest_tag_from_redirect() {
+	_headers=$(fetch_url "$MIHOMO_RELEASES_LATEST" 'releases/tag/' -I) || return 1
+	_loc=$(printf '%s' "$_headers" | tr -d '\r' |
+		sed -n 's/^[Ll]ocation:[[:space:]]*//p' | tail -n 1)
+	case "$_loc" in
+		*/releases/tag/*) printf '%s' "${_loc##*/}" ;;
+		*) return 1 ;;
+	esac
+}
+
+# Fallback when the redirect is mangled by a middlebox.
+latest_tag_from_api() {
+	_body=$(fetch_url "$MIHOMO_API_LATEST" '"tag_name"') || return 1
+	_tag=$(printf '%s' "$_body" |
+		grep -o '"tag_name"[[:space:]]*:[[:space:]]*"[^"]*"' |
+		head -n 1 | sed 's/.*"\([^"]*\)"$/\1/')
+	[ -n "$_tag" ] || return 1
+	printf '%s' "$_tag"
+}
+
+# The core version ShellCrash itself would offer. ShellCrash keeps one list
+# per core type in bin/version on its update branch; the menu reads the same
+# file. It can lag behind the mihomo releases, which is exactly what the
+# console reports.
+shellcrash_listed_version() {
+	_core=$(cfg_get crashcore)
+	case "$_core" in
+		singbox) _key=singbox_v ;;
+		singboxr) _key=singboxr_v ;;
+		clash) _key=clash_v ;;
+		clashpre) _key=clashpre_v ;;
+		*) _key=meta_v ;;
+	esac
+	_body=$(fetch_url "$SC_VERSION_URL" "${_key}=") || _body=""
+	_v=$(printf '%s' "$_body" | tr -d '\r' | sed -n "s/^${_key}=//p" | head -n 1)
+	if [ -z "$_v" ] && [ "$_key" != "meta_v" ]; then
+		_body=$(fetch_url "$SC_VERSION_URL" 'meta_v=') || _body=""
+		_v=$(printf '%s' "$_body" | tr -d '\r' | sed -n 's/^meta_v=//p' | head -n 1)
+	fi
+	[ -n "$_v" ] || return 1
+	printf '%s' "$_v"
+}
+
+# Reads one key from the core check cache. The cache lives in /tmp, so a
+# reboot simply forces a fresh check.
+core_cache_get() {
+	sed -n "s/^$1=//p" "$CORE_CHECK_CACHE" 2>/dev/null | head -n 1
 }
 
 # Only the whitelisted keys may be written, and every value has to match the
@@ -907,6 +1041,112 @@ action_crash() {
 	ok "{\"ok\":true,\"running\":$(jbool "$_running"),\"pid\":$(jnum "$_pid"),\"core_version\":$(jstr "$(cfg_get core_v)"),\"start_time\":$(jnum "$_start"),\"uptime\":$(jnum "$_uptime"),\"alive_ts\":$(jnum "$_alive"),\"alive_age\":$(jnum "$_alive_age"),\"probe_ts\":$(jnum "$_probe"),\"last_fallback_heal\":$(jnum "$_heal"),\"start_error\":$(jbool "$_start_error"),\"guardian_cron\":$(jstr "$_cron"),\"guardian_log\":[$_glines]}"
 }
 
+# ------------------------------------------------------------- core-check ---
+# Compares three version numbers and never replaces anything:
+#   installed  what ShellCrash.cfg records (core_v)
+#   latest     the newest mihomo release on GitHub
+#   listed     what ShellCrash's own update list would offer
+# "latest > listed" means ShellCrash has not caught up yet, so its menu does
+# not offer the release even though GitHub has it. The console only reports
+# that; the update itself stays a deliberate action on the router.
+
+action_core_check() {
+	[ "$HAVE_CURL" = 1 ] ||
+		fail "503 Service Unavailable" '{"ok":false,"error":"缺少 curl，无法检查内核更新。请先安装：apk add curl 或 opkg install curl","code":"curl_missing"}'
+
+	_force=$(param force)
+	_now=$(date +%s)
+
+	_installed=$(cfg_get core_v)
+	[ -n "$_installed" ] || _installed="unknown"
+
+	# Reading the binary version starts a second copy of the core. With the
+	# UPX build that briefly costs tens of MB, so it is only done while the
+	# real core is stopped; a running core already reported core_v.
+	_binary=""
+	if [ -z "$(running_pid)" ] && [ -x "$SC_DIR/CrashCore" ]; then
+		_bin_out=$("$SC_DIR/CrashCore" -v 2>/dev/null | head -n 1)
+		_binary=$(printf '%s' "$_bin_out" | grep -oE 'v?[0-9]+\.[0-9]+(\.[0-9]+)?' | head -n 1)
+	fi
+
+	_cached_at=$(core_cache_get checked_at)
+	case "$_cached_at" in
+		'' | *[!0-9]*) _cached_at=0 ;;
+	esac
+	_age=$((_now - _cached_at))
+	[ "$_age" -lt 0 ] && _age=0
+
+	_cached=false
+	_stale=false
+	_error=""
+	_latest=""
+	_listed=""
+
+	if [ "$_force" = "yes" ] || [ "$_age" -ge "$CORE_CHECK_TTL" ] ||
+		[ -z "$(core_cache_get latest)" ]; then
+		_latest_fresh=false
+		_listed_fresh=false
+
+		_latest=$(latest_tag_from_redirect) || _latest=""
+		valid_version "$_latest" && _latest_fresh=true || _latest=""
+		if [ "$_latest_fresh" = false ]; then
+			_latest=$(latest_tag_from_api) || _latest=""
+			valid_version "$_latest" && _latest_fresh=true || _latest=""
+		fi
+
+		_listed=$(shellcrash_listed_version) || _listed=""
+		valid_version "$_listed" && _listed_fresh=true || _listed=""
+
+		# The cache is only rewritten when both halves are fresh: a half
+		# answer must not make an old value look newly checked.
+		if [ "$_latest_fresh" = true ] && [ "$_listed_fresh" = true ]; then
+			mkdir -p "$SC_DIR" 2>/dev/null
+			_cache_tmp="$CORE_CHECK_CACHE.$$"
+			{
+				printf 'checked_at=%s\n' "$_now"
+				printf 'latest=%s\n' "$_latest"
+				printf 'listed=%s\n' "$_listed"
+			} > "$_cache_tmp" 2>/dev/null &&
+				mv -f "$_cache_tmp" "$CORE_CHECK_CACHE" 2>/dev/null
+			_cached_at=$_now
+		else
+			# Keep whatever the last complete check found and say that it is
+			# old instead of showing an empty card.
+			[ -n "$_latest" ] || _latest=$(core_cache_get latest)
+			[ -n "$_listed" ] || _listed=$(core_cache_get listed)
+			[ -n "$_latest" ] && _stale=true
+			[ "$_latest_fresh" = false ] && _error="GitHub 最新版本读取失败"
+			[ "$_listed_fresh" = false ] &&
+				_error="${_error:+$_error；}ShellCrash 版本表读取失败"
+			[ -n "$_error" ] || _error="版本信息不完整，请稍后重试"
+		fi
+	else
+		_latest=$(core_cache_get latest)
+		_listed=$(core_cache_get listed)
+		_cached=true
+	fi
+
+	_latest_ok=false
+	[ -n "$_latest" ] && _latest_ok=true
+	_listed_ok=false
+	[ -n "$_listed" ] && _listed_ok=true
+
+	_update=false
+	if [ "$_latest_ok" = true ] && [ -n "$_installed" ] && [ "$_installed" != "unknown" ]; then
+		version_gt "$_latest" "$_installed" && _update=true
+	fi
+	_behind=false
+	if [ "$_latest_ok" = true ] && [ "$_listed_ok" = true ]; then
+		version_gt "$_latest" "$_listed" && _behind=true
+	fi
+
+	_release_url=""
+	[ "$_latest_ok" = true ] &&
+		_release_url="https://github.com/MetaCubeX/mihomo/releases/tag/$_latest"
+
+	ok "{\"ok\":true,\"installed\":$(jstr "$_installed"),\"binary\":$(jstr "$_binary"),\"latest\":$(jstr "$_latest"),\"listed\":$(jstr "$_listed"),\"latest_ok\":$(jbool "$_latest_ok"),\"listed_ok\":$(jbool "$_listed_ok"),\"update_available\":$(jbool "$_update"),\"shellcrash_behind\":$(jbool "$_behind"),\"release_url\":$(jstr "$_release_url"),\"checked_at\":$(jnum "$_cached_at"),\"cached\":$(jbool "$_cached"),\"stale\":$(jbool "$_stale"),\"error\":$(jstr "$_error")}"
+}
+
 # ----------------------------------------------------------------- ports ---
 # The router has no `ss`, so netstat is the only source for the listening
 # sockets. A line looks like
@@ -1159,6 +1399,7 @@ case "$action" in
 	subs) action_subs ;;
 	log) action_log ;;
 	crash) action_crash ;;
+	core-check) action_core_check ;;
 	ports) action_ports ;;
 	heal) action_heal ;;
 	sub-update) action_sub_update ;;

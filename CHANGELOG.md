@@ -18,6 +18,38 @@
 
 ## [未发布] — 2026-10-22
 
+### 深色模式修复（2026-10-22）
+
+- 修复 深色模式 —— Element Plus 的语义色 `*-light-3…9` 没有接入暗色主题：
+  `el-alert` / `el-tag` / `el-message` 的背景取 `*-light-9`（近白），
+  在深色卡片上整片发白（warning 的橙底尤其刺眼）；`tokens.css` 的 `.dark`
+  补上 Element Plus 官方暗色阶梯，基色与 `*-dark-2` 保持不变，
+  实心按钮的白字对比度不受影响
+- 影响范围 —— 全站所有 `el-alert`（ShellCrash 内核更新、固件、DHCP 警告等）
+  以及 `el-tag` / `el-message`
+- 验证 —— `npm run build` ✓；部署后 `index-*.css` 同时含亮色 `#fdf6ec`
+  与暗色 `#292218`，且暗色规则在后
+
+### 内核更新检测（2026-10-22）
+
+ShellCrash 页新增「内核更新」卡片：并排显示已安装内核、GitHub 最新 mihomo 与
+ShellCrash 自己的版本表，并在 GitHub 已发布、ShellCrash 尚未收录时说明原因。
+
+- 新增 接口 —— `modern-shellcrash` 的 `core-check`：GitHub 最新 tag 读
+  `/releases/latest` 的 302 Location（不耗 REST API 配额），失败回退 REST API；
+  ShellCrash 版本表读 `bin/version` 的 `update` 分支；结果缓存 1 小时，`force=yes` 跳过缓存
+- 新增 界面 —— `ShellCrashView` 的「内核更新」卡片：三版本对比、有新内核 /
+  版本表落后 / 无法检查三种状态、Release 链接与上次检查时间
+- 新增 提示 —— 版本表落后时说明「ShellCrash 菜单不会提供该版本」，并给出
+  `start.sh restart`、不要用 `init.d restart`、保留 UPX 布局与 `command.env` 的更新路径
+- 边界 —— 卡片**只检测，不下载、不替换内核**（见 [docs/LIMITS.md](docs/LIMITS.md) §14）
+- 调整 文档 —— `docs/CGI-CONTRACT.md` / `ARCHITECTURE.md` / `FEATURES.md` /
+  `LIMITS.md` / `TROUBLESHOOTING.md` 同步
+- 验证 —— `npx vue-tsc --noEmit` 通过；路由器上用临时副本调用 `core-check` 返回
+  `installed=v1.19.28`、`latest=v1.19.33`、`listed=v1.19.28`、
+  `update_available=true`、`shellcrash_behind=true`；二次调用 `cached=true`；
+  `jsonfilter -e '@'` 校验通过
+
 ### 客户端设备识别（2026-10-22）
 
 无线客户端页新增「类型」列：新设备首次接入时自动识别一次，给出类别与厂商，

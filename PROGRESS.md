@@ -313,3 +313,49 @@ LuCI 只保留为应急入口。
 
 ---
 
+# 2026-10-22 内核更新检测
+
+## 背景
+- GitHub 上 mihomo 已发布 `v1.19.33`（2026-10-21），路由器上的内核仍是 `v1.19.28`；
+  ShellCrash 菜单提示已是最新，因为它的 `bin/version`（`update` 分支）`meta_v` 还停在 `v1.19.28`。
+- 上游 `core_auto_update` 工作流 2026-10-19 在 `sing-box` 构建步骤失败，
+  meta 构建通过 `needs:` 被连带跳过；此后 `bin_update` 每天只更新 Dashboard/Geodata。
+- 需求：控制台要能发现「GitHub 有新内核」，并说明为什么 ShellCrash 菜单里看不到，
+  同时避免用户直接在路由器上更新时踩坑。
+
+## 完成项
+- [x] `modern-shellcrash` 新增 `core-check`：已安装（`core_v`）/ GitHub 最新 tag /
+  ShellCrash 版本表 `meta_v` 三版本对比；GitHub 走 `/releases/latest` 302
+  （不耗 REST 配额），失败回退 API；ShellCrash 版本表读 `update` 分支 `bin/version`
+- [x] 网络请求优先直连，直连为空且核心在运行时经 `mixed-port` 重试；
+  结果缓存 `/tmp/ShellCrash/modern-core-check` 1 小时，`force=yes` 跳过缓存；
+  半成功不重写缓存并置 `stale=true`；无 `curl` → 503 `curl_missing`
+- [x] `src/api/shellcrashConfig.ts` 增加 `ShellCrashCoreCheck` 与
+  `fetchShellCrashCoreCheck(force)`
+- [x] `ShellCrashView` 新增「内核更新」卡片：三版本、有新内核 / 版本表落后 /
+  无法检查三种状态、Release 链接、上次检查时间与缓存标记
+- [x] 卡片给出更新路径：`start.sh restart`、不要用 `init.d restart`、
+  保留 `CrashCore.upx` 与 `command.env`、确认单实例与端口
+- [x] mock 路由器补 `core-check`；文档同步 CGI-CONTRACT / ARCHITECTURE /
+  FEATURES / LIMITS §14 / TROUBLESHOOTING §20 / CHANGELOG
+- [x] 深色模式：`tokens.css` 的 `.dark` 补 Element Plus 语义色
+  `*-light-3…9` 暗色阶梯，修复 `el-alert` / `el-tag` / `el-message`
+  在深色卡片上的浅色发白（warning 橙底最明显）
+
+## 自检
+- `npx vue-tsc --noEmit` ✓
+- 真机（临时副本，绕过 sid 校验）：`core-check` 返回
+  `installed=v1.19.28`、`latest=v1.19.33`、`listed=v1.19.28`、
+  `update_available=true`、`shellcrash_behind=true`；二次调用 `cached=true`；
+  `force=yes` 刷新 `checked_at`；`jsonfilter -e '@'` 通过
+- 失败路径：把两个来源改成不可达域名后 `force=yes` → 返回上次缓存、
+  `stale=true`、`error="GitHub 最新版本读取失败；ShellCrash 版本表读取失败"`，JSON 合法
+- 已部署到 `root@10.0.0.1`：`sh -n /www/cgi-bin/modern-shellcrash` ✓、无 CRLF；
+  线上副本 `core-check` 返回同上；`/www/modern/assets/ShellCrashView-*.js` 含「内核更新」
+- 深色修复已构建并部署；线上 `index-*.css` 同时含亮色 `#fdf6ec` 与
+  暗色 `#292218`，暗色规则在后
+
+## 状态: 已完成
+
+---
+

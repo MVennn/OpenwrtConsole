@@ -76,6 +76,89 @@
         />
       </div>
 
+      <!-- 内核更新 -->
+      <PanelCard
+        title="内核更新"
+        subtitle="对比已安装内核、GitHub 最新版与 ShellCrash 自己的版本表"
+      >
+        <template #actions>
+          <StatusBadge :label="coreCheckBadge.label" :tone="coreCheckBadge.tone" :dot="false" />
+          <el-button
+            size="small"
+            :icon="RefreshCw"
+            :loading="coreCheckLoading"
+            :disabled="coreCheckLoading"
+            @click="loadCoreCheck(true)"
+          >
+            检查更新
+          </el-button>
+        </template>
+
+        <div class="crash-grid">
+          <div class="crash-cell">
+            <span class="crash-label">已安装（ShellCrash 记录）</span>
+            <span class="crash-value mono">
+              {{ status.core_version || coreCheck.installed || '—' }}
+            </span>
+            <span
+              v-if="coreCheck.binary && coreCheck.binary !== coreCheck.installed"
+              class="crash-hint"
+            >
+              二进制实际为 {{ coreCheck.binary }}
+            </span>
+          </div>
+          <div class="crash-cell">
+            <span class="crash-label">GitHub 最新版</span>
+            <span class="crash-value mono">
+              {{ coreCheck.latest || '—' }}
+              <a
+                v-if="coreCheck.release_url"
+                class="release-link"
+                :href="coreCheck.release_url"
+                target="_blank"
+                rel="noopener"
+              >
+                Release
+              </a>
+            </span>
+            <span class="crash-hint">
+              {{ coreCheck.latest_ok ? 'MetaCubeX/mihomo' : '暂时读取不到' }}
+            </span>
+          </div>
+          <div class="crash-cell">
+            <span class="crash-label">ShellCrash 版本表</span>
+            <span class="crash-value mono">{{ coreCheck.listed || '—' }}</span>
+            <span class="crash-hint">
+              {{ coreCheck.listed_ok ? 'ShellCrash 菜单会提供的版本' : '暂时读取不到' }}
+            </span>
+          </div>
+        </div>
+
+        <el-alert
+          v-if="coreUpdateAlert"
+          class="core-alert"
+          :type="coreUpdateAlert.tone"
+          :title="coreUpdateAlert.title"
+          :description="coreUpdateAlert.description"
+          :closable="false"
+          show-icon
+        />
+
+        <p class="card-note">
+          最后检查 {{ formatEpoch(coreCheck.checked_at) }}
+          <span v-if="coreCheck.cached" class="muted">· 来自一小时缓存</span>
+          <span v-if="coreCheck.stale" class="muted">· 部分数据来自上次检查</span>
+        </p>
+
+        <p v-if="coreCheck.update_available" class="card-note">
+          更新内核请在路由器上执行：<code class="mono">sh /etc/ShellCrash/start.sh restart</code>
+          才会用新内核重建配置；<code class="mono">/etc/init.d/shellcrash restart</code>
+          会留下第二个核心。手动替换时保留 <code class="mono">CrashCore.upx</code> 的压缩布局与
+          <code class="mono">configs/command.env</code>，更新后确认只有一个
+          <code class="mono">CrashCore</code> 进程、7890/7892/1053 都在监听。
+        </p>
+      </PanelCard>
+
       <!-- 服务控制 -->
       <PanelCard title="服务控制" subtitle="启动、停止、重启 ShellCrash 与开机自启">
         <template #actions>
@@ -557,6 +640,7 @@
   import { useRefreshSignal } from '@/composables/useRefresh'
   import {
     fetchShellCrashConfig,
+    fetchShellCrashCoreCheck,
     fetchShellCrashCrash,
     fetchShellCrashHeal,
     fetchShellCrashLog,
@@ -569,6 +653,7 @@
     startShellCrashSubUpdate,
     toggleShellCrashOverride,
     writeShellCrashConfig,
+    type ShellCrashCoreCheck,
     type ShellCrashCrashResult,
     type ShellCrashHealResult,
     type ShellCrashLogResult,
@@ -679,6 +764,23 @@
   })
   const portEntries = ref<ShellCrashPortsResult['ports']>([])
   const heal = ref<ShellCrashHealResult>({ ok: true, entries: [] })
+  const coreCheck = ref<ShellCrashCoreCheck>({
+    ok: true,
+    installed: '',
+    binary: '',
+    latest: '',
+    listed: '',
+    latest_ok: false,
+    listed_ok: false,
+    update_available: false,
+    shellcrash_behind: false,
+    release_url: '',
+    checked_at: 0,
+    cached: false,
+    stale: false,
+    error: ''
+  })
+  const coreCheckLoading = ref(false)
 
   /** The values as they are on the router right now. */
   const baseline = ref<Record<string, string>>({})
@@ -841,6 +943,56 @@
     return parts.join(' · ')
   })
 
+  const coreCheckBadge = computed<{
+    label: string
+    tone: 'success' | 'warning' | 'neutral'
+  }>(() => {
+    if (coreCheckLoading.value) return { label: '检查中', tone: 'neutral' }
+    if (!coreCheck.value.latest_ok) return { label: '无法检查', tone: 'warning' }
+    if (coreCheck.value.update_available) return { label: '有新内核', tone: 'warning' }
+    return { label: '已是最新', tone: 'success' }
+  })
+
+  /** The one explanation that fits the three versions, or null when calm. */
+  const coreUpdateAlert = computed<{
+    tone: 'warning' | 'info'
+    title: string
+    description: string
+  } | null>(() => {
+    const check = coreCheck.value
+    if (!check.latest_ok) {
+      if (coreCheckLoading.value) return null
+      return {
+        tone: 'warning',
+        title: '暂时无法获取 GitHub 上的最新内核',
+        description:
+          check.error || '路由器连不上 GitHub 或 ShellCrash 版本表，请检查代理后重试。'
+      }
+    }
+    if (!check.update_available) return null
+    if (!check.listed_ok) {
+      return {
+        tone: 'info',
+        title: `GitHub 已有 ${check.latest}`,
+        description: 'ShellCrash 版本表暂时读取失败，无法判断菜单里是否已经提供这个版本。'
+      }
+    }
+    if (check.shellcrash_behind) {
+      return {
+        tone: 'warning',
+        title: `GitHub 已有 ${check.latest}，但 ShellCrash 的版本表还停在 ${check.listed}`,
+        description:
+          'ShellCrash 菜单只会提供版本表里的版本，所以现在在菜单里看不到这个更新。' +
+          '通常是上游的自动构建任务失败或尚未发布；等版本表更新后再走 ShellCrash 自己的更新流程最稳。'
+      }
+    }
+    return {
+      tone: 'info',
+      title: `有新内核 ${check.latest}`,
+      description: 'ShellCrash 的版本表已经收录，可以在 ShellCrash 菜单里更新，按提示重启核心即可。'
+    }
+  })
+
   /** The port the running configuration uses for every default port. */
   const configuredPorts = computed<Record<string, number>>(() => {
     const ports = status.value.ports
@@ -872,6 +1024,16 @@
     portEntries.value = nextPorts.ports
     heal.value = nextHeal
 
+    // A core update changes core_v; the cached comparison still describes the
+    // old binary, so it is refreshed right away instead of after the TTL.
+    if (
+      coreCheck.value.installed &&
+      nextStatus.core_version &&
+      coreCheck.value.installed !== nextStatus.core_version
+    ) {
+      void loadCoreCheck(true)
+    }
+
     const values: Record<string, string> = { ...nextConfig.values }
     // The global override switch is derived from the cfg, not from the
     // override list, so it is kept in sync with the file.
@@ -900,10 +1062,33 @@
     }
   }
 
+  /**
+   * The update check talks to GitHub and is cached on the router for an hour.
+   * It runs on its own so a slow or blocked GitHub never holds up the page.
+   */
+  async function loadCoreCheck(force = false): Promise<void> {
+    if (coreCheckLoading.value) return
+    coreCheckLoading.value = true
+    try {
+      coreCheck.value = await fetchShellCrashCoreCheck(force)
+    } catch (err) {
+      coreCheck.value = {
+        ...coreCheck.value,
+        latest_ok: false,
+        cached: false,
+        stale: false,
+        error: messageOf(err)
+      }
+    } finally {
+      coreCheckLoading.value = false
+    }
+  }
+
   async function refresh(): Promise<void> {
     refreshing.value = true
     try {
       await load()
+      void loadCoreCheck()
       await loadLog()
       error.value = null
       loaded.value = true
@@ -1684,6 +1869,28 @@
     font-size: 11.5px;
     font-weight: 400;
     word-break: break-all;
+  }
+
+  .crash-hint {
+    color: var(--text-faint);
+    font-size: 11px;
+    line-height: 1.5;
+  }
+
+  .release-link {
+    margin-left: 6px;
+    color: var(--brand-text);
+    font-size: 11px;
+    font-weight: 500;
+    text-decoration: none;
+  }
+
+  .release-link:hover {
+    text-decoration: underline;
+  }
+
+  .core-alert {
+    margin-top: var(--space-3);
   }
 
   .log-view {
