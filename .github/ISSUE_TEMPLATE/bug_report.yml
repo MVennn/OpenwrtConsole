@@ -1,0 +1,98 @@
+name: 问题反馈（Bug）
+description: 页面报错、功能不可用、部署失败、写入或刷机异常
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        感谢反馈！请尽量把下面的信息填全，尤其是**浏览器控制台报错**与**复现步骤**。
+        控制台以 root 权限执行命令，涉及写入与刷机的问题请先确认已备份。
+
+        反馈前先查 [docs/TROUBLESHOOTING.md](https://github.com/MVennn/OpenwrtConsole/blob/main/docs/TROUBLESHOOTING.md)
+        与 [docs/LIMITS.md](https://github.com/MVennn/OpenwrtConsole/blob/main/docs/LIMITS.md)。
+
+  - type: checkboxes
+    id: acknowledgment
+    attributes:
+      label: 反馈前确认
+      options:
+        - label: 我已知悉控制台以 root 权限执行命令；刷固件、恢复出厂、改密码、重启属于不可逆或高风险操作，我已备份配置并确认固件来源可靠。
+          required: true
+        - label: 我没有把 `/modern/` 暴露到 WAN；相关风险由我自行承担。
+          required: true
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: 出了什么问题
+      description: |
+        现象 + 复现步骤：在哪个页面、点了什么、预期是什么、实际看到什么。
+        能稳定复现就写步骤，时有时无就写出现频率。
+      placeholder: |
+        例：
+        1. 打开「软件包」页，点「更新仓库索引」
+        2. 页面提示「路由器没有返回任务编号」
+        3. 预期：索引刷新并出现仓库列表；实际：一直报错
+    validations:
+      required: true
+
+  - type: input
+    id: device
+    attributes:
+      label: 设备与固件版本
+      description: 在路由器上执行 `cat /etc/openwrt_release`，把 DESCRIPTION 与 VERSION 贴在这里
+      placeholder: "例：Xiaomi AX3000T / OpenWrt 25.12.6"
+    validations:
+      required: true
+
+  - type: input
+    id: console-version
+    attributes:
+      label: 控制台版本
+      description: 见仓库 CHANGELOG 顶部的版本号，或页脚显示
+      placeholder: "例：v0.6.0"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: deploy
+    attributes:
+      label: 部署方式
+      options:
+        - deploy/deploy.sh 一键部署
+        - 手动拷贝 dist 与 modern-* CGI
+        - 本地 npm run dev + mock 路由器
+        - 其它
+    validations:
+      required: true
+
+  - type: textarea
+    id: browser-error
+    attributes:
+      label: 浏览器控制台报错
+      description: F12 → Console / Network 里的报错原文；涉及 CGI 的请一并贴响应
+      render: shell
+    validations:
+      required: false
+
+  - type: textarea
+    id: router-log
+    attributes:
+      label: 路由器侧日志
+      description: |
+        在路由器上执行，把相关段落贴进来：
+
+        ```
+        logread | tail -80
+        ```
+      render: shell
+    validations:
+      required: false
+
+  - type: textarea
+    id: screenshots
+    attributes:
+      label: 截图或补充信息（可选）
+      description: 界面问题请附截图；贴图前先遮掉 SSID、MAC、公网地址等
+    validations:
+      required: false

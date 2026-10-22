@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: 排错手册
+    url: https://github.com/MVennn/OpenwrtConsole/blob/main/docs/TROUBLESHOOTING.md
+    about: 页面、登录、部署与写入链路的常见问题。
+  - name: 已知限制
+    url: https://github.com/MVennn/OpenwrtConsole/blob/main/docs/LIMITS.md
+    about: 哪些事控制台不做、为什么不做，先看这里再提需求。

@@ -390,3 +390,22 @@ LuCI 只保留为应急入口。
 - 已部署到 `root@10.0.0.1`
 
 ## 状态: 已完成
+
+---
+
+# 2026-10-22 仓库门面：Issue 表单
+
+## 目标
+对齐 GSAuxiliary 的仓库门面：补上 Issue 表单，让反馈自带设备、版本与日志。
+
+## 完成项
+- [x] 新增 `.github/ISSUE_TEMPLATE/bug_report.yml` —— 设备与固件、控制台版本、部署方式、
+      页面现象、浏览器控制台报错、路由器 `logread`；确认已备份且未把 `/modern/` 暴露到 WAN
+- [x] 新增 `.github/ISSUE_TEMPLATE/feature_request.yml` —— 场景、期望效果、范围确认
+- [x] 新增 `.github/ISSUE_TEMPLATE/config.yml` —— 关掉空白 Issue，挂排错手册与已知限制
+
+## 自检
+- `python tools/check-docs.py` ✓，退出码 0
+- 三份 YAML 均可被 `yaml.safe_load` 解析
+
+## 状态: 已完成
