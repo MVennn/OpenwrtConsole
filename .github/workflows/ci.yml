@@ -41,6 +41,8 @@ jobs:
 
       - name: 文档自检
         run: python3 tools/check-docs.py
+      - name: 敏感信息扫描
+        run: python3 tools/check-secrets.py
 
       - name: 上传构建产物
         uses: actions/upload-artifact@v4
