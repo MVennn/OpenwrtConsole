@@ -18,6 +18,30 @@
 
 ## [未发布] — 2026-10-21 ~ 2026-10-23
 
+### 写入路径与请求边界（2026-10-23）
+
+- 修复 `deploy/modern-uci` / `deploy/modern-sysupgrade` —— 备份 / 恢复路径只做
+  `/tmp/*` 前缀匹配，`/tmp/../../etc/cron.d/x` 可穿越。新增 `valid_backup_path`：
+  拒绝任何 `..` 段、要求 basename 为 `[A-Za-z0-9._-]`，四个入口（两个备份、
+  两个恢复）统一使用；`backup-create` 无令牌，此前等于已登录即可 root 任意写文件
+- 修复 `deploy/modern-uci` —— `set-localtime` 只判非空，任意值都能写进系统时钟。
+  时钟前跳会让全部 ubus 会话与一次性令牌立即过期（全员被踢），后跳让令牌永不过期；
+  现在要求纯数字且限定在 2020–2100
+- 修复 `deploy/modern-login` —— 体积上限只在 `CONTENT_LENGTH` 存在时生效，
+  缺失时 `readfile("/dev/stdin")` 会把整个请求体读进内存。改为
+  `fs.stdin.read(4097)` 读上限 +1 字节，读后仍超限回 413
+- 修复 `deploy/modern-uci` —— `svc-list` 在 luci ubus 对象缺失时回 200 + 空 body，
+  违反「每个应答都是 JSON」；改为回合法空对象 `{}`，行为不变
+  （前端仍退回 `service.list` 的 running 状态）
+- 修复 `src/views/config/FirmwareView.vue` / `SystemSettingsView.vue` / `ProxyView.vue`
+  —— 刷写、上传刷写、恢复备份、保存、切节点五个入口在确认框挂起期间 busy 仍未置位，
+  连点会重复取令牌 / 并发写 UCI；入口补 in-flight 守卫
+- 验证 —— `npx vue-tsc --noEmit` ✓、`npm run build` ✓（8.46 s）、
+  三个 shell CGI `sh -n` ✓、`python3 tools/check-docs.py` ✓（26 篇）、
+  `python3 tools/check-secrets.py` ✓。`modern-login` 是 ucode，本机没有解释器，
+  只做了人工核对（`fs.stdin.read` 不可用时回退 `readfile` 后仍按长度拒绝）
+
+
 ### 文档骨架对齐系列仓（2026-10-23）
 
 - 调整 开发者文档下沉 —— 根 `DEPLOY.md` → `docs/DEPLOY.md`、根 `DESIGN.md` → `docs/DESIGN.md`

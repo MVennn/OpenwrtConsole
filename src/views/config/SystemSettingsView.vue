@@ -979,6 +979,9 @@
 
   async function runSave(scope: 'system' | 'dns' | 'pool' | 'all', flag: typeof saving): Promise<void> {
     if (!snapshot.value) return
+    // 四个保存入口（三个分区保存 + 保存并应用）互不排斥，确认期间 flag 仍未置位，
+    // 连点会并发写 UCI。任一路在跑就拒绝新的保存。
+    if (saving.value || savingSystem.value || savingDns.value || savingPool.value) return
 
     if (scope === 'system' || scope === 'all') {
       const host = draft.value.identity.hostname.trim()

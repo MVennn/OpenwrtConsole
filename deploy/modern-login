@@ -34,9 +34,22 @@ if (type(contentLength) == "string" && +contentLength > 4096) {
 
 let raw = "";
 try {
-	raw = fs.readfile("/dev/stdin");
+	// Read at most one byte past the limit: when CONTENT_LENGTH is missing
+	// (chunked uploads, or a proxy stripping the header) the early check above
+	// cannot fire, and readfile() would buffer the whole body into memory.
+	raw = fs.stdin.read(4097);
 } catch (e) {
+	try {
+		raw = fs.readfile("/dev/stdin");
+	} catch (e2) {
+		raw = "";
+	}
+}
+if (raw == null)
 	raw = "";
+if (length(raw) > 4096) {
+	respond("413 Payload Too Large", { error: "请求体过大" });
+	exit(0);
 }
 
 let input = null;

@@ -1183,6 +1183,7 @@
 
   /** Flashes the downloaded official image. */
   async function handleFlashUpdate(): Promise<void> {
+    if (flashing.value) return
     const current = update.value
     const result = downloaded.value
     if (!current || !result) return
@@ -1311,6 +1312,7 @@
   }
 
   async function handleFlash(): Promise<void> {
+    if (flashing.value) return
     if (!uploaded.value) return
     if (upgradeWord.value.trim() !== UPGRADE_WORD) {
       upgradeWordError.value = `请输入 ${UPGRADE_WORD} 以确认刷写`
@@ -1377,6 +1379,7 @@
   }
 
   async function handleRestore(): Promise<void> {
+    if (restoring.value) return
     const target = restoreTarget.value
     if (!target) return
     if (restoreWord.value.trim() !== RESTORE_WORD) {

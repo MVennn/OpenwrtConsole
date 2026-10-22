@@ -540,6 +540,7 @@
   }
 
   async function onPick(group: ShellCrashProxy, node: string): Promise<void> {
+    if (switching.value[group.name]) return
     if (!node || node === group.now) {
       picked.value[group.name] = group.now || ''
       return
