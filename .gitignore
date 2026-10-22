@@ -93,7 +93,7 @@ router-*.json
 # ---------------------------------------------------------------------------
 # 注意：源码与文档一律**不**排除
 # ---------------------------------------------------------------------------
-# src/、deploy/、docs/、public/、README.md、DEPLOY.md、DESIGN.md、CHANGELOG.md、
+# src/、deploy/、docs/、public/、README.md、docs/DEPLOY.md、docs/DESIGN.md、CHANGELOG.md、
 # NOTICE、AGENTS.md、package.json、package-lock.json、vite.config.ts、
 # tsconfig.json、index.html 全部入库。
 # package-lock.json 是依赖锁文件，**必须**入库 —— 否则同一份 package.json

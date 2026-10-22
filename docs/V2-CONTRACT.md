@@ -1,5 +1,8 @@
 # OpenWrt Console · v2 开发契约
 
+> **一句话**：**历史文档** —— v2 只读扩展阶段的一次性并行开发契约，其中「文件归属表」已失效；
+> 现役坐标在 [ARCHITECTURE.md](ARCHITECTURE.md)（结构与通道）与 [WRITE-LAYER.md](WRITE-LAYER.md)（可写部分）。
+
 所有并行子代理都按本文件开发。**共享文件谁都不许改**，避免冲突。
 
 ## 1. 项目概况

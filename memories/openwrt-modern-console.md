@@ -79,5 +79,5 @@ rm -f /www/cgi-bin/modern-{login,data,proxy,read,exec,uci,pkg,sysupgrade}
 cp /www/index.luci.html /www/index.html
 ```
 
-文档在 `frontend/README.md`、`DESIGN.md`、`DEPLOY.md`、`docs/V3-CONTRACT.md`。
+文档在 `frontend/README.md`、`docs/DESIGN.md`、`docs/DEPLOY.md`、`docs/V3-CONTRACT.md`。
 相关环境见 [[ax3000t-router-environment]]，代理链路见 [[shellcrash-ai-routing-fix]]。

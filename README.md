@@ -50,7 +50,7 @@
 3. 浏览器打开 `https://<你的路由器IP>/modern/`，用 root 密码登录
 4. 本地开发（可选）：`npm run dev` 之后打开 <http://localhost:5173/modern/>，Vite 会把 `/ubus` 与 `/cgi-bin` 代理到你的路由器；没有路由器也能用随仓的 mock 跑起来 —— 细节见 [贡献指南](https://github.com/MVennn/OpenwrtConsole/blob/main/CONTRIBUTING.md)。
 
-运行时依赖怎么装、缓存怎么处理、怎么回退，见 [部署文档](https://github.com/MVennn/OpenwrtConsole/blob/main/DEPLOY.md)。
+运行时依赖怎么装、缓存怎么处理、怎么回退，见 [部署文档](https://github.com/MVennn/OpenwrtConsole/blob/main/docs/DEPLOY.md)。
 
 ## 反馈
 

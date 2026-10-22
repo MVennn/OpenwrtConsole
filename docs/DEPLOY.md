@@ -123,7 +123,7 @@ uhttpd 不发 `Cache-Control`，浏览器会启发式缓存 `index.html`，导�
 6 个 shell CGI 的 `ok()` / `fail()` 统一走 `send_json()`，发送前用 `jsonfilter` 自检，
 不合法就换成可读的错误而不是让浏览器报「无法解析」；另 3 个 ucode CGI 用 `printf("%J", …)`
 序列化，结构上必然是合法 JSON。
-完整约定与自检命令见 [docs/CGI-CONTRACT.md](docs/CGI-CONTRACT.md) §0「应答自检」。
+完整约定与自检命令见 [CGI-CONTRACT.md](CGI-CONTRACT.md) §0「应答自检」。
 
 ## ShellCrash 相关注意
 
@@ -197,4 +197,4 @@ LuCI 主题包已删除，应急入口打开时是无样式的纯 HTML，功能�
 - sid 通过查询参数传给 CGI，可能出现在 uhttpd 访问日志中；这是在本机 LAN、
   HTTPS 下的折中方案，足以满足家庭路由器场景。
 - 重启按钮有二次确认并走一次性令牌；网络 / 无线 / 防火墙 / DHCP 与系统设置等配置页
-  **可以写**，走「暂存 → 提交 → 应用」三段式（详见 [docs/WRITE-LAYER.md](docs/WRITE-LAYER.md)）。
+  **可以写**，走「暂存 → 提交 → 应用」三段式（详见 [WRITE-LAYER.md](WRITE-LAYER.md)）。

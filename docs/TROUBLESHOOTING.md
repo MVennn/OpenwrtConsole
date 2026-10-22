@@ -222,7 +222,7 @@
 
 | 原因 | 解法 |
 | --- | --- |
-| 用的是旧版 `deploy/deploy.sh`（for 循环里有一个字面 `\n`） | **已在当前脚本修复**：第 7 次迭代曾把 `\n` 当成词 `n`，输入重定向指向不存在的 `deploy/n`，在 `set -eu` 下脚本直接退出 → `modern-pkg` / `modern-sysupgrade` / `modern-shellcrash` 三个 CGI 不部署、末尾 echo 也不打印。**若仍遇到**，说明用的是旧脚本 —— 更新本仓后重新跑，或按 [../DEPLOY.md](../DEPLOY.md) 的手动部署段补齐 |
+| 用的是旧版 `deploy/deploy.sh`（for 循环里有一个字面 `\n`） | **已在当前脚本修复**：第 7 次迭代曾把 `\n` 当成词 `n`，输入重定向指向不存在的 `deploy/n`，在 `set -eu` 下脚本直接退出 → `modern-pkg` / `modern-sysupgrade` / `modern-shellcrash` 三个 CGI 不部署、末尾 echo 也不打印。**若仍遇到**，说明用的是旧脚本 —— 更新本仓后重新跑，或按 [DEPLOY.md](DEPLOY.md) 的手动部署段补齐 |
 | 旧 chunk 已被删除，旧标签页还在请求它 | 这是**设计如此**：uhttpd 不发 `Cache-Control`，浏览器启发式缓存 `index.html`。部署侧用 `/www/modern/assets.manifest` 保留「当前代 + 上一代」来兜底；命中 404 时应用会自动带 `?_reload=` 重载 |
 | `dist/` 里的 `base` 不是 `/modern/` | 重新构建。`vite.config.ts` 的 `base` 固定为 `/modern/` |
 | 路由器的 overlay 满了 | `df -h` 看 `/`；世代保留机制最多留两代（约 2.8 MB），多出来的要手工清 `/www/modern/assets` |
@@ -427,7 +427,7 @@ curl -sk -X POST -H 'Content-Type: application/json'   -d '{"action":"config-wri
 
 | 原因 | 解法 |
 | --- | --- |
-| 路由器上的 `modern-uci` 还是旧版 | 旧版的 `consume_token` 检查未定义的 `$got`，**所有令牌动作必然报令牌无效**。重新部署 CGI（见 [../DEPLOY.md](../DEPLOY.md)） |
+| 路由器上的 `modern-uci` 还是旧版 | 旧版的 `consume_token` 检查未定义的 `$got`，**所有令牌动作必然报令牌无效**。重新部署 CGI（见 [DEPLOY.md](DEPLOY.md)） |
 | 固件只有 BusyBox `passwd`、没有 `chpasswd` | 当前版本已回退到 `passwd`（stdin 喂两行密码），确认 `command -v passwd` 有输出；若两边都没有，需要固件自带一个改密工具 |
 | `passwd` 执行失败 | 检查根文件系统是否只读（`mount \| grep ' / '`）、用户名是否在当前系统里存在；CGI 只允许 `[A-Za-z0-9._-]` 且不以 `-` 开头的用户名 |
 | 输入了非法用户名 | 返回 `400 {"error":"用户名包含非法字符"}`，换成字母 / 数字 / `.` `_` `-` |

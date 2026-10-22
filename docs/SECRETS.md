@@ -42,7 +42,7 @@
 > 而口令从进浏览器到离开请求体，只存在于那一次 POST 里。
 
 sid 走查询参数意味着它**可能出现在 uhttpd 的访问日志里** ——
-这是本机 LAN + HTTPS 场景下的折中，详见根 [../DEPLOY.md](../DEPLOY.md) 的「安全说明」。
+这是本机 LAN + HTTPS 场景下的折中，详见[DEPLOY.md](DEPLOY.md) 的「安全说明」。
 
 ### ⚠️ 配置草稿：新的凭据落盘路径（含 WiFi 密码）
 
@@ -98,7 +98,7 @@ sid 走查询参数意味着它**可能出现在 uhttpd 的访问日志里** —
 - 该值**不出路由器**，浏览器侧只能看到 API 的**响应**（策略组、当前节点等），看不到 secret；
 - ShellCrash 没配置 secret 时，CGI 回 `503 {"error":"shellcrash not configured"}`。
 
-安全说明见根 [../DEPLOY.md](../DEPLOY.md#安全说明)。
+安全说明见 [DEPLOY.md](DEPLOY.md#安全说明)。
 
 ---
 
@@ -220,7 +220,7 @@ git diff --cached | grep -nE 'password["'"']?\s*[:=]|secret=|Bearer |PrivateKey'
 | 哪些动作要走 root CGI、令牌与确认词的先后顺序 | [WRITE-LAYER.md](WRITE-LAYER.md) §3、§4 |
 | 三层数据流、CGI 清单、sid 校验约定 | [ARCHITECTURE.md](ARCHITECTURE.md) §2、§3 |
 | 部署步骤、缓存与世代保留、回退 | [MAINTENANCE.md](MAINTENANCE.md) |
-| 安全说明（不暴露 WAN、密码只出现一次、secret 不回传） | 根 [../DEPLOY.md](../DEPLOY.md#安全说明) |
+| 安全说明（不暴露 WAN、密码只出现一次、secret 不回传） | [DEPLOY.md](DEPLOY.md#安全说明) |
 | 本仓与兄弟仓的职责边界（yaml 唯一真源） | 根 [../AGENTS.md](../AGENTS.md) 第 2 条 |
 | 版本号与发版 | [VERSIONING.md](VERSIONING.md) |
 | 忽略规则 | 仓库根 `.gitignore` |

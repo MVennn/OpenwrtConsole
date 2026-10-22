@@ -141,7 +141,7 @@ ShellCrash 自己的版本表，并在 GitHub 已发布、ShellCrash 尚未收�
 - 补记 代理页布局修复 —— v0.3.0 之后 `bc88133` 的条目缺失，现已补齐；
   当前 `v0.3.0..HEAD` 的提交逐条有对应条目
 - 调整 文档 —— `docs/MAINTENANCE.md` §7 产物体积基线按 2026-10-22 构建重测
-  （首屏 417 KB / gzip 118 KB），§2 与根 `DEPLOY.md` 的每代体积改为 2.1 MB，
+  （首屏 417 KB / gzip 118 KB），§2 与 `docs/DEPLOY.md` 的每代体积改为 2.1 MB，
   并新增 §9 维护记录
 - 验证 —— `python tools/check-docs.py` ✓（26 篇）、`npx vue-tsc --noEmit` ✓、
   `npm run build` ✓（7.65 s）
@@ -487,7 +487,7 @@ ShellCrash 自己的版本表，并在 GitHub 已发布、ShellCrash 尚未收�
 （源目录）的**快照**拆出来，做成能独立上传 GitHub、独立看懂、独立演进的仓库。
 
 拆分动作只动**文档层**：`src/`、`deploy/`、`public/`、`package.json`、`vite.config.ts`、
-`tsconfig.json`、`index.html`、`docs/V2-CONTRACT.md`、`docs/V3-CONTRACT.md`、`DESIGN.md`
+`tsconfig.json`、`index.html`、`docs/V2-CONTRACT.md`、`docs/V3-CONTRACT.md`、`docs/DESIGN.md`
 **一个字节未改**。新写的文档在本仓「文档」章节逐条列出。
 
 写文档的过程里把源目录若干处**与实现脱节**的地方逐条核对出来了，登记在下面的「修复」段（该段收录的是待修缺陷），
@@ -497,7 +497,7 @@ ShellCrash 自己的版本表，并在 GitHub 已发布、ShellCrash 尚未收�
 
 - 调整 仓库 —— 从上游 OpenWrt 运维仓的 `frontend/` **复制**出独立仓库 `OpenwrtConsole`。
   快照时间为 2026-10-20 18:24 前后。写入时逐文件比对（`diff -rq` + `md5sum`）确认
-  `README.md` / `DEPLOY.md` / `deploy/` / `DESIGN.md` / `PROGRESS.md` / `docs/V2-CONTRACT.md` /
+  `README.md` / `docs/DEPLOY.md` / `deploy/` / `docs/DESIGN.md` / `PROGRESS.md` / `docs/V2-CONTRACT.md` /
   `docs/V3-CONTRACT.md` 与源目录**逐字节一致**；
   `src/` 已有 **1 处偏差**：`src/views/config/PackagesView.vue`（源目录 18:34 又改过，
   本仓快照停在 18:10 的版本）。源目录仍在被活跃修改，两边**不自动同步**，
@@ -528,7 +528,7 @@ ShellCrash 自己的版本表，并在 GitHub 已发布、ShellCrash 尚未收�
 - 调整 文档 —— 新写 [docs/MAINTENANCE.md](docs/MAINTENANCE.md)：构建与部署链、世代保留机制
   （`/www/modern/assets.manifest`）、回退步骤、组件规范、文档与代码的同步责任。
 - 调整 文档 —— 新写 [docs/release-notes/README.md](docs/release-notes/README.md)（Release 说明格式正本）
-  与 [docs/release-notes/v0.1.0.md](docs/release-notes/v0.1.0.md)（首版说明）。
+  与 [docs/release-notes/0.1.0.md](docs/release-notes/0.1.0.md)（首版说明）。
 - 调整 文档 —— 新写 [AGENTS.md](AGENTS.md)：机器协议三条硬约定 ——
   ① PROGRESS 路径由**逻辑任务**决定、每个任务目录内有且仅有一个 `PROGRESS.md`、子代理只写自己的分片；
   ② 本仓的 ShellCrash 设置页是**受控编辑入口**，`config/yamls/*.yaml` 的唯一真源在 `ShellcrashRules` 仓；
@@ -652,10 +652,10 @@ ShellCrash 自己的版本表，并在 GitHub 已发布、ShellCrash 尚未收�
 
 ### 待补
 
-- **只有 `DESIGN.md` / `docs/V2-CONTRACT.md` / `docs/V3-CONTRACT.md` 仍是源目录副本** ——
-  `DEPLOY.md` 与 `PROGRESS.md` **已在本仓重写**（`DEPLOY.md` 改成环境变量占位符与
+- **只有 `docs/DESIGN.md` / `docs/V2-CONTRACT.md` / `docs/V3-CONTRACT.md` 仍是源目录副本** ——
+  `docs/DEPLOY.md` 与 `PROGRESS.md` **已在本仓重写**（`docs/DEPLOY.md` 改成环境变量占位符与
   「本仓根目录」的部署路径；`PROGRESS.md` 补齐 v4 / v5 / v6 三批），**不再是副本**。
-  剩下的 `DESIGN.md` 仍有已确认的过期结论（「防火墙与 DNS 页保持只读，修改仍交给 LuCI」
+  剩下的 `docs/DESIGN.md` 仍有已确认的过期结论（「防火墙与 DNS 页保持只读，修改仍交给 LuCI」
   —— 防火墙现已**可写**，只有 DNS 状态页仍只读），逐条见
   [docs/MAINTENANCE.md](docs/MAINTENANCE.md) §8「与源目录的同步状态」的表格。
   **本版刻意不改**：它们是源目录的副本，改了就与源目录产生无谓偏差，等同步窗口一起处理。
@@ -667,7 +667,7 @@ ShellCrash 自己的版本表，并在 GitHub 已发布、ShellCrash 尚未收�
   其中的「文件归属表」已失效。V3 里长期有效的部分（rpcd 授权边界 + 写入范式）
   已提炼进 [docs/WRITE-LAYER.md](docs/WRITE-LAYER.md)，归档动作待办。
 
-面向用户的说明见 [docs/release-notes/v0.2.0.md](docs/release-notes/v0.2.0.md)。
+面向用户的说明见 [docs/release-notes/0.2.0.md](docs/release-notes/0.2.0.md)。
 
 ---
 
@@ -676,4 +676,4 @@ ShellCrash 自己的版本表，并在 GitHub 已发布、ShellCrash 尚未收�
 首版：以 `art-design-pro` 的设计语言重做 OpenWrt 管理界面，覆盖 v1 只读页面、v2 只读扩展与节点切换、
 v3 写入层与运维页面，并把默认入口从 LuCI 切到 `/modern/`。
 
-面向用户的说明见 [docs/release-notes/v0.1.0.md](docs/release-notes/v0.1.0.md)。
+面向用户的说明见 [docs/release-notes/0.1.0.md](docs/release-notes/0.1.0.md)。

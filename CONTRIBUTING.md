@@ -55,7 +55,7 @@ ROUTER_URL=http://127.0.0.1:5199 npm run dev  # 终端 2：Vite
 
 - **必须用 LF 换行** —— CRLF 会让 shebang 直接报 `No such file or directory`。
 - 改完先 `sh -n`（sh 脚本）/ 让 ucode 语法检查器过一遍。
-- 新增 CGI 要同时加进 `deploy/deploy.sh` 的循环列表**和** `DEPLOY.md` 的清单表 ——
+- 新增 CGI 要同时加进 `deploy/deploy.sh` 的循环列表**和** `docs/DEPLOY.md` 的清单表 ——
   这两处历史上各写各的，漏一处就等于没部署。
 
 ## 文档

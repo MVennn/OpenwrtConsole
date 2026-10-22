@@ -11,17 +11,28 @@ docs/ 分四类（索引见 [README.md](README.md)）：
 
 | 类别 | 收什么 | 现有成员 |
 |---|---|---|
-| 架构与契约 | 数据流怎么走、通道各能干什么、CGI 的请求响应形状 | ARCHITECTURE、CGI-CONTRACT |
+| 架构与契约 | 数据流怎么走、通道各能干什么、CGI 的请求响应形状、界面视觉语言的规范源 | ARCHITECTURE、CGI-CONTRACT、DESIGN |
 | 功能与实现 | 一块具体能力的实现约束（怎么写、写到哪、谁能写），以及功能与限制的清单 | FEATURES、LIMITS、WRITE-LAYER |
-| 流程与规范 | 构建、发版、维护、排错、文档规则 | MAINTENANCE、TROUBLESHOOTING、DOC-RULES |
-| 参考资料 | Release 说明、历史契约、仓库根的其它文档 | release-notes/、V2-CONTRACT、V3-CONTRACT |
+| 流程与规范 | 部署、构建、发版、维护、排错、凭据、文档规则 | DEPLOY、MAINTENANCE、TROUBLESHOOTING、SECRETS、VERSIONING、DOC-RULES |
+| 参考资料 | Release 说明、历史契约、仓库根的其它文档 | release-notes/、V2-CONTRACT、V3-CONTRACT、V4-CONTRACT |
 
 每篇文档开头必须有一个 **「一句话」引言块**（`> **一句话**：…`），
 让读者不用往下翻就知道这篇管什么。新文档没有它不算写完。
 
-仓库根的 `README.md` / `DEPLOY.md` / `DESIGN.md` / `AGENTS.md` / `CHANGELOG.md` / `NOTICE`
-不归 docs/ 管，但**必须**在 [docs/README.md](README.md) 的「参考资料」分区里登记，
-否则它们就成了索引之外的孤儿。
+### 文件命名
+
+- **docs/ 下的 `.md` 一律「全大写 + 连字符」**（`ALL-CAPS-WITH-HYPHENS.md`）：
+  `CGI-CONTRACT.md`、`WRITE-LAYER.md`、`V4-CONTRACT.md`。
+  不要出现小写、下划线或中文文件名 —— 混着写会让引用方在大小写敏感的文件系统与
+  CI 上分叉。
+- `docs/release-notes/` 例外：文件名 = `versionName`，**不带 `v` 前缀**
+  （`0.3.0.md`，不是 `v0.3.0.md`）。带 `v` 的是**发版 tag**（`v0.3.0`），别把 tag 的
+  形式抄进文件名。改名时**只改文件**，不动 tag。
+
+**开发者内容一律下沉 docs/** —— 根目录只留面向使用者与贡献者的门面文件
+（`README.md` / `CHANGELOG.md` / `CONTRIBUTING.md` / `SECURITY.md` / `LICENSE` /
+`NOTICE` / `AGENTS.md` / `PROGRESS.md`）。它们不归 docs/ 管，但**必须**在
+[README.md](README.md) 的「参考资料」分区里登记，否则就成了索引之外的孤儿。
 
 ## 2. 单一正本原则
 
@@ -34,25 +45,30 @@ docs/ 分四类（索引见 [README.md](README.md)）：
 |---|---|
 | 三层数据流、通道能力边界、目录分层 | [ARCHITECTURE.md](ARCHITECTURE.md) |
 | CGI 请求 / 响应 JSON 形状、错误码、令牌机制 | [CGI-CONTRACT.md](CGI-CONTRACT.md) |
+| 设计令牌、组件规范、对比度标准 | [DESIGN.md](DESIGN.md) |
 | 功能分区清单、每个分区能做什么 | [FEATURES.md](FEATURES.md) |
 | 已知限制与设计边界 | [LIMITS.md](LIMITS.md) |
 | rpcd 的 UCI 授权白名单、写入范式、令牌动作清单 | [WRITE-LAYER.md](WRITE-LAYER.md) |
-| 部署链、世代保留机制、回退步骤、组件规范 | [MAINTENANCE.md](MAINTENANCE.md) |
+| 部署步骤、路由器运行时依赖、世代保留、回退 | [DEPLOY.md](DEPLOY.md) |
+| 构建链路、收尾清单、与源目录的同步状态 | [MAINTENANCE.md](MAINTENANCE.md) |
 | 排错步骤 | [TROUBLESHOOTING.md](TROUBLESHOOTING.md) |
-| 版本号进位规则 | [../CHANGELOG.md](../CHANGELOG.md) 头部 |
+| 凭据位置与危险动作机制 | [SECRETS.md](SECRETS.md) |
+| 版本号进位规则 | [VERSIONING.md](VERSIONING.md) §1–§2（版本号**数字**在 [../CHANGELOG.md](../CHANGELOG.md) 的版本标题里） |
 | Release 说明格式 | [release-notes/README.md](release-notes/README.md) |
 | 文档怎么写、怎么互相引用 | 本篇 |
 
 ### 禁止重复清单
 
 1. **部署步骤三写**：「构建 → 部署 → 回退」曾同时出现在根 `README.md`、
-   根 `DEPLOY.md`、本仓 `docs/MAINTENANCE.md`。收敛为
-   [MAINTENANCE.md](MAINTENANCE.md) 唯一正本；根 `README.md` 只留一句 + 链接。
-2. **CGI 清单多写**：根 `DEPLOY.md` 的 CGI 表、[ARCHITECTURE.md](ARCHITECTURE.md) 的 CGI 清单、
+   `DEPLOY.md`（当时还在根目录）、本仓 [MAINTENANCE.md](MAINTENANCE.md)。收敛为
+   [MAINTENANCE.md](MAINTENANCE.md)（流程）+ [DEPLOY.md](DEPLOY.md)（步骤明细）两份分工正本；
+   根 `README.md` 只留一句 + 链接。
+2. **CGI 清单多写**：`DEPLOY.md` 的 CGI 表、[ARCHITECTURE.md](ARCHITECTURE.md) 的 CGI 清单、
    [CGI-CONTRACT.md](CGI-CONTRACT.md) 的逐篇小节三处都列了 9 个 CGI。
    约定：**清单与职责**在 [ARCHITECTURE.md](ARCHITECTURE.md)，
    **请求响应形状**在 [CGI-CONTRACT.md](CGI-CONTRACT.md)；
-   根 `DEPLOY.md` 是源目录副本，允许保留自己那份，但**本仓新增文档不得再抄第三份**。
+   `DEPLOY.md` 是**部署侧的操作清单**（部署时照它核对 9 个文件是否到位），允许保留自己那份，
+   但**本仓新增文档不得再抄第三份**。
 3. **授权白名单双写**：[WRITE-LAYER.md](WRITE-LAYER.md) 与 [V3-CONTRACT.md](V3-CONTRACT.md)
    都写了那 10 个可写配置文件名。约定：**白名单以 [WRITE-LAYER.md](WRITE-LAYER.md) 为准**，
    `V3-CONTRACT.md` 作为历史文档不再维护。
@@ -63,7 +79,7 @@ docs/ 分四类（索引见 [README.md](README.md)）：
 > 历史文档（`V2-CONTRACT.md` / `V3-CONTRACT.md`）里保留旧结论是**允许**的 ——
 > 那是当时的事实。但凡**指向现役文档的链接**必须始终指向现役文档。
 
-## 3. 事实与数字：逐字保留，计数必须同步
+## 3. 红线内容保护：事实与数字逐字保留，计数必须同步
 
 - **文件名、函数名、字段名、方法名、路径常量、ubus 方法名、CGI 的 action 名**
   在文档合并或修订时**必须逐字保留，一个不删** —— 哪怕当前代码里暂时没用到
@@ -90,16 +106,19 @@ docs/ 分四类（索引见 [README.md](README.md)）：
 
 | 变更 | 必须同步 |
 |---|---|
-| 新增 / 删除 / 改名一个 CGI | [ARCHITECTURE.md](ARCHITECTURE.md) 的 CGI 清单、[CGI-CONTRACT.md](CGI-CONTRACT.md) 对应小节、[../DEPLOY.md](../DEPLOY.md) 的 CGI 表（同步窗口） |
+| 新增 / 删除 / 改名一个 CGI | [ARCHITECTURE.md](ARCHITECTURE.md) 的 CGI 清单、[CGI-CONTRACT.md](CGI-CONTRACT.md) 对应小节、[DEPLOY.md](DEPLOY.md) 的 CGI 表（同步窗口） |
 | 改一个 CGI 的请求 / 响应形状或错误码 | [CGI-CONTRACT.md](CGI-CONTRACT.md) 对应小节 |
 | 改 UCI 授权白名单 | [WRITE-LAYER.md](WRITE-LAYER.md) §1 |
 | 新增 / 删除一个危险动作或令牌用途 | [WRITE-LAYER.md](WRITE-LAYER.md) §3 的令牌表、[CGI-CONTRACT.md](CGI-CONTRACT.md) 对应小节 |
 | 新增 / 删除一个数据通道 | [ARCHITECTURE.md](ARCHITECTURE.md) 的通道表、[FEATURES.md](FEATURES.md) 的分区表（若因此多了一个分区） |
 | 新增 / 删除 / 改名一个视图 | [ARCHITECTURE.md](ARCHITECTURE.md) §4 的目录结构、[FEATURES.md](FEATURES.md) 的分区表 |
-| 新增 / 删除一个 Element Plus 组件 | [../DESIGN.md](../DESIGN.md) 与 `src/plugins/element.ts`（样式清单）、[TROUBLESHOOTING.md](TROUBLESHOOTING.md) 的「元素样式丢失」节 |
-| 改构建 / 部署 / 部署脚本 | [MAINTENANCE.md](MAINTENANCE.md) 对应段、根 [../DEPLOY.md](../DEPLOY.md)（同步窗口） |
-| 发版 | 根 [../CHANGELOG.md](../CHANGELOG.md)、[release-notes/<版本>.md](release-notes/README.md) |
-| 新增 / 删除文档 | [docs/README.md](README.md) 索引（见 §7） |
+| 新增 / 删除一个 Element Plus 组件 | [DESIGN.md](DESIGN.md) 与 `src/plugins/element.ts`（样式清单）、[TROUBLESHOOTING.md](TROUBLESHOOTING.md) 的「元素样式丢失」节 |
+| 改构建 / 部署 / 部署脚本 | [MAINTENANCE.md](MAINTENANCE.md) 对应段、[DEPLOY.md](DEPLOY.md)（同步窗口） |
+| 内部重构 / 底层修复 / 死代码 | 说明里**必须按对象单列一行**（算「修复」，不许打包成「代码整理」；写法见 [release-notes/README.md](release-notes/README.md)） |
+| 改设计令牌 / 组件规范 | [DESIGN.md](DESIGN.md)（注意：它是源目录副本，改动走同步窗口，见 [MAINTENANCE.md](MAINTENANCE.md) §8） |
+| 发版 | 根 [../CHANGELOG.md](../CHANGELOG.md)、[release-notes/<版本>.md](release-notes/README.md)（文件名 = `versionName`，**不带 `v` 前缀**） |
+| 新增 / 删除文档 | [README.md](README.md) 索引（见 §7） |
+| 移动 / 改名文档 | [README.md](README.md) 索引（见 §7）+ **全仓 grep 旧文件名**改掉所有引用方，含 GitHub 绝对地址形式的链接 |
 
 ## 6. 体量预算与样例时效
 

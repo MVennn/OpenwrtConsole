@@ -50,7 +50,7 @@ LuCI 只保留为应急入口。
 ## 交付物
 - `src/` — 20 个视图、共享 API 与组件
 - `deploy/` — 9 个 CGI + deploy.sh / install-remote.sh
-- `README.md` / `DESIGN.md` / `DEPLOY.md` / `docs/CGI-CONTRACT.md` / `docs/WRITE-LAYER.md`
+- `README.md` / `docs/DESIGN.md` / `docs/DEPLOY.md` / `docs/CGI-CONTRACT.md` / `docs/WRITE-LAYER.md`
 - 线上：<https://<路由器IP>/modern/>，根路径 `/` 已指向控制台
 # 2026-10-21 README 收敛
 
@@ -92,7 +92,7 @@ LuCI 只保留为应急入口。
   无线配置补 1–13 / DFS / HE160+；改频段重置信道与 htmode
 - [x] 首次配置：无无线硬件不再判「未配置」；频段优先按 runtime/iwinfo 识别
 - [x] 代理与入口：主组类型优先 + 通用名称词；LuCI 入口探测后才显示；HTTPS 文案动态
-- [x] 文档与版本：README/DEPLOY/CHANGELOG/docs 全量同步，新增 `docs/release-notes/v0.2.0.md`
+- [x] 文档与版本：README/DEPLOY/CHANGELOG/docs 全量同步，新增 `docs/release-notes/0.2.0.md`
 - [x] 部署回归：已部署到 `root@10.0.0.1`，`/modern/` 与 9 个 CGI 哈希一致；
   发现并修正 LuCI 未登录时 `HEAD /cgi-bin/luci/` 返回 403 被误判为「未安装」的问题
 
@@ -422,7 +422,7 @@ LuCI 只保留为应急入口。
 - [x] `.gitignore` 新增 `/tmp_*`
 - [x] `docs/release-notes/README.md` 补「反馈入口」规则（绝对地址 Issue 链接，第二行、非清单条目）
 - [x] `CHANGELOG.md` 补记 `bc88133` 代理页布局修复，并新增本轮「收尾大扫除」段
-- [x] `docs/MAINTENANCE.md` §2 / §7 与根 `DEPLOY.md` 体积基线按 2026-10-22 构建重测，
+- [x] `docs/MAINTENANCE.md` §2 / §7 与 `docs/DEPLOY.md` 体积基线按 2026-10-22 构建重测，
       新增 §9 维护记录
 - [x] 核对：20 个视图全部有 `defineOptions`、9 个 CGI 清单三处一致、`docs/README.md` 索引无孤儿
 

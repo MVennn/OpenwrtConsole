@@ -228,7 +228,7 @@ ssh root@<路由器IP> 'cat > /www/cgi-bin/.modern-uci.new && chmod +x /www/cgi-
 | 加 / 删 / 改一个数据通道 | [ARCHITECTURE.md](ARCHITECTURE.md) 的通道表 · [FEATURES.md](FEATURES.md) 的分区表（若因此多了一个分区） |
 | 加 / 删一个视图 | [FEATURES.md](FEATURES.md) 的分区表 · [ARCHITECTURE.md](ARCHITECTURE.md) §4 |
 | 改「暂存 → 提交 → 应用」范式（`src/api/configPending.ts` / `src/composables/useDraft.ts` / `src/components/cfg-pending/` / `src/components/DraftNotice.vue`） | [WRITE-LAYER.md](WRITE-LAYER.md) §2（写入范式与「放弃修改」的两层）· [CGI-CONTRACT.md](CGI-CONTRACT.md) 的对应 action（`uci-revert` / `uci-commit` / `uci-apply` / `net-reload` / `wifi-reload` / `firewall-reload`） |
-| 改构建 / 部署 | 本篇 · 根 [../DEPLOY.md](../DEPLOY.md)（同步窗口） |
+| 改构建 / 部署 | 本篇 · [DEPLOY.md](DEPLOY.md)（同步窗口） |
 
 **计数类内容必须重新数**，不许抄上一版：视图数、CGI 数、通道数、
 「有 / 无 `defineOptions` 的视图数」、产物体积。
@@ -237,9 +237,9 @@ ssh root@<路由器IP> 'cat > /www/cgi-bin/.modern-uci.new && chmod +x /www/cgi-
 
 本仓是上游 OpenWrt 运维仓的 `frontend/` 目录的**快照**，两边不自动同步。
 - 本仓的改动**不会**回流源目录；源目录的改动**不会**回流本仓。
-- 根 `DEPLOY.md` 与 `PROGRESS.md` **已在本仓重写**（DEPLOY.md 改成环境变量占位符与
+- `DEPLOY.md` 与 `PROGRESS.md` **已在本仓重写**（DEPLOY.md 改成环境变量占位符与
   「本仓根目录」的部署路径；PROGRESS.md 补齐 v4 / v5 / v6 三批），**不再是源目录副本**。
-- 仍是源目录副本的只有 `DESIGN.md` / `docs/V2-CONTRACT.md` / `docs/V3-CONTRACT.md` ——
+- 仍是源目录副本的只有 `DESIGN.md` / `V2-CONTRACT.md` / `V3-CONTRACT.md` ——
   它们有过期内容，但**刻意不在本仓修**（改了反而与源目录产生无谓偏差）。
   已登记的过期点见本篇 §8「与源目录的同步状态」表格。
 - 需要同步时：**以源目录为准**做一次定向 diff，把真正需要的内容并过来。
