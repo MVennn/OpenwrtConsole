@@ -124,8 +124,8 @@ curl -sk https://<路由器IP>/modern/ | head -5             # 期望能看到 <
 | `/www/modern/assets.manifest` | 记录**本次发布**带进 `assets/` 的文件清单 |
 | `install-remote.sh` | 解包新版本后，按**旧 manifest** 把上一代的文件**拷进新目录**；旧 manifest 里没有的文件不再保留 |
 
-于是 `/www/modern/assets/` 里最多有「当前代 + 上一代」，**每一代约 1.4 MB**。
-再多就会把路由器的 overlay（实测设备上只有 57 MB）吃满。
+于是 `/www/modern/assets/` 里最多有「当前代 + 上一代」，**每一代约 2.1 MB**
+（2026-10-22 构建实测 `dist/` 2 083 659 B）。再多就会把路由器的 overlay（实测设备上只有 57 MB）吃满。
 
 > `assets.manifest` 是**部署产物**，不进版本库；它只在路由器上。
 > 手工部署（§1.3）不产生 manifest —— 想恢复世代保留，手工把上一代文件拷回去。
@@ -264,19 +264,19 @@ ssh root@<路由器IP> 'cat > /www/cgi-bin/.modern-uci.new && chmod +x /www/cgi-
 
 ## 7. 产物体积基线
 
-> 数据是 2026-10-20 17:49 在源目录上的一次构建实测（**v4 / v5 / v6 三批改动之前**），
-> 不代表当前产物 —— 复测请先 `npm run build` 再量。
+> 数据是 2026-10-22 在本仓根目录的一次构建实测（`npm run build`），
+> 不代表后续产物 —— 复测请先 `npm run build` 再量。
 
 | 产物 | 原始 | gzip |
 |---|---|---|
-| 首屏入口 JS | 255 KB（261 568 B） | 94 KB（96 651 B） |
-| 首屏入口 CSS | 160 KB（163 619 B） | 23 KB（23 708 B） |
-| **首屏合计** | **415 KB** | **117 KB**（120 359 B） |
+| 首屏入口 JS | 256 KB（262 155 B） | 95 KB（96 851 B） |
+| 首屏入口 CSS | 161 KB（164 489 B） | 23 KB（23 671 B） |
+| **首屏合计** | **417 KB**（426 644 B） | **118 KB**（120 522 B） |
 
-- Element Plus **全量引入**时首屏是 1.42 MB（gzip 396 KB）；按需引入后降到 415 KB / gzip 117 KB，**减少约 71%**。
-- 最大的剩余块是 **`BaseChart` chunk（483 406 B ≈ 472 KB）**，里面装的是 ECharts；
+- Element Plus **全量引入**时首屏是 1.42 MB（gzip 396 KB）；按需引入后降到 417 KB / gzip 118 KB，**减少约 71%**。
+- 最大的剩余块是 **`BaseChart` chunk（483 396 B ≈ 472 KB）**，里面装的是 ECharts；
   它被 `DashboardView` 与 `config/MonitorView` **两个**页面引用，随页面懒加载。
-- 每一代 chunk 约 1.4 MB；部署侧只保留「当前代 + 上一代」（见 §2）。
+- 每一代 chunk 约 2.1 MB；部署侧只保留「当前代 + 上一代」（见 §2）。
 
 ## 8. 与源目录的同步状态
 
@@ -308,3 +308,9 @@ ssh root@<路由器IP> 'cat > /www/cgi-bin/.modern-uci.new && chmod +x /www/cgi-
   `parseDnsmasq` / `parsePools` / `parseLeases` 读的是同一份 `uci.get dhcp`；
   `UciSection` 类型也定义了**两份**（`src/api/uci.ts` 与 `src/api/dns.ts`）。
   逐条见根 [../CHANGELOG.md](../CHANGELOG.md) 的「修复」段 —— 带「待修」标记的才是仍未动的。
+
+## 9. 维护记录
+
+| 日期 | 做了什么 | 结果 |
+|---|---|---|
+| 2026-10-22 | 收尾大扫除：清根目录 14 个 `tmp_*` 临时产物、`.gitignore` 补 `/tmp_*`、文档漂移对齐 | 仓库 357 MB → 284 MB；`check-docs` / `vue-tsc` / `build` 全通过 |

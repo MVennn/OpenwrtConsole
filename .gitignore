@@ -44,6 +44,9 @@ yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
 
+# 根目录的临时下载 / 测速 / 抓包产物（tmp_*.bin、tmp_*.json、tmp_*.txt 等）
+/tmp_*
+
 logs/
 *.pid
 *.seed

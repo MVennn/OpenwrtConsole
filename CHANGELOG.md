@@ -115,6 +115,31 @@ ShellCrash 自己的版本表，并在 GitHub 已发布、ShellCrash 尚未收�
   各仓 docs 里指向根 README 章节的文字引用改指新正本
 - 调整 仓库 —— GitHub 仓库描述与话题改成面向使用者的口径（与 README 副标题同调）
 
+### 代理页布局修复（2026-10-22）
+
+- 修复 代理组卡片横向溢出 —— 测速后节点芯片撑大左列，右侧「节点数 + 测速 + 节点下拉框」
+  控件组被压到 184px（固有宽度 233px），溢出 49px 并撑出横向滚动条；
+  `.group-side` 改为不收缩（`flex: 0 0 auto`），收缩改由左列（`min-width:0 + overflow:hidden`）承担
+- 验证 —— 900px 视口下 `.group-list` 溢出 45px → 0；1280 / 1100 / 760 / 660 / 640 / 520
+  全部为 0；≤640px 单列布局不受影响
+
+### 收尾大扫除（2026-10-22）
+
+- 清理 根目录 14 个未跟踪的 `tmp_*` 临时下载 / 测速产物 —— `tmp_dl_akam.bin`（17 MB）、
+  `tmp_dl_hk.bin`（26 MB）、`tmp_dl_dom.bin`（31 MB）与 `tmp_playurl*.json`、`tmp_mcdn_*.txt`、
+  `tmp_bili_rank.json`、`tmp_speedtest.ps1`、`tmp_url*.txt` 等；仓库体积 **357 MB → 284 MB**
+  （释放 76 384 734 B，约 73 MB）
+- 调整 `.gitignore` —— 新增 `/tmp_*`，根目录临时下载 / 测速 / 抓包产物不再出现在 `git status`
+- 调整 文档 —— `docs/release-notes/README.md` 补「反馈入口」规则：加粗总结后紧接一行
+  **绝对地址**的 Issue 链接，再进入 `## 本版内容`；模板同步
+- 补记 代理页布局修复 —— v0.3.0 之后 `bc88133` 的条目缺失，现已补齐；
+  当前 `v0.3.0..HEAD` 的提交逐条有对应条目
+- 调整 文档 —— `docs/MAINTENANCE.md` §7 产物体积基线按 2026-10-22 构建重测
+  （首屏 417 KB / gzip 118 KB），§2 与根 `DEPLOY.md` 的每代体积改为 2.1 MB，
+  并新增 §9 维护记录
+- 验证 —— `python tools/check-docs.py` ✓（26 篇）、`npx vue-tsc --noEmit` ✓、
+  `npm run build` ✓（7.65 s）
+
 ---
 
 ## [0.3.0] — 2026-10-21

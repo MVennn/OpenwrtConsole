@@ -25,6 +25,8 @@ Release 说明只写用户**已经能拿到**的东西。
 ```markdown
 **控制台可以读写防火墙配置了；软件包管理、固件刷写与 ShellCrash 设置页也都能用了。**
 
+遇到问题、想要新功能，到 [Issues](https://github.com/MVennn/OpenwrtConsole/issues/new/choose) 反馈 —— 请附上设备与固件、控制台版本、出问题的页面与浏览器报错。
+
 ## 本版内容
 
 **配置**
@@ -68,6 +70,24 @@ Release 说明只写用户**已经能拿到**的东西。
 - 说人话。「rpcd ACL」「UCI 事务」「ubus」这类只对开发者有意义的词别写；
   真要交代限制，写用户看得见的后果（「改完要重启网络才生效」）。
 - 一行一条。两句才说得清 → 拆成两条，或者这条本来就该留在 CHANGELOG。
+
+## 反馈入口：写在开头，链接必须是绝对地址
+
+第一行是加粗总结，**紧接的第二行**是一行反馈入口（不是清单条目），然后才是 `## 本版内容`：
+
+```markdown
+**控制台可以读写防火墙配置了；软件包管理、固件刷写与 ShellCrash 设置页也都能用了。**
+
+遇到问题、想要新功能，到 [Issues](https://github.com/MVennn/OpenwrtConsole/issues/new/choose) 反馈 —— 请附上设备与固件、控制台版本、出问题的页面与浏览器报错。
+
+## 本版内容
+```
+
+- 链接必须写绝对地址 `https://github.com/MVennn/OpenwrtConsole/issues/new/choose` ——
+  写相对链接在 Release 页面或转发出去的正文里会失效；
+- `issues/new/choose` 会先让用户选「问题反馈（Bug）」还是「功能建议」，
+  两类都收，与 `.github/ISSUE_TEMPLATE/` 对应；
+- 已发布的历史正文不回填；当前最新一份若还没发版，按这个形状补齐。
 
 ## 底层与内部改动：算「修复」，而且要拆开写
 

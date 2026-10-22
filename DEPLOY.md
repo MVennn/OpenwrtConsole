@@ -101,7 +101,7 @@ uhttpd 不发 `Cache-Control`，浏览器会启发式缓存 `index.html`，导�
    比对入口 chunk 名，不同就自动重载（带 15 秒防抖，避免循环）。
 
 部署侧用 `/www/modern/assets.manifest` 记录本次发布的文件清单，保留「当前代 +
-上一代」，更早的代际会被清掉——否则每次部署多占 1.4 MB，而 overlay 只有 57 MB。
+上一代」，更早的代际会被清掉——否则每次部署多占 2.1 MB，而 overlay 只有 57 MB。
 
 ## CGI 清单
 
@@ -148,9 +148,9 @@ uhttpd 不发 `Cache-Control`，浏览器会启发式缓存 `index.html`，导�
 - 入口 chunk 本身失效时，`index.html` 里的启动守卫会发现 3 秒内应用没有 boot，
   同样带 `?_reload=` 重载，强制拿到新的 `index.html`。
 
-由于 chunk 带哈希，每一代约 1.4 MB。`install-remote.sh` 用
+由于 chunk 带哈希，每一代约 2.1 MB。`install-remote.sh` 用
 `/www/modern/assets.manifest` 记录本次发布的文件清单，下次部署只保留
-「当前代 + 上一代」，更早的代际会被清掉——否则每次部署都会多占 1.4 MB，
+「当前代 + 上一代」，更早的代际会被清掉——否则每次部署都会多占 2.1 MB，
 而路由器的 overlay 通常只有几十 MB（实测设备上只有 57 MB）。
 
 ## 回退

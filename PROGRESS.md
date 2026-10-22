@@ -409,3 +409,27 @@ LuCI 只保留为应急入口。
 - 三份 YAML 均可被 `yaml.safe_load` 解析
 
 ## 状态: 已完成
+
+---
+
+# 2026-10-22 收尾大扫除
+
+## 目标
+清理根目录临时产物、补齐 `.gitignore`，并对齐 README / docs / CHANGELOG 的漂移；不改用户可见行为。
+
+## 完成项
+- [x] 删除根目录 14 个未跟踪 `tmp_*`（临时下载 / 测速产物，共 76 384 734 B）
+- [x] `.gitignore` 新增 `/tmp_*`
+- [x] `docs/release-notes/README.md` 补「反馈入口」规则（绝对地址 Issue 链接，第二行、非清单条目）
+- [x] `CHANGELOG.md` 补记 `bc88133` 代理页布局修复，并新增本轮「收尾大扫除」段
+- [x] `docs/MAINTENANCE.md` §2 / §7 与根 `DEPLOY.md` 体积基线按 2026-10-22 构建重测，
+      新增 §9 维护记录
+- [x] 核对：20 个视图全部有 `defineOptions`、9 个 CGI 清单三处一致、`docs/README.md` 索引无孤儿
+
+## 自检
+- `python tools/check-docs.py` ✓（26 篇，退出码 0）
+- `npx vue-tsc --noEmit` ✓（退出码 0，6 s）
+- `npm run build` ✓（退出码 0，7.65 s）
+- 仓库体积 357 MB → 284 MB；保留 `node_modules/`、`dist/`、`.codegraph/`、`third-party/`
+
+## 状态: 已完成
