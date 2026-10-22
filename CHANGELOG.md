@@ -16,7 +16,21 @@
 
 ---
 
-## [未发布] — 2026-10-22
+## [未发布] — 2026-10-21 ~ 2026-10-23
+
+### 文档骨架对齐系列仓（2026-10-23）
+
+- 调整 开发者文档下沉 —— 根 `DEPLOY.md` → `docs/DEPLOY.md`、根 `DESIGN.md` → `docs/DESIGN.md`
+  （基准仓做法：开发者内容一律在 docs/，根只留门面与治理件）；同步 66 处引用，
+  含 `CONTRIBUTING.md` / `README.md` / `PROGRESS.md` / `CHANGELOG.md` / `docs/SECRETS.md` /
+  `docs/ARCHITECTURE.md` / `docs/TROUBLESHOOTING.md` / `docs/DOC-RULES.md` 与 `.gitignore` 注释，
+  GitHub 绝对地址一并改为 `/blob/main/docs/…`。
+- 调整 `docs/release-notes/` —— 文件名去掉 `v` 前缀（`v0.3.0.md` → `0.3.0.md`，共 3 份）；
+  `v` 前缀只属于发版 tag，tag 未动。
+- 调整 `docs/README.md` —— 索引重写为基准仓四类结构，补齐遗漏文档与正本归属速查。
+- 调整 `docs/VERSIONING.md` —— 新增 §5「不发版的时候」，边界情况表对齐基准仓。
+- 调整 `docs/DOC-RULES.md` —— 补命名规则、红线内容保护、变更触发矩阵新行；
+  `V2-CONTRACT.md` 补一句话引言块。
 
 ### ShellCrash 配置页（2026-10-22）
 
