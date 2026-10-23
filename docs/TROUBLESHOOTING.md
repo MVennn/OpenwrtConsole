@@ -140,7 +140,7 @@
 | `secret` 没配 | 在 ShellCrash 里设置 secret |
 | 核心控制口不在 9999 | 控制台与 CGI 都从 `/tmp/ShellCrash/config.yaml` 的 `external-controller:` 读端口（回退 9999）。先 `grep external-controller /tmp/ShellCrash/config.yaml` 确认真实端口，再试 `curl -s http://127.0.0.1:<端口>/version` |
 | 路由器上没有 `curl` | 代理页所有请求都经过 CGI 的 `curl`，缺失时回 `503`「缺少 curl」。装：`apk add curl` 或 `opkg update && opkg install curl` |
-| 主组入口选错（区域组被当成主组） | 现在按**类型优先**（Selector → URLTest → Fallback → LoadBalance）再按通用名称词（「节点选择」「Proxy」「Select」「手动切换」「GLOBAL」等）排序。若订阅用了非常规主组名，页面仍以类型优先，必要时在 `ShellcrashRules` 仓调整组定义 |
+| 主组入口选错 / 组顺序与路由器不一致 | `src/utils/proxy.ts` 的 `GROUP_ORDER` 是显式列表，按 `ShellcrashRules/docs/ARCHITECTURE.md`「代理组排序规则」排列；mihomo `/proxies` 的 key 由 Go 按字母序输出，不能依赖 API 顺序。主组仍按**类型优先**（Selector → URLTest → Fallback → LoadBalance）选。新增 / 改名组时同步 `GROUP_ORDER` 与 `reorder-groups.sh` |
 | 组名含控制台不支持的字符 | 引号、反斜杠、`/`、`..` 会被 CGI 拒（`invalid name`）；多数 emoji 与中文名可用 |
 | 切换节点报 `switch failed` | 核心未运行或 secret 未配；先跑第 1 步 |
 

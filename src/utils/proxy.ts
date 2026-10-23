@@ -35,15 +35,64 @@ const PRIMARY_GROUP_NAME = /节点选择|选择节点|proxy|select|代理/iu
  */
 const BARE_NODE_NAME = /(^|[^\p{L}])节点$/u
 
-/** Main routing group first, regional/test groups last. */
+/**
+ * This router's group display order. Mirrors the canonical order in
+ * ShellcrashRules/docs/ARCHITECTURE.md ("代理组排序规则（新增组必须遵守）").
+ *
+ * mihomo's /proxies endpoint is a JSON object keyed by group name, so the API
+ * order is alphabetical, not config order; the console must rank explicitly.
+ * When adding / renaming a group, update this list together with
+ * ShellcrashRules/config/hooks/reorder-groups.sh order[].
+ */
+const GROUP_ORDER = [
+  '🚀 节点选择',
+  '🛟 主备自动',
+  '♻️ 自动选择',
+  '🚀 手动切换',
+  '🤖 AI接口',
+  '🤖 人工智能',
+  '🤖 AI网页',
+  '🤖 干净出口',
+  '🔗 GitHub 出口',
+  '🎬 B站解锁',
+  '𝕏 媒体',
+  '📺 大流量',
+  '🆓 公共备用',
+  '🇭🇰 香港节点',
+  '🇯🇵 日韩节点',
+  '🇨🇳 台湾节点',
+  '🇸🇬 新加坡节点',
+  '🇺🇲 美国节点',
+  '🇮🇳 印度节点',
+  '🇨🇦 加拿大节点',
+  '🇩🇪 德国节点',
+  '🇬🇧 英国节点',
+  '🎥 NETFLIX',
+  '🎥 DisneyP',
+  '🌍 国外媒体',
+  '🛑 广告拦截',
+  '🎯 全球直连',
+  '🐟 漏网之鱼',
+  '𝕏 媒体-HY2',
+  '𝕏 媒体-备用'
+] as const
+
+const GROUP_RANK = new Map<string, number>(
+  GROUP_ORDER.map((name, index) => [name, index] as const)
+)
+
+/** Main routing group first, then the canonical order; unknown groups last. */
 export function groupRank(name: string): number {
   const text = (name || '').trim()
-  if (!text) return 9
+  if (!text) return 99
+  const exact = GROUP_RANK.get(text)
+  if (exact !== undefined) return exact
+  // Fallbacks for other subscription templates / groups not yet added above.
   if (PRIMARY_GROUP_NAME.test(text) || BARE_NODE_NAME.test(text)) return 0
-  if (/手动切换|手动选择|manual/iu.test(text)) return 1
+  if (/手动切换|手动选择|manual/iu.test(text)) return 3
   if (/global/i.test(text)) return 2
-  if (/(^|[^a-z])ai([^a-z]|$)|人工智能/i.test(text.toLowerCase())) return 3
-  return 9
+  if (/(^|[^a-z])ai([^a-z]|$)|人工智能/i.test(text.toLowerCase())) return 5
+  return 99
 }
 
 /**

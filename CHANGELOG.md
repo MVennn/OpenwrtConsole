@@ -18,6 +18,16 @@
 
 ## [未发布] — 2026-10-24
 
+### 代理页组顺序（2026-10-23）
+
+- 修复 `src/utils/proxy.ts` 的 `groupRank()` —— 之前只识别主组 / 手动 / AI，其余组
+  按字母序，导致新增的 `🛟 主备自动`、`𝕏 媒体` 与地区组顺序和路由器配置不一致。
+  改为 `GROUP_ORDER` 显式列表，与 `ShellcrashRules/docs/ARCHITECTURE.md`
+  「代理组排序规则（新增组必须遵守）」及 `reorder-groups.sh` 的 `order[]` 对齐
+- 说明 —— mihomo `/proxies` 是 JSON 对象，key 由 Go 按字母序输出，不能依赖 API
+  返回顺序；面板必须自己排。新增 / 改名组时同步 `GROUP_ORDER` 与 `reorder-groups.sh`
+- 验证 —— `npx vue-tsc --noEmit` ✓；`npm run build` 后检查 bundle 的组名顺序
+
 ### 登录限速与动作退出码（2026-10-24）
 
 - 新增 `deploy/modern-login` 失败限速 —— 之前失败只 `sleep(1)`，uhttpd 每请求 fork 一个
