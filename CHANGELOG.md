@@ -16,7 +16,23 @@
 
 ---
 
-## [未发布] — 2026-10-21 ~ 2026-10-23
+## [未发布] — 2026-10-24
+
+### 登录限速与动作退出码（2026-10-24）
+
+- 新增 `deploy/modern-login` 失败限速 —— 之前失败只 `sleep(1)`，uhttpd 每请求 fork 一个
+  CGI，并行猜测可以绕过。现在按来源地址计数（`/tmp`，重启清零）：连续失败 5 次冷却
+  30 秒、10 次冷却 300 秒，窗口 10 分钟，成功登录即清零；冷却期回 `429` + `Retry-After`
+- 修复 `deploy/modern-uci` 的 Tier-3 动作 —— `uci-revert` / `uci-commit` / `uci-apply` /
+  `svc-action` / `net-reload` / `firewall-reload` 之前一律「丢退出码、恒回 ok」，与 0.3.0
+  修掉的 `uci apply` 是同一类问题。现在统一走 `run_action`：成功回
+  `{"ok":true,"exit_code":0}`，失败回 500 + `{"ok":false,"exit_code":N}`；
+  `wifi-reload` 在没有 wifi init 脚本时回 `skipped` 而不是报错
+- 验证 —— `sh -n` ✓；真机：`svc-list` 200、`uci-revert` 200 `exit_code=0`、
+  `svc-action restart cron` 200、`wifi-reload` 200 skipped、非法时钟 400、
+  登录连续 5 次 401 后第 6 次 429、超大 body 413
+
+## [0.4.0] — 2026-10-23
 
 ### 写入路径与请求边界（2026-10-23）
 

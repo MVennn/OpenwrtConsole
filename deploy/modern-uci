@@ -142,6 +142,18 @@ valid_backup_path() {
 	return 0
 }
 
+# Runs a privileged action and reports its exit code. These actions used to
+# answer {"ok":true} whatever the command returned, so a failed revert or
+# reload looked exactly like a successful one in the console.
+run_action() {
+	"$@" >/dev/null 2>&1
+	_ra_rc=$?
+	if [ "$_ra_rc" -ne 0 ]; then
+		fail "500 Internal Server Error" "{\"ok\":false,\"error\":\"命令执行失败\",\"exit_code\":$_ra_rc}"
+	fi
+	ok '{"ok":true,"exit_code":0}'
+}
+
 # ----------------------------------------------------------------- tokens ---
 issue_token() {
 	_purpose="$1"
@@ -181,14 +193,12 @@ case "$action" in
 
 	uci-revert)
 		valid_config "$config" || fail "400 Bad Request" '{"error":"不支持的配置"}'
-		uci revert "$config" >/dev/null 2>&1
-		ok '{"ok":true}'
+		run_action uci revert "$config"
 		;;
 
 	uci-commit)
 		valid_config "$config" || fail "400 Bad Request" '{"error":"不支持的配置"}'
-		uci commit "$config" >/dev/null 2>&1
-		ok '{"ok":true}'
+		run_action uci commit "$config"
 		;;
 
 	uci-apply)
@@ -197,11 +207,9 @@ case "$action" in
 		# applied state and sends config.change only for the packages that
 		# really changed, which is what makes the staged config take effect.
 		if [ -x /sbin/reload_config ]; then
-			/sbin/reload_config >/dev/null 2>&1
-		else
-			ubus call uci apply >/dev/null 2>&1
+			run_action /sbin/reload_config
 		fi
-		ok '{"ok":true}'
+		run_action ubus call uci apply
 		;;
 
 	svc-list)
@@ -218,23 +226,24 @@ case "$action" in
 			start|stop|restart|reload|enable|disable) ;;
 			*) fail "400 Bad Request" '{"error":"不支持的动作"}' ;;
 		esac
-		/etc/init.d/"$service" "$svc_action" >/dev/null 2>&1
-		ok '{"ok":true}'
+		run_action /etc/init.d/"$service" "$svc_action"
 		;;
 
 	net-reload)
-		/etc/init.d/network reload >/dev/null 2>&1
-		ok '{"ok":true}'
+		run_action /etc/init.d/network reload
 		;;
 
 	wifi-reload)
-		[ -x /etc/init.d/wifi ] && /etc/init.d/wifi reload >/dev/null 2>&1
-		ok '{"ok":true}'
+		# A firmware without a wifi init script is a normal state (no radio),
+		# not a failure: report it as skipped instead of inventing an error.
+		if [ -x /etc/init.d/wifi ]; then
+			run_action /etc/init.d/wifi reload
+		fi
+		ok '{"ok":true,"exit_code":0,"skipped":"no-wifi-init"}'
 		;;
 
 	firewall-reload)
-		/etc/init.d/firewall reload >/dev/null 2>&1
-		ok '{"ok":true}'
+		run_action /etc/init.d/firewall reload
 		;;
 
 	set-localtime)

@@ -12,13 +12,82 @@
 import * as fs from 'fs';
 import * as ubus from 'ubus';
 
-function respond(status, payload) {
+function respond(status, payload, retryAfter) {
 	printf("Status: %s\r\n", status);
 	printf("Content-Type: application/json; charset=utf-8\r\n");
 	printf("Cache-Control: no-store\r\n");
 	printf("X-Content-Type-Options: nosniff\r\n");
+	if (retryAfter)
+		printf("Retry-After: %d\r\n", retryAfter);
 	printf("\r\n");
 	printf("%J", payload);
+}
+
+/*
+ * 失败计数：uhttpd 每个请求 fork 一个 CGI，单靠 sleep(1) 拦不住并行猜测。
+ * 计数落在 /tmp（tmpfs，重启清零），按来源地址分开；成功登录即清零。
+ * 同一地址连续失败 5 次冷却 30 秒、10 次冷却 300 秒；窗口 10 分钟。
+ */
+const LIMIT_WINDOW = 600;
+const LIMIT_SOFT = 5;
+const LIMIT_SOFT_COOLDOWN = 30;
+const LIMIT_HARD = 10;
+const LIMIT_HARD_COOLDOWN = 300;
+
+function limitPath() {
+	let addr = getenv("REMOTE_ADDR") || "";
+	addr = replace(addr, /[^0-9A-Za-z]/g, "_");
+	// 反向代理场景可能拿不到 REMOTE_ADDR：退化成全局计数，阈值不变。
+	return "/tmp/.modern-login-" + (addr == "" ? "all" : addr);
+}
+
+function limitRead(path) {
+	let raw = null;
+	try {
+		raw = fs.readfile(path);
+	} catch (e) {
+		return null;
+	}
+	if (!raw)
+		return null;
+	let p = split(trim(raw), " ");
+	if (length(p) != 3)
+		return null;
+	return { fails: +p[0], last: +p[1], first: +p[2] };
+}
+
+function limitWait(st) {
+	if (!st)
+		return 0;
+	let now = time();
+	if (now - st.first > LIMIT_WINDOW)
+		return 0;
+	if (st.fails >= LIMIT_HARD && now - st.last < LIMIT_HARD_COOLDOWN)
+		return LIMIT_HARD_COOLDOWN - (now - st.last);
+	if (st.fails >= LIMIT_SOFT && now - st.last < LIMIT_SOFT_COOLDOWN)
+		return LIMIT_SOFT_COOLDOWN - (now - st.last);
+	return 0;
+}
+
+function limitNoteFailure(path) {
+	let now = time();
+	let st = limitRead(path);
+	if (!st || now - st.first > LIMIT_WINDOW)
+		st = { fails: 0, last: now, first: now };
+	st.fails += 1;
+	st.last = now;
+	try {
+		fs.writefile(path, sprintf("%d %d %d", st.fails, st.last, st.first));
+	} catch (e) {
+	}
+}
+
+const limitFile = limitPath();
+const limitDelay = limitWait(limitRead(limitFile));
+if (limitDelay > 0) {
+	respond("429 Too Many Requests",
+		{ error: sprintf("登录失败次数过多，请 %d 秒后再试", limitDelay) }, limitDelay);
+	exit(0);
 }
 
 if (getenv("REQUEST_METHOD") != "POST") {
@@ -77,11 +146,16 @@ try {
 }
 
 if (result != null && type(result) == "object" && result.ubus_rpc_session) {
+	try {
+		fs.unlink(limitFile);
+	} catch (e) {
+	}
 	respond("200 OK", {
 		sid: result.ubus_rpc_session,
 		expires: result.expires ? result.expires : (result.timeout ? result.timeout : 3600)
 	});
 } else {
+	limitNoteFailure(limitFile);
 	sleep(1);
 	respond("401 Unauthorized", { error: "用户名或密码错误" });
 }
