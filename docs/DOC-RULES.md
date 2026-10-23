@@ -106,6 +106,7 @@ docs/ 分四类（索引见 [README.md](README.md)）：
 
 | 变更 | 必须同步 |
 |---|---|
+| **修一个缺陷**（行为变化 / 判据修正 / 安全加固） | 对应正本补一条 **现象 → 根因 → 怎么避**：[PITFALLS.md](PITFALLS.md)；CHANGELOG 只是变更记录，**不算补文档** |
 | 新增 / 删除 / 改名一个 CGI | [ARCHITECTURE.md](ARCHITECTURE.md) 的 CGI 清单、[CGI-CONTRACT.md](CGI-CONTRACT.md) 对应小节、[DEPLOY.md](DEPLOY.md) 的 CGI 表（同步窗口） |
 | 改一个 CGI 的请求 / 响应形状或错误码 | [CGI-CONTRACT.md](CGI-CONTRACT.md) 对应小节 |
 | 改 UCI 授权白名单 | [WRITE-LAYER.md](WRITE-LAYER.md) §1 |
