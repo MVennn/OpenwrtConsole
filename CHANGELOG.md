@@ -29,6 +29,8 @@
 - 调整 `src/utils/proxy.ts` —— `𝕏 媒体-HY2` / `𝕏 媒体-备用` 是 `𝕏 媒体` fallback
   的内部子组，不再单独出卡片（父组下拉仍可切换）；否则列表末尾看起来像重复的
   `𝕏 媒体`。代理组卡底部补一行说明
+- 约定 —— 内部子组默认不单独出卡片；新增 / 改名时把组名加入 `HIDDEN_GROUPS`，
+  父组下拉保留。`docs/DESIGN.md`、`docs/TROUBLESHOOTING.md`、`AGENTS.md` 同步
 - 验证 —— `npx vue-tsc --noEmit` ✓；`npm run build` 后检查 bundle 的组名顺序；
   本地 mock 页面确认列表以 `🐟 漏网之鱼` 收尾、`𝕏 媒体` 在第 11 位
 

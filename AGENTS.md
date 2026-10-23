@@ -84,6 +84,10 @@
   「代理组排序规则（新增组必须遵守）」。不要按 `proxy-groups.yaml` 文件顺序或订阅顺序排。
 - 漏加不会报错，但该组会掉到面板最后；改完用配置副本跑
   `sh reorder-groups.sh /tmp/test.yaml`，验证「组顺序 / 主选择器成员 / 节点顺序」三处。
+- **内部子组**（只作为父组 fallback 成员，如 `𝕏 媒体-HY2` / `𝕏 媒体-备用`）
+  默认不单独出卡片：新增时把组名加入 `src/utils/proxy.ts` 的 `HIDDEN_GROUPS`；
+  父组下拉仍保留。`GROUP_ORDER` 里仍可保留（内部子组放最后），但必须有
+  `HIDDEN_GROUPS` 兜住，不能只靠排序。
 
 ---
 
