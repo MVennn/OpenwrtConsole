@@ -26,7 +26,11 @@
   「代理组排序规则（新增组必须遵守）」及 `reorder-groups.sh` 的 `order[]` 对齐
 - 说明 —— mihomo `/proxies` 是 JSON 对象，key 由 Go 按字母序输出，不能依赖 API
   返回顺序；面板必须自己排。新增 / 改名组时同步 `GROUP_ORDER` 与 `reorder-groups.sh`
-- 验证 —— `npx vue-tsc --noEmit` ✓；`npm run build` 后检查 bundle 的组名顺序
+- 调整 `src/utils/proxy.ts` —— `𝕏 媒体-HY2` / `𝕏 媒体-备用` 是 `𝕏 媒体` fallback
+  的内部子组，不再单独出卡片（父组下拉仍可切换）；否则列表末尾看起来像重复的
+  `𝕏 媒体`。代理组卡底部补一行说明
+- 验证 —— `npx vue-tsc --noEmit` ✓；`npm run build` 后检查 bundle 的组名顺序；
+  本地 mock 页面确认列表以 `🐟 漏网之鱼` 收尾、`𝕏 媒体` 在第 11 位
 
 ### 登录限速与动作退出码（2026-10-24）
 

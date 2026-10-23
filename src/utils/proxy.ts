@@ -2,8 +2,14 @@ import type { ShellCrashProxy } from '@/api/types'
 
 const GROUP_TYPES = ['Selector', 'URLTest', 'Fallback', 'LoadBalance']
 
-/** mihomo 内置的全局选择器，不是用户配置的策略组；界面里不展示。 */
-const HIDDEN_GROUPS = new Set(['GLOBAL'])
+/**
+ * Groups that should not get a standalone card:
+ * - GLOBAL is mihomo's built-in selector.
+ * - `𝕏 媒体-HY2` / `𝕏 媒体-备用` are internal members of the `𝕏 媒体`
+ *   fallback; the parent dropdown still lists them, but their own cards at
+ *   the bottom of the list only look like a duplicate "𝕏 媒体".
+ */
+const HIDDEN_GROUPS = new Set(['GLOBAL', '𝕏 媒体-HY2', '𝕏 媒体-备用'])
 
 /** Type order for {@link pickPrimaryGroup}: the main group is a Selector. */
 const TYPE_RANK: Record<string, number> = {
