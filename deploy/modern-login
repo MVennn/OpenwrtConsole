@@ -56,15 +56,15 @@ function limitRead(path) {
 	return { fails: +p[0], last: +p[1], first: +p[2] };
 }
 
-function limitWait(st) {
+function limitWait(st, soft, hard) {
 	if (!st)
 		return 0;
 	let now = time();
 	if (now - st.first > LIMIT_WINDOW)
 		return 0;
-	if (st.fails >= LIMIT_HARD && now - st.last < LIMIT_HARD_COOLDOWN)
+	if (st.fails >= hard && now - st.last < LIMIT_HARD_COOLDOWN)
 		return LIMIT_HARD_COOLDOWN - (now - st.last);
-	if (st.fails >= LIMIT_SOFT && now - st.last < LIMIT_SOFT_COOLDOWN)
+	if (st.fails >= soft && now - st.last < LIMIT_SOFT_COOLDOWN)
 		return LIMIT_SOFT_COOLDOWN - (now - st.last);
 	return 0;
 }
@@ -83,7 +83,11 @@ function limitNoteFailure(path) {
 }
 
 const limitFile = limitPath();
-const limitDelay = limitWait(limitRead(limitFile));
+// 拿不到 REMOTE_ADDR 时退化成全局计数：阈值放宽，避免一处误输入把所有人锁在门外。
+const limitGlobal = index(limitFile, "/.modern-login-all") >= 0;
+const limitSoft = limitGlobal ? 20 : LIMIT_SOFT;
+const limitHard = limitGlobal ? 40 : LIMIT_HARD;
+const limitDelay = limitWait(limitRead(limitFile), limitSoft, limitHard);
 if (limitDelay > 0) {
 	respond("429 Too Many Requests",
 		{ error: sprintf("登录失败次数过多，请 %d 秒后再试", limitDelay) }, limitDelay);

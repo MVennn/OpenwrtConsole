@@ -30,7 +30,8 @@
   `wifi-reload` 在没有 wifi init 脚本时回 `skipped` 而不是报错
 - 验证 —— `sh -n` ✓；真机：`svc-list` 200、`uci-revert` 200 `exit_code=0`、
   `svc-action restart cron` 200、`wifi-reload` 200 skipped、非法时钟 400、
-  登录连续 5 次 401 后第 6 次 429、超大 body 413
+  登录连续 5 次 401 后第 6 次 429（按来源地址分桶，另一个地址不受影响）、
+  超大 body 413。ucode 的字符串没有 `endsWith`，全局桶判定改用 `index()`
 
 ## [0.4.0] — 2026-10-23
 
