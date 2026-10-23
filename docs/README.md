@@ -38,6 +38,7 @@
 
 | 位置 | 一句话定位 |
 |---|---|
+| [PITFALLS.md](PITFALLS.md) | 机制级踩坑：路径穿越、CGI 吞退出码、ucode 与 JS 的差别、限速分桶、前端 busy 时机 |
 | [release-notes/](release-notes/README.md) | 面向用户的 Release 说明，文件名 = `versionName`（即**仓库发布号**，不带 `v` 前缀）；格式规范在它的 README |
 | [V4-CONTRACT.md](V4-CONTRACT.md) | v4 开发契约（**正本**）：消灭假按钮、草稿状态持久化、按模块清单补新功能 |
 | [V3-CONTRACT.md](V3-CONTRACT.md) | **历史文档**：v3 阶段的并行开发契约。其长期有效部分（rpcd 授权边界、写入范式）已提炼进 [WRITE-LAYER.md](WRITE-LAYER.md) |
