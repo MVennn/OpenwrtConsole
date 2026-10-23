@@ -75,6 +75,16 @@
   再决定要不要读文件 —— 别先 grep 一轮再回头索引。
 - 索引由维护者决定是否建立；**不要**自行 `git init` 或提交。
 
+## 4. 策略组排序（ShellcrashRules）
+
+- **硬约定**：新增 / 改名 / 删除策略组时，必须同步
+  `ShellcrashRules/config/hooks/reorder-groups.sh` 的 `order[]`
+  （组顺序；需要出现在 `🚀 节点选择` 的再加成员顺序；节点需要排序的加节点排序目标）。
+- **排序正本**：`ShellcrashRules/docs/ARCHITECTURE.md` 的
+  「代理组排序规则（新增组必须遵守）」。不要按 `proxy-groups.yaml` 文件顺序或订阅顺序排。
+- 漏加不会报错，但该组会掉到面板最后；改完用配置副本跑
+  `sh reorder-groups.sh /tmp/test.yaml`，验证「组顺序 / 主选择器成员 / 节点顺序」三处。
+
 ---
 
 ## 附：动手之前必须知道的三条
