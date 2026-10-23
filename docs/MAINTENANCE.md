@@ -314,3 +314,4 @@ ssh root@<路由器IP> 'cat > /www/cgi-bin/.modern-uci.new && chmod +x /www/cgi-
 | 日期 | 做了什么 | 结果 |
 |---|---|---|
 | 2026-10-22 | 收尾大扫除：清根目录 14 个 `tmp_*` 临时产物、`.gitignore` 补 `/tmp_*`、文档漂移对齐 | 仓库 357 MB → 284 MB；`check-docs` / `vue-tsc` / `build` 全通过 |
+| 2026-10-23 | 收尾大扫除：清 4 项可再生产物（`node_modules` 247M、`dist` 2.3M、`.codegraph` 22M、`tools/__pycache__`）；补 3 条漏登记的文档改动到 CHANGELOG | 仓库 **285M → 14M**；`npx vue-tsc --noEmit` ✓、`check-docs.py` ✓（28 篇）、`check-secrets.py` ✓（578 文件）。红线未动：`src/`、`deploy/`（9 个 `modern-*` CGI + `probe.lua`）、`docs/`、`third-party/`、`package-lock.json`；`DESIGN.md` 与 `V2/V3-CONTRACT.md` 按 §8 刻意不在本仓修 |
