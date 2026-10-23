@@ -57,10 +57,39 @@ APK_FIELDS="name,version,description,installed-size,file-size,arch,license,origi
 APK_FIELDS_AVAIL="name,version,description,installed-size,depends"
 
 CACHE_DIR="/tmp/modern-pkg-cache"
-# apk 的索引放在独立缓存目录（/tmp 是内存盘，不占 overlay）。
-# 不指定时 apk 用 /var/cache/apk，那里的索引会被后续查询清掉，
-# 仓库列表刚更新完又会变空。
-APK_CACHE_DIR="/tmp/modern-pkg-cache/apk"
+# The repository index and the parsed pool are a cache, not state: they can be
+# rebuilt from the network. /tmp is a 48 MB tmpfs on this class of router, so
+# keeping 4.4 MB of cache there costs RAM the proxy core needs. The overlay
+# keeps the cache across reboots and frees that RAM; it is preferred when it
+# has room. A box without a usable overlay falls back to /tmp.
+CACHE_OVERLAY="/overlay/modern-pkg-cache"
+CACHE_MIN_FREE_KB=16384
+APK_CACHE_DIR="$CACHE_DIR/apk"
+
+pick_cache_dir() {
+	[ -d /overlay ] || return 0
+
+	if [ -d "$CACHE_OVERLAY" ]; then
+		[ -w "$CACHE_OVERLAY" ] || return 0
+	else
+		_free="$(df -k /overlay 2>/dev/null | awk 'NR == 2 { print $4 }')"
+		case "$_free" in ''|*[!0-9]*) return 0 ;; esac
+		[ "$_free" -ge "$CACHE_MIN_FREE_KB" ] || return 0
+		mkdir -p "$CACHE_OVERLAY" 2>/dev/null || return 0
+	fi
+
+	# Move the cache built by the /tmp era once. It is only a cache, so a
+	# failed copy is harmless: the next query rebuilds it. -p keeps the index
+	# mtimes, which are part of the pool key: without it the first query
+	# after the move would rebuild the pool for no reason.
+	if [ -d "$CACHE_DIR" ] && [ "$CACHE_DIR" != "$CACHE_OVERLAY" ]; then
+		cp -pR "$CACHE_DIR"/. "$CACHE_OVERLAY"/ 2>/dev/null
+		rm -rf "$CACHE_DIR" 2>/dev/null
+	fi
+
+	CACHE_DIR="$CACHE_OVERLAY"
+	APK_CACHE_DIR="$CACHE_DIR/apk"
+}
 # The runtime configuration of ShellCrash carries the port its mixed proxy
 # really listens on.
 RUNTIME_CONFIG="/tmp/ShellCrash/config.yaml"
@@ -168,6 +197,10 @@ esac
 
 ubus call session get "{\"ubus_rpc_session\":\"$sid\"}" 2>/dev/null | grep -q '"username"' || deny
 
+# Cache selection runs after authentication: an unauthenticated request must
+# not create or move directories.
+pick_cache_dir
+
 # ------------------------------------------------------------------ body ---
 [ "${REQUEST_METHOD:-GET}" = "POST" ] ||
 	fail "405 Method Not Allowed" '{"error":"只接受 POST 请求"}'
@@ -212,6 +245,18 @@ fi
 mkdir -p "$STATE_DIR" "$JOB_ROOT" 2>/dev/null
 cleanup
 trap cleanup EXIT INT TERM
+
+# A request killed before its EXIT trap leaves work.<pid> behind. Only
+# directories whose PID is gone are removed, so a concurrent request can never
+# lose its work dir.
+for _stale in "$STATE_DIR"/work.*; do
+	[ -d "$_stale" ] || continue
+	_pid="${_stale##*.}"
+	case "$_pid" in ''|*[!0-9]*) continue ;; esac
+	[ -d "/proc/$_pid" ] && continue
+	rm -rf "$_stale" 2>/dev/null
+done
+
 mkdir -p "$WORK" 2>/dev/null || fail "500 Internal Server Error" '{"error":"无法创建临时目录"}'
 
 # --------------------------------------------------------------- helpers ---

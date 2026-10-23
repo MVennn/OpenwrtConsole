@@ -434,13 +434,17 @@ curl -sk -X POST -H 'Content-Type: application/json'   -d '{"action":"status","p
 
 **仓库缓存与索引**
 
-- 仓库索引（`APKINDEX.*`）放在 `/tmp/modern-pkg-cache/apk`（`apk --cache-dir`），
-  `/tmp` 是内存盘，**重启后为空**：此时 `availableCount` / `matchedCount` 都是 0、
-  `indexUpdatedAt` 是 0、`output` 里带 apk 的 `WARNING: opening from cache …`。
+- 仓库索引（`APKINDEX.*`）与解析后的整表缓存默认放在 **`/overlay/modern-pkg-cache`**
+  （`apk --cache-dir`），**重启后仍在**。只有 overlay 不可写、或首次创建时可用空间
+  不足 **16 MB**，才回落到 `/tmp/modern-pkg-cache`。
+- 回落到 `/tmp` 时 `/tmp` 是内存盘，**重启后为空**：此时 `availableCount` / `matchedCount`
+  都是 0、`indexUpdatedAt` 是 0、`output` 里带 apk 的 `WARNING: opening from cache …`。
   前端见到 `indexUpdatedAt=0` 会自动调用一次 `update`，不需要用户先点按钮。
-- `indexUpdatedAt` **只统计这个缓存目录**（不回落 `/var/cache/apk`：那是别的工具写的索引，
+- 首次切到 overlay 时，`modern-pkg` 会把旧 `/tmp/modern-pkg-cache` 的内容复制过去再删除
+  旧目录（只复制，不重建），所以升级后第一次打开软件包页不会重新下载索引。
+- `indexUpdatedAt` **只统计当前选中的缓存目录**（不回落 `/var/cache/apk`：那是别的工具写的索引，
   apk 根本不会读）。
-- 解析后的仓库整表缓存在 `/tmp/modern-pkg-cache/<key>.pool`（一行一个包），
+- 解析后的仓库整表缓存在 `<CACHE_DIR>/<key>.pool`（一行一个包），
   翻页与关键字检索只是 `wc -l` / `grep` / 按行切片，不再每次重扫一万多条；
   key 由索引时间 + 已装包名校验和组成，索引更新或装卸软件包后自动失效。
 - `upgradableCount` 与 `apk query --upgradable` 也使用同一个 `--cache-dir`，

@@ -91,8 +91,23 @@ send_head() {
 }
 
 TMP="/tmp/modern-proxy.$$"
-mkdir -p "$TMP" 2>/dev/null || TMP="/tmp"
+# Never fall back to /tmp itself: the EXIT trap removes $TMP, and a failed
+# mkdir would otherwise turn that trap into `rm -rf /tmp`.
+if ! mkdir -p "$TMP" 2>/dev/null; then
+	fail "503 Service Unavailable" '{"error":"无法创建临时目录"}'
+fi
 trap 'rm -rf "$TMP"' 0 1 2 15
+
+# A request killed before its EXIT trap leaves /tmp/modern-proxy.<pid> behind.
+# Only directories whose PID is gone are removed, so a concurrent request can
+# never lose its work dir.
+for _stale in /tmp/modern-proxy.*; do
+	[ -d "$_stale" ] || continue
+	_pid="${_stale##*.}"
+	case "$_pid" in ''|*[!0-9]*) continue ;; esac
+	[ -d "/proc/$_pid" ] && continue
+	rm -rf "$_stale" 2>/dev/null
+done
 
 # ---------------------------------------------------------------------------
 # helpers

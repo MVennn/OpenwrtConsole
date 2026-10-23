@@ -433,3 +433,30 @@ LuCI 只保留为应急入口。
 - 仓库体积 357 MB → 284 MB；保留 `node_modules/`、`dist/`、`.codegraph/`、`third-party/`
 
 ## 状态: 已完成
+
+---
+
+# 2026-10-24 UI 内存占用优化（A+C）
+
+## 目标
+把控制台在路由器上占用的 tmpfs 收干净。实测常驻 RSS 只有 `uhttpd` 1.8 MB，
+大头是软件包页放在 `/tmp` 的 4.4 MB 缓存；CrashCore（66 MB）不是本次目标。
+
+## 完成项
+- [x] `deploy/modern-pkg`：缓存优先 `/overlay/modern-pkg-cache`（不可写或首次创建
+      可用 < 16 MB 才回落 `/tmp`）；首次切换复制旧缓存并删除旧目录
+- [x] `deploy/modern-proxy`：临时目录创建失败改回 503（原兜底会让 EXIT trap 执行
+      `rm -rf /tmp`）
+- [x] `deploy/modern-proxy` / `modern-shellcrash` / `modern-pkg`：启动时清理 PID 已不存在
+      的 `/tmp/modern-*.<pid>` 工作目录（shellcrash 跳过仍在运行的 `-runner`）
+- [x] `deploy/modern-sysupgrade`：已完成任务日志 10 分钟后清理，`running` 仍保留 1 小时
+- [x] 文档：`docs/CGI-CONTRACT.md`「仓库缓存与索引」、`docs/PITFALLS.md` §8、`CHANGELOG.md`
+- [x] 真机部署与验收
+
+## 自检
+- `sh -n` 四个 CGI ✓；无 CRLF
+- 真机：`/tmp/modern-pkg-cache` 已不存在；`/overlay/modern-pkg-cache` ≈ 4.4 MB；
+  tmpfs 已用 33.7 MB → 29 MB；29 个陈旧 `modern-proxy.*` 目录清零
+- 软件包页搜索/翻页正常，`indexUpdatedAt` 非 0
+
+## 状态: 已完成

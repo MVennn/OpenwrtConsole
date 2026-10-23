@@ -18,6 +18,24 @@
 
 ## [未发布] — 2026-10-24
 
+### 软件包缓存与临时目录（2026-10-24）
+
+- 优化 `deploy/modern-pkg` 的缓存位置 —— 仓库索引与整表 pool 从 `/tmp/modern-pkg-cache`
+  改到 `/overlay/modern-pkg-cache`（overlay 不可写或首次创建时可用空间 < 16 MB 才回落
+  `/tmp`）。实测释放 tmpfs 约 4.4 MB（pool 2.9 MB + 索引 1.3 MB），缓存还能跨重启保留；
+  首次切换会把旧 `/tmp` 缓存复制过去再删除旧目录，不重新下载索引
+- 修复 `deploy/modern-proxy` 的临时目录兜底 —— `mkdir` 失败时原来把 `TMP` 改成 `/tmp`，
+  EXIT trap 会执行 `rm -rf /tmp`；现在直接回 503，不再有删掉整个内存盘的可能
+- 修复陈旧工作目录 —— 请求在 EXIT trap 前被强杀会留下 `/tmp/modern-*.<pid>`；
+  `modern-proxy` / `modern-shellcrash` / `modern-pkg` 启动时只清理 PID 已不存在的目录
+  （shellcrash 跳过仍在运行的 `-runner`），并发请求的工作目录不受影响
+- 优化 `deploy/modern-sysupgrade` 的任务日志保留 —— 已完成任务从 1 小时缩短到 10 分钟；
+  `status=running` 的任务仍保留 1 小时，避免长下载被误删
+- 同步 `docs/CGI-CONTRACT.md` 的「仓库缓存与索引」与 `docs/PITFALLS.md` §8
+- 验证 —— `sh -n` 四个 CGI ✓；真机 tmpfs 已用 **34,464 → 29,412 kB**、
+  `/overlay/modern-pkg-cache` 4,484 kB、29 个陈旧 `modern-proxy.*` 目录清零；
+  迁移保留了索引 mtime，pool key 仍命中（未触发重建）
+
 ### 文档正本（2026-10-24）
 
 - 新增 `docs/DOC-RULES.md` 变更触发矩阵一条 —— **修一个缺陷必须给对应正本补一条**

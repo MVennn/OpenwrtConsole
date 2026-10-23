@@ -138,6 +138,19 @@ cleanup() {
 mkdir -p "$WORK" 2>/dev/null || fail "500 Internal Server Error" '{"error":"无法创建临时目录"}'
 trap cleanup EXIT INT TERM
 
+# A request killed before its EXIT trap leaves /tmp/modern-shellcrash.<pid>
+# behind. The runner is a file with a different suffix and may outlive the
+# request, so it is never touched; only directories whose PID is gone are
+# removed.
+for _stale in /tmp/modern-shellcrash.*; do
+	[ -d "$_stale" ] || continue
+	case "$_stale" in *-runner.*) continue ;; esac
+	_pid="${_stale##*.}"
+	case "$_pid" in ''|*[!0-9]*) continue ;; esac
+	[ -d "/proc/$_pid" ] && continue
+	rm -rf "$_stale" 2>/dev/null
+done
+
 # ---------------------------------------------------------------- session ---
 # The sid may arrive in the owrt_sid cookie or as ?sid=; both are validated
 # against rpcd before anything is executed.

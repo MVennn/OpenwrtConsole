@@ -293,7 +293,8 @@ new_job() {
 	printf '%s' "$_id"
 }
 
-# Removes the jobs that are older than an hour.
+# Removes finished jobs after ten minutes; a job still marked running keeps
+# its hour, because a download may legitimately use the whole watchdog window.
 cleanup_jobs() {
 	_now="$(date +%s 2>/dev/null)"
 	case "$_now" in ''|*[!0-9]*) return 0 ;; esac
@@ -302,7 +303,13 @@ cleanup_jobs() {
 		_b="${_d##*/}"
 		_e="${_b%%-*}"
 		case "$_e" in ''|*[!0-9]*) continue ;; esac
-		[ $((_now - _e)) -gt 3600 ] && rm -rf "$_d" 2>/dev/null
+		_age=$((_now - _e))
+		_st="$(cat "$_d/status" 2>/dev/null)"
+		if [ "$_st" = "running" ]; then
+			[ "$_age" -gt 3600 ] && rm -rf "$_d" 2>/dev/null
+		else
+			[ "$_age" -gt 600 ] && rm -rf "$_d" 2>/dev/null
+		fi
 	done
 	return 0
 }
