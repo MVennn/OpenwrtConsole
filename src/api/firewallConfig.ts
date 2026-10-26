@@ -572,9 +572,12 @@ export async function deleteRedirectSection(id: string): Promise<{ edits: Staged
 
 /** Creates or updates a rule (outbound traffic rule) section. */
 export async function saveRule(draft: FwRuleDraft): Promise<{ id: string; edits: StagedEdit[] }> {
+  const src = draft.src.trim()
   const values: Record<string, string | undefined> = {
     name: draft.name.trim(),
-    src: draft.src.trim(),
+    // "any" is not a zone name; fw4 skips a rule whose src zone is unknown.
+    // Leave the option out (new rule) / delete it (edit) instead.
+    src: src && src !== 'any' ? src : undefined,
     dest: draft.dest.trim(),
     proto: draft.proto.trim(),
     target: draft.target.trim(),
@@ -640,9 +643,11 @@ export async function setFlowOffloading(
   const entry = Object.entries(values).find(([, section]) => section['.type'] === 'defaults')
   if (!entry) throw new Error('防火墙配置中缺少 defaults 段，无法设置流量卸载')
 
+  // fw4 only honours flow_offloading_hw when flow_offloading is on.
+  const hw = software && hardware
   await uciSet('firewall', entry[0], {
     flow_offloading: software ? '1' : '0',
-    flow_offloading_hw: hardware ? '1' : '0'
+    flow_offloading_hw: hw ? '1' : '0'
   })
 
   return {

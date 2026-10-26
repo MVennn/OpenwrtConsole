@@ -7,7 +7,7 @@
     @open="reset"
   >
     <div class="lease-form">
-      <SysFormField label="主机名" required error="errors.name" for="lease-name">
+      <SysFormField label="主机名" required :error="errors.name" for="lease-name">
         <el-input
           id="lease-name"
           v-model="form.name"
@@ -17,7 +17,7 @@
         />
       </SysFormField>
 
-      <SysFormField label="MAC 地址" required error="errors.mac" for="lease-mac">
+      <SysFormField label="MAC 地址" required :error="errors.mac" for="lease-mac">
         <el-input
           id="lease-mac"
           v-model="form.mac"
@@ -30,7 +30,7 @@
       <SysFormField
         label="IP 地址"
         required
-        error="errors.ip"
+        :error="errors.ip"
         hint="必须位于动态地址池之外，避免与自动分配冲突"
         for="lease-ip"
       >

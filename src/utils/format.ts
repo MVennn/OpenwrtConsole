@@ -2,7 +2,11 @@ export function formatBytes(bytes: number | undefined | null, decimals = 1): str
   if (bytes === undefined || bytes === null || Number.isNaN(bytes)) return '—'
   if (bytes === 0) return '0 B'
   const units = ['B', 'KB', 'MB', 'GB', 'TB', 'PB']
-  const index = Math.min(Math.floor(Math.log(Math.abs(bytes)) / Math.log(1024)), units.length - 1)
+  // 0 < bytes < 1 would give log() < 0 and index -1 ("512 undefined").
+  const index = Math.min(
+    Math.max(0, Math.floor(Math.log(Math.abs(bytes)) / Math.log(1024))),
+    units.length - 1
+  )
   const value = bytes / 1024 ** index
   return `${value.toFixed(index === 0 ? 0 : decimals)} ${units[index]}`
 }
@@ -28,7 +32,7 @@ export function formatLinkRate(kbps: number | undefined | null): string {
 }
 
 export function formatUptime(seconds: number | undefined | null): string {
-  if (!seconds || seconds < 0) return '—'
+  if (seconds === undefined || seconds === null || Number.isNaN(seconds) || seconds < 0) return '—'
   const days = Math.floor(seconds / 86400)
   const hours = Math.floor((seconds % 86400) / 3600)
   const minutes = Math.floor((seconds % 3600) / 60)
@@ -40,7 +44,7 @@ export function formatUptime(seconds: number | undefined | null): string {
 }
 
 export function formatDurationShort(seconds: number | undefined | null): string {
-  if (!seconds || seconds < 0) return '—'
+  if (seconds === undefined || seconds === null || Number.isNaN(seconds) || seconds < 0) return '—'
   const days = Math.floor(seconds / 86400)
   const hours = Math.floor((seconds % 86400) / 3600)
   const minutes = Math.floor((seconds % 3600) / 60)

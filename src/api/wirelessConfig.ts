@@ -10,6 +10,7 @@ import {
   type UciSection,
   type UciValues
 } from '@/api/uci'
+import { isNotFoundError } from '@/api/ubus'
 import { systemOps } from '@/api/systemOps'
 import { api } from '@/api/openwrt'
 import { optionText, type StagedEdit } from '@/api/configPending'
@@ -508,6 +509,7 @@ async function removeOption(section: string, option: string): Promise<void> {
   try {
     await uciDelete('wireless', section, option)
   } catch (err) {
+    if (isNotFoundError(err)) return
     const message = err instanceof Error ? err.message : String(err)
     if (!/not found|不存在|Invalid|invalid/i.test(message)) throw err
   }

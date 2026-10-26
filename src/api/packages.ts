@@ -308,19 +308,26 @@ export function waitForPackageJob(
 ): { promise: Promise<PackageJob>; cancel: () => void } {
   let timer: number | undefined
   let cancelled = false
+  let failures = 0
 
   const promise = new Promise<PackageJob>((resolve, reject) => {
     const tick = async (): Promise<void> => {
       try {
         const job = await fetchPackageJob(jobId)
+        failures = 0
         onTick?.(job)
         if (job.state === 'done' || job.state === 'failed' || job.state === 'timeout') {
           resolve(job)
           return
         }
       } catch (err) {
-        reject(err)
-        return
+        // A single transient timeout does not mean the apk job failed — it is
+        // still running on the router. Give up only after three in a row.
+        failures += 1
+        if (failures >= 3) {
+          reject(err)
+          return
+        }
       }
       if (!cancelled) timer = window.setTimeout(() => void tick(), interval)
     }

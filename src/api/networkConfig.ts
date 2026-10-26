@@ -14,7 +14,7 @@ import {
   type UciSection,
   type UciValues
 } from '@/api/uci'
-import { ubusCall } from '@/api/ubus'
+import { isNotFoundError, ubusCall } from '@/api/ubus'
 import { systemOps } from '@/api/systemOps'
 import { api } from '@/api/openwrt'
 import { optionText, type StagedEdit } from '@/api/configPending'
@@ -553,9 +553,8 @@ export async function fetchActiveRoutes(): Promise<{
     const row = item as Record<string, unknown>
     const target = String(row.target ?? '')
     if (!target) continue
-    const mask = Number(row.mask ?? 0)
     routes.push({
-      target: mask > 0 ? `${target}/${32 - mask}` : target,
+      target: routeTargetCidr(target, row.mask),
       nexthop: String(row.nexthop ?? row.gateway ?? ''),
       iface: String(row.interface ?? row.ifname ?? ''),
       metric: Number(row.metric ?? 0),
@@ -563,6 +562,23 @@ export async function fetchActiveRoutes(): Promise<{
     })
   }
   return { available: true, routes }
+}
+
+/**
+ * Builds "target/prefix" from a route entry. netifd reports the prefix as a
+ * number (24) in the interface dump but as a dotted netmask
+ * ("255.255.255.0") in some `network route` answers; treating either as
+ * "32 - mask" produced /8 for a /24.
+ */
+function routeTargetCidr(target: string, rawMask: unknown): string {
+  if (target.includes('/')) return target
+  if (typeof rawMask === 'string' && rawMask.includes('.')) {
+    const prefix = maskToPrefix(rawMask)
+    return prefix === null ? target : `${target}/${prefix}`
+  }
+  const mask = Number(rawMask)
+  if (!Number.isFinite(mask) || mask < 0 || mask > 32) return target
+  return `${target}/${mask}`
 }
 
 /** Finds the active route list inside the answer of `network route`. */
@@ -595,12 +611,8 @@ async function fetchRoutesFromInterfaces(): Promise<{
     for (const item of iface.route ?? []) {
       const target = String(item.target ?? '').trim()
       if (!target) continue
-      const mask = Number(item.mask)
       routes.push({
-        target:
-          target.includes('/') || !Number.isFinite(mask) || mask < 0
-            ? target
-            : `${target}/${mask}`,
+        target: routeTargetCidr(target, item.mask),
         nexthop: String(item.nexthop ?? ''),
         iface: iface.interface || iface.l3_device || iface.device || '',
         metric: Number(item.metric ?? 0),
@@ -668,6 +680,9 @@ async function removeOption(section: string, option: string): Promise<void> {
   try {
     await uciDelete(NET_CONFIG, section, option)
   } catch (err) {
+    // rpcd 对"删除不存在的选项"返回 NOT_FOUND，消息文案随版本变化，
+    // 按错误码判断而不是匹配中文。
+    if (isNotFoundError(err)) return
     const message = err instanceof Error ? err.message : String(err)
     if (!/not found|不存在|invalid|entry/i.test(message)) throw err
   }

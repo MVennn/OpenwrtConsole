@@ -363,16 +363,21 @@ async function callCgi<T>(
   const query = new URLSearchParams({ sid, action })
 
   let response: Response
+  const controller = new AbortController()
+  const timer = window.setTimeout(() => controller.abort(), 15000)
   try {
     response = await fetch(`${CGI}?${query.toString()}`, {
       method: 'POST',
       credentials: 'same-origin',
       cache: 'no-store',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ action, ...params })
+      body: JSON.stringify({ action, ...params }),
+      signal: controller.signal
     })
   } catch {
     throw new FirmwareError(ERROR_TEXT.network, 'network')
+  } finally {
+    window.clearTimeout(timer)
   }
 
   if (response.status === 401) {
@@ -531,6 +536,9 @@ export function uploadFirmwareImage(
     request.onerror = () => reject(new FirmwareError(ERROR_TEXT.network, 'network'))
     request.onabort = () => reject(new FirmwareError('上传已取消', 'aborted'))
     request.ontimeout = () => reject(new FirmwareError('上传超时，请重试', 'network'))
+    // Without a timeout the ontimeout handler never fires and a stalled
+    // upload hangs forever. A firmware image can be large, so allow 10 min.
+    request.timeout = 10 * 60 * 1000
 
     request.send(file)
   })

@@ -123,7 +123,14 @@ export async function ubusCall<T = unknown>(  object: string,
     throw new UbusError(`路由器返回 HTTP ${response.status}`)
   }
 
-  const data = (await response.json()) as JsonRpcResponse
+  let data: JsonRpcResponse
+  try {
+    data = (await response.json()) as JsonRpcResponse
+  } catch {
+    // uhttpd answers with an HTML error page in some failure modes; without
+    // this the caller gets a raw English SyntaxError.
+    throw new UbusError('响应不是有效的 JSON')
+  }
 
   if (data.error) {
     if (data.error.code === -32002) {
@@ -144,19 +151,29 @@ export async function ubusCall<T = unknown>(  object: string,
   const status = Number(result[0])
   const payload = result[1]
   if (status !== 0) {
+    // libubus-obj.h 的现行顺序（OpenWrt 22.03+ 起含 METHOD_NOT_FOUND）：
+    // 1 无效命令 / 2 参数错误 / 3 方法未找到 / 4 未找到 / 5 没有数据 /
+    // 6 没有权限 / 7 超时 / 8 不支持。旧编号把 2-7 整体错位过，别照抄。
     const messages: Record<number, string> = {
       1: '无效命令',
-      2: '没有权限',
-      3: '参数错误',
-      4: '方法未找到',
-      5: '内部错误',
-      6: '超时',
-      7: '不支持的操作'
+      2: '参数错误',
+      3: '方法未找到',
+      4: '未找到（条目不存在）',
+      5: '没有数据',
+      6: '没有权限',
+      7: '超时',
+      8: '不支持的操作'
     }
     throw new UbusError(messages[status] || `ubus 调用失败（${status}）`, status)
   }
 
   return (payload ?? null) as T
+}
+
+// uci delete/rename 对不存在的条目返回 NOT_FOUND：新旧 ubus 编号分别是 4/3，
+// 两个都要认，否则"删除一个本来就没有的选项"会被当成致命错误。
+export function isNotFoundError(err: unknown): boolean {
+  return err instanceof UbusError && (err.code === 3 || err.code === 4)
 }
 
 export async function cgiGet<T>(path: string): Promise<T> {

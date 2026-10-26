@@ -456,6 +456,9 @@
 
   const status = ref<SetupStatus | null>(null)
   const baseline = ref<SetupBaseline | null>(null)
+  // WAN section the wizard created (empty when the baseline already had one);
+  // the rollback must delete this exact name.
+  const createdWanSection = ref('')
   const boardModel = ref('')
   const loadError = ref('')
   const loading = ref(true)
@@ -680,7 +683,7 @@
       return
     }
     if (index === 3) {
-      await stageSetupWan(wanDraft.value)
+      createdWanSection.value = await stageSetupWan(wanDraft.value)
     }
   }
 
@@ -878,7 +881,7 @@
     const base = baseline.value
     if (!base) return
     try {
-      await restoreSetupBaseline(base)
+      await restoreSetupBaseline(base, createdWanSection.value)
       await load()
       ElMessage.success('已恢复到向导开始前的配置')
     } catch {

@@ -112,15 +112,21 @@ export async function runSystemOp<T = unknown>(
 
   if (!response.ok) {
     const code = payload?.error || 'failed'
-    throw new SystemOpError(ERROR_TEXT[code] || `操作失败（HTTP ${response.status}）`, code)
+    throw new SystemOpError(describeError(code, `操作失败（HTTP ${response.status}）`), code)
   }
 
   if (payload?.ok === false) {
     const code = payload.error || 'failed'
-    throw new SystemOpError(ERROR_TEXT[code] || '操作失败', code)
+    throw new SystemOpError(describeError(code, '操作失败'), code)
   }
 
   return payload as unknown as T
+}
+
+/** The CGI already returns readable Chinese text for many failures — keep it. */
+function describeError(code: string, fallback: string): string {
+  if (ERROR_TEXT[code]) return ERROR_TEXT[code]
+  return /[\u4e00-\u9fff]/.test(code) ? code : fallback
 }
 
 /** Convenience wrappers used by the pages. */

@@ -13,7 +13,7 @@ import {
   type UciValues
 } from '@/api/uci'
 import { requestToken, systemOps } from '@/api/systemOps'
-import { ubusCall } from '@/api/ubus'
+import { isNotFoundError, ubusCall } from '@/api/ubus'
 import { api } from '@/api/openwrt'
 import type { WirelessRadio } from '@/api/types'
 
@@ -284,6 +284,9 @@ async function removeOption(
   try {
     await uciDelete(config, section, option)
   } catch (err) {
+    // 删除不存在的选项是正常路径（向导要清理 stock 段的缺省选项），
+    // 按 ubus 错误码判断，不依赖随版本变化的中文文案。
+    if (isNotFoundError(err)) return
     const message = err instanceof Error ? err.message : String(err)
     if (!/not found|不存在|invalid|entry|no such/i.test(message)) throw err
   }
@@ -758,8 +761,14 @@ export async function readSetupWan(): Promise<SetupWanModel> {
   }
 }
 
-/** Stages the WAN interface. */
-export async function stageSetupWan(draft: SetupWanDraft): Promise<void> {
+/**
+ * Stages the WAN interface.
+ *
+ * Returns the section name it wrote to: the existing one, or the name the
+ * router assigned to the newly created section (the rollback needs it, because
+ * "wan" may have been taken).
+ */
+export async function stageSetupWan(draft: SetupWanDraft): Promise<string> {
   const existing = draft.section ? await uciGetSection('network', draft.section) : undefined
   // Older configurations bind the interface with `ifname` instead of `device`.
   const deviceOption =
@@ -778,12 +787,11 @@ export async function stageSetupWan(draft: SetupWanDraft): Promise<void> {
 
   if (!draft.section) {
     try {
-      await uciAdd('network', 'interface', values, 'wan')
+      return await uciAdd('network', 'interface', values, 'wan')
     } catch {
       // The name was taken after all — let the router pick one.
-      await uciAdd('network', 'interface', values)
+      return await uciAdd('network', 'interface', values)
     }
-    return
   }
 
   await uciSet('network', draft.section, values)
@@ -793,6 +801,7 @@ export async function stageSetupWan(draft: SetupWanDraft): Promise<void> {
       await removeOption('network', draft.section, option)
     }
   }
+  return draft.section
 }
 
 /* ------------------------------------------------------------------ *
@@ -992,21 +1001,48 @@ export async function applySetupChanges(
 }
 
 /**
+ * Deletes every wifi-iface bound to a radio. Used by the rollback for radios
+ * that had no iface before the wizard: the wizard created one, and rebuilding
+ * a draft for it would create a second (open, possibly enabled) SSID instead.
+ */
+async function removeRadioIfaces(radio: string): Promise<void> {
+  const values = await uciGet('wireless')
+  for (const iface of uciByType(values, 'wifi-iface')) {
+    if (uciString(iface, 'device') !== radio) continue
+    const name = uciString(iface, '.name')
+    if (name) await uciDelete('wireless', name)
+  }
+}
+
+/**
  * Writes the state of the router back — the rollback after a failed apply.
  *
  * The wireless password cannot be restored: it is write only on the router.
  */
-export async function restoreSetupBaseline(baseline: SetupBaseline): Promise<void> {
+export async function restoreSetupBaseline(
+  baseline: SetupBaseline,
+  createdWanSection?: string
+): Promise<void> {
   await restoreIdentity(baseline.identity)
 
-  const drafts: SetupWifiDraft[] = baseline.wireless.radios.map((radio) => ({
-    radio: radio.section,
-    iface: radio.iface,
-    ssid: radio.ssid,
-    encryption: radio.encryption,
-    key: '',
-    enabled: !radio.disabled && !radio.ifaceDisabled
-  }))
+  // Radios that had no wifi-iface before the wizard: drop the one the wizard
+  // created and restore only the radio's own enabled state.
+  for (const radio of baseline.wireless.radios) {
+    if (radio.iface) continue
+    await uciSet('wireless', radio.section, { disabled: radio.disabled ? '1' : '0' })
+    await removeRadioIfaces(radio.section)
+  }
+
+  const drafts: SetupWifiDraft[] = baseline.wireless.radios
+    .filter((radio) => radio.iface)
+    .map((radio) => ({
+      radio: radio.section,
+      iface: radio.iface,
+      ssid: radio.ssid,
+      encryption: radio.encryption,
+      key: '',
+      enabled: !radio.disabled && !radio.ifaceDisabled
+    }))
   await stageSetupWireless(drafts)
 
   if (baseline.wan.section) {
@@ -1020,8 +1056,9 @@ export async function restoreSetupBaseline(baseline: SetupBaseline): Promise<voi
       dns: baseline.wan.dns
     })
   } else {
-    // The wizard created the WAN interface — remove it again.
-    await removeOption('network', 'wan')
+    // The wizard created the WAN interface — remove that exact section again
+    // ("wan" may have been taken, in which case the router picked another name).
+    await removeOption('network', createdWanSection || 'wan')
   }
 
   await uciCommit('system')

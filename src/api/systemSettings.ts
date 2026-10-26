@@ -67,6 +67,8 @@ export interface SysDnsmasq {
 /** The main section of /etc/config/system. */
 export interface SysIdentity {
   section: string
+  /** Section of `config timeserver` in /etc/config/system (usually "ntp"). */
+  ntpSection: string
   hostname: string
   timezone: string
   /** Size of the syslog buffer in KB. */
@@ -121,6 +123,8 @@ export interface SysChange {
   rawBefore: string
   /** Raw UCI value after the change. */
   rawAfter: string
+  /** UCI list option: the new entries, written as an array (empty = delete). */
+  list?: string[]
 }
 
 /** Which part of the configuration a save touches. */
@@ -172,6 +176,7 @@ export function emptyDraft(): SysDraft {
   return {
     identity: {
       section: 'system',
+      ntpSection: 'ntp',
       hostname: '',
       timezone: '',
       logSize: 64,
@@ -300,13 +305,17 @@ function parseLeases(values: Record<string, UciSection>): SysStaticLease[] {
 
 function parseIdentity(values: Record<string, UciSection>): SysIdentity {
   const section = uciByType(values, 'system')[0]
+  // NTP servers are a list on the `config timeserver 'ntp'` section, not an
+  // option on the main system section. /etc/config/ntp does not exist.
+  const timeserver = uciByType(values, 'timeserver')[0]
   return {
     section: section?.['.name'] ?? 'system',
+    ntpSection: timeserver?.['.name'] ?? 'ntp',
     hostname: uciString(section, 'hostname'),
     timezone: uciString(section, 'timezone'),
     logSize: uciNumber(section, 'log_size', 64),
     ttylogin: uciBool(section, 'ttylogin', true),
-    ntpServers: uciList(section, 'ntp')
+    ntpServers: uciList(timeserver, 'server')
   }
 }
 
@@ -596,6 +605,26 @@ function pushChange(
   changes.push({ config, section, option, label, before, after, rawBefore, rawAfter })
 }
 
+/** A UCI list option (e.g. the NTP `list server` entries). */
+function pushListChange(
+  changes: SysChange[],
+  config: 'dhcp' | 'system',
+  section: string,
+  option: string,
+  label: string,
+  before: string[],
+  after: string[]
+): void {
+  const rawBefore = before.join(' ')
+  const rawAfter = after.join(' ')
+  if (rawBefore === rawAfter) return
+  changes.push({
+    config, section, option, label,
+    before: rawBefore || '（空）', after: rawAfter || '（空）',
+    rawBefore, rawAfter, list: after
+  })
+}
+
 /** Changes of the `system` section. */
 export function diffIdentity(next: SysIdentity, previous: SysIdentity): SysChange[] {
   const changes: SysChange[] = []
@@ -624,16 +653,14 @@ export function diffIdentity(next: SysIdentity, previous: SysIdentity): SysChang
     previous.ttylogin ? '1' : '0',
     next.ttylogin ? '1' : '0'
   )
-  pushChange(
+  pushListChange(
     changes,
     'system',
-    section,
-    'ntp',
+    next.ntpSection || previous.ntpSection,
+    'server',
     'NTP 服务器',
-    previous.ntpServers.join(' '),
-    next.ntpServers.join(' '),
-    previous.ntpServers.join(' '),
-    next.ntpServers.join(' ')
+    previous.ntpServers,
+    next.ntpServers
   )
   return changes
 }
@@ -728,11 +755,19 @@ export function cloneSnapshot(snapshot: SysSnapshot): SysSnapshot {
 /** Splits the changes into the options to write and the options to remove. */
 function changeValues(changes: SysChange[]): {
   values: Record<string, string>
+  lists: Record<string, string[]>
   removals: string[]
 } {
   const values: Record<string, string> = {}
+  const lists: Record<string, string[]> = {}
   const removals: string[] = []
   for (const change of changes) {
+    if (change.list) {
+      // A UCI list: an empty list deletes the option.
+      if (change.list.length) lists[change.option] = change.list
+      else if (change.rawBefore !== '') removals.push(change.option)
+      continue
+    }
     if (change.rawAfter === '') {
       // An empty value means the option is removed again.
       if (change.rawBefore !== '') removals.push(change.option)
@@ -740,24 +775,32 @@ function changeValues(changes: SysChange[]): {
     }
     values[change.option] = change.rawAfter
   }
-  return { values, removals }
+  return { values, lists, removals }
 }
 
 /** The same split, but with the previous values — used for the rollback. */
 function rollbackValuesOf(changes: SysChange[]): {
   values: Record<string, string>
+  lists: Record<string, string[]>
   removals: string[]
 } {
   const values: Record<string, string> = {}
+  const lists: Record<string, string[]> = {}
   const removals: string[] = []
   for (const change of changes) {
+    if (change.list) {
+      const previous = change.rawBefore ? change.rawBefore.split(/\s+/).filter(Boolean) : []
+      if (previous.length) lists[change.option] = previous
+      else if (change.list.length) removals.push(change.option)
+      continue
+    }
     if (change.rawBefore === '') {
       if (change.rawAfter !== '') removals.push(change.option)
       continue
     }
     values[change.option] = change.rawBefore
   }
-  return { values, removals }
+  return { values, lists, removals }
 }
 
 /** Stages the values of a section and persists them. */
@@ -765,9 +808,15 @@ async function writeSection(
   config: UciConfig,
   section: string,
   values: Record<string, string>,
+  lists: Record<string, string[]>,
   removals: string[]
 ): Promise<void> {
   if (Object.keys(values).length) await uciSet(config, section, values)
+  // uciSet stringifies every value, which turns a list into a scalar option;
+  // the ubus transport keeps the array shape.
+  for (const [option, list] of Object.entries(lists)) {
+    await ubusCall('uci', 'set', { config, section, values: { [option]: list } })
+  }
   for (const option of removals) await uciDelete(config, section, option)
   await uciCommit(config)
 }
@@ -779,8 +828,8 @@ async function rollbackSection(
   changes: SysChange[]
 ): Promise<void> {
   try {
-    const { values, removals } = rollbackValuesOf(changes)
-    await writeSection(config, section, values, removals)
+    const { values, lists, removals } = rollbackValuesOf(changes)
+    await writeSection(config, section, values, lists, removals)
     await systemOps.applyChanges()
   } catch {
     // Best effort only: the original error is the one the user has to see.
@@ -794,8 +843,8 @@ async function commitSection(
   changes: SysChange[]
 ): Promise<void> {
   if (!changes.length) return
-  const { values, removals } = changeValues(changes)
-  await writeSection(config, section, values, removals)
+  const { values, lists, removals } = changeValues(changes)
+  await writeSection(config, section, values, lists, removals)
 }
 
 /**
@@ -833,7 +882,6 @@ export async function saveSettings(
     ? diffPools(next.pools, previous.pools)
     : []
 
-  const systemSection = next.identity.section || previous.identity.section
   const dnsmasqSection = next.dnsmasq.section || previous.dnsmasq.section
 
   // Group the pool changes by their section, every pool is a separate one.
@@ -844,9 +892,18 @@ export async function saveSettings(
     poolBySection.set(change.section, list)
   }
 
+  // System changes may span two sections: the main `system` section and the
+  // `timeserver` section that holds the NTP server list.
+  const systemBySection = new Map<string, SysChange[]>()
+  for (const change of systemChanges) {
+    const list = systemBySection.get(change.section) ?? []
+    list.push(change)
+    systemBySection.set(change.section, list)
+  }
+
   try {
-    if (systemChanges.length) {
-      await commitSection('system', systemSection, systemChanges)
+    for (const [section, changes] of systemBySection) {
+      await commitSection('system', section, changes)
     }
     if (dnsmasqChanges.length) {
       await commitSection('dhcp', dnsmasqSection, dnsmasqChanges)
@@ -862,8 +919,8 @@ export async function saveSettings(
       await applyConfig('dhcp', poolChanges.length > 0)
     }
   } catch (err) {
-    if (systemChanges.length) {
-      await rollbackSection('system', systemSection, systemChanges)
+    for (const [section, changes] of systemBySection) {
+      await rollbackSection('system', section, changes)
     }
     if (dnsmasqChanges.length) {
       await rollbackSection('dhcp', dnsmasqSection, dnsmasqChanges)

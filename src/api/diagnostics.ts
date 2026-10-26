@@ -261,7 +261,7 @@ export function summarizeDiagnostic(tool: DiagnosticTool, output: string): strin
     if (loss) parts.push(`丢包 ${loss[1]}%`)
     const sent = text.match(/(\d+)\s+packets transmitted,\s*(\d+)\s+(?:packets\s+)?received/i)
     if (sent) parts.push(`收到 ${sent[2]}/${sent[1]}`)
-    if (rtt) parts.push(`平均 ${rtt[3]} ms`)
+    if (rtt) parts.push(`平均 ${rtt[2]} ms`)
     return parts.join(' · ') || firstLine(text) || '无输出'
   }
 

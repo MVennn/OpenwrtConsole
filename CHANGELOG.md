@@ -16,7 +16,49 @@
 
 ---
 
-## [未发布] — 2026-10-24
+## [0.4.1] — 2026-10-26
+
+### 全仓审查修复（2026-10-26）
+
+- 修复 删除不存在的 UCI 选项必报错 —— rpcd 返回 `NOT_FOUND`，但三处 `removeOption`
+  只匹配消息文案，异常被原样上抛。编辑 DHCP 型 WAN 接口、全新路由器跑完向导 WAN
+  步骤都会失败。`ubus.ts` 的状态码映射按现行 libubus 重排（2=参数错误 …
+  6=没有权限、7=超时、8=不支持），新增 `isNotFoundError()`（认 3/4）并接入
+  network / setup / wireless 三处（PITFALLS 9）
+- 修复 NTP 服务器设置永不生效 —— 原来读写 `system` 主段的标量选项 `ntp`；
+  OpenWrt 实际存放在 `config timeserver 'ntp'` 段的 `list server`。改为按段读取，
+  列表写入走数组形态，提交/回滚按段分组（PITFALLS 10）
+- 修复 `calibrateBlockSizes` 换算方向 —— 原来用 `sizeBytes / reference`，
+  512B/KiB 上报时永远匹配不到单位；改为 `reference / sizeBytes`
+- 修复 向导失败回滚 —— 原本没有 wifi-iface 的射频会再新建一个空 SSID 的开放网络；
+  改为删除向导创建的 iface、只恢复射频开关状态；同时记录实际创建的 WAN 段名，
+  避免 `wan` 名被占时删错段
+- 修复 静态租约对话框 —— `error="errors.name"` 漏了 `:`，打开即显示三行假错误、
+  真正的校验错误永远不显示
+- 修复 出站规则「源=任意」—— `any` 不是合法 zone，原样落盘会被 fw4 跳过；
+  改为不写/删除该选项
+- 修复 软件包安装不走代理 —— `action_install` 补 `apk_env` 与缓存目录，
+  与更新/升级一致
+- 修复 软件包空列表被缓存 —— 仓库查询失败的空结果不再写入 pool 缓存，
+  避免页面长期停在「可安装 0 个」
+- 修复 ShellCrash 状态端口解析 —— dns / controller 改用 `runtime_host_port`，
+  兼容 `:1053`、`0.0.0.0:1053` 与带引号写法
+- 修复 流量卸载联动 —— 关闭软件卸载时同时关掉硬件卸载，HW 开关在 SW 关闭时禁用
+- 修复 固件大小不一致仍可刷写 —— 校验失败时 `verified=false`
+- 修复 手动刷新被静默丢弃 —— 轮询忙碌时的手动刷新在 `finally` 里补跑一次
+- 修复 `formatBytes` / `formatUptime` 边界 —— `0 < bytes < 1` 不再输出
+  `512 undefined`；`0` 秒显示 `0 秒` 而不是 `—`
+- 修复 诊断摘要 —— ping 的 `min/avg/max` 取 avg（原取 max 却标「平均」）
+- 修复 软件包轮询 —— 单次瞬时失败不再终止等待，连续 3 次才放弃
+- 修复 固件上传 / CGI 调用无超时 —— 上传 10 分钟、CGI 15 秒
+- 修复 CGI 中文错误被泛化 —— `systemOps` 对已是中文的错误原文透出
+- 修复 待应用列表合并 —— 同一选项「先设后删」只留一条（按 section+option 合并）
+- 修复 ubus 响应解析 —— 非 JSON 响应包装成 `UbusError` 而不是裸 SyntaxError
+- 修复 静态路由 mask 语义 —— 新增 `routeTargetCidr()` 统一处理点分 netmask /
+  前缀数字 / 已带斜杠三种形态（`32 - mask` 会把 /24 算成 /8）（PITFALLS 11）
+- 验证 —— `npx vue-tsc --noEmit` ✓、`npm run build` ✓；9 个 CGI 与前端已部署
+  路由器，`modern-shellcrash` 的 `status` 实跑 HTTP 200、端口解析正确
+  （mixed=7890 / dns=1053 / controller=9999）
 
 ### 软件包缓存与临时目录（2026-10-24）
 
@@ -77,6 +119,8 @@
   超大 body 413。ucode 的字符串没有 `endsWith`，全局桶判定改用 `index()`
 
 ## [0.4.0] — 2026-10-23
+
+面向用户的说明见 [docs/release-notes/0.4.0.md](docs/release-notes/0.4.0.md)。
 
 ### 写入路径与请求边界（2026-10-23）
 

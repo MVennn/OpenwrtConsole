@@ -85,3 +85,33 @@ basename 字符白名单；有 `realpath` 就先规范化再判。多个入口�
 
 **怎么避**：临时目录创建失败就回 503，绝不把 trap 的目标降级到父目录；
 `rm -rf` 只允许作用于 `mkdir` 成功的那一个 `$TMP`。
+
+## 9. `uci delete` 不存在的选项返回 NOT_FOUND，按文案判断一定漏
+
+- **现象**：编辑 DHCP 型 WAN 接口、或全新路由器跑完初始化向导的 WAN 步骤时，保存直接报错。
+- **根因**：rpcd 对「删除不存在的选项」返回 `UBUS_STATUS_NOT_FOUND`，而前端容错只匹配
+  `not found|不存在|invalid|entry` 之类的消息文案；ubus 状态码映射本身还是旧编号
+  （2=没有权限…），文案对不上，异常被原样上抛。
+- **解法**：按**错误码**判断（现行 libubus：3=METHOD_NOT_FOUND、4=NOT_FOUND；
+  新旧编号都要认），不要依赖随版本变化的中文文案；状态码映射按现行枚举重排。
+- **验证**：对 DHCP 型 WAN 保存一次静态地址、再切回 DHCP；全新路由器向导走完 WAN 步骤。
+
+## 10. NTP 服务器不是 `system` 主段的 `ntp` 选项，是 `timeserver` 段的 list
+
+- **现象**：NTP 输入框永远为空；保存后 sysntpd 行为不变。
+- **根因**：OpenWrt 把 NTP 存在 `/etc/config/system` 的 `config timeserver 'ntp'` 段，
+  选项名是 `server`（list）。读写 `system` 主段的标量 `ntp` 既不报错也没人读。
+  另外 `/etc/config/ntp`、`/etc/config/timeserver` 这两个文件并不存在。
+- **解法**：读 `uciByType(values,'timeserver')[0]` 的 `uciList(section,'server')`；
+  写入必须用**数组**形态（`uciSet` 会把数组 stringify 成标量，走 ubus 原样传数组），
+  提交/回滚按段分组。
+- **验证**：设置一个 NTP 地址保存后重新进页面，值还在；`uci show system | grep ntp`。
+
+## 11. 静态路由的 mask 有两种上报形态，别用 `32 - mask` 猜
+
+- **现象**：静态路由的「生效状态」匹配不上；/24 被拼成 /8。
+- **根因**：`network route` 的应答里 `mask` 可能是点分 netmask（`255.255.255.0`），
+  接口 dump 里是前缀长度（`24`）。原代码 `32 - mask` 对前缀长度是错的，对点分串则是 NaN。
+- **解法**：统一走 `routeTargetCidr()`：已带 `/` 原样返回；点分串用 `maskToPrefix()`；
+  数字按前缀用（0..32 之外不拼）。两条取数路径共用同一函数。
+- **验证**：构造 /24 与 /8 两条静态路由，对照 `ip route` 的输出。

@@ -30,7 +30,7 @@
         </span>
         <el-switch
           :model-value="hardware"
-          :disabled="disabled"
+          :disabled="disabled || !software"
           @update:model-value="onHardware"
         />
       </div>
@@ -76,7 +76,10 @@
   })
 
   function onSoftware(value: boolean | string | number): void {
-    emit('toggle', { software: Boolean(value), hardware: props.hardware })
+    const on = Boolean(value)
+    // HW offload depends on software offload: writing hw=1 with sw=0 is an
+    // invalid combination that fw4 silently ignores.
+    emit('toggle', { software: on, hardware: on ? props.hardware : false })
   }
 
   function onHardware(value: boolean | string | number): void {

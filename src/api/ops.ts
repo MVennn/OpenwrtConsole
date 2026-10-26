@@ -324,7 +324,10 @@ export function calibrateBlockSizes(
     const match = mounts.find((mount) => sameDevice(mount.device, block.device))
     const reference = match ? match.totalBytes : largest
     if (!reference) return block
-    const unit = closestUnit(block.sizeBytes / reference)
+    // The reported value is measured in `unit` bytes (1 / 512 / 1024), so the
+    // reference divided by it equals that unit. The inverse ratio is either
+    // ~1/512 or ~1/1024 and never matches any bracket, leaving the size wrong.
+    const unit = closestUnit(reference / block.sizeBytes)
     return { ...block, sizeBytes: Math.round(block.sizeBytes * unit) }
   })
 }

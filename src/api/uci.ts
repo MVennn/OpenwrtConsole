@@ -30,9 +30,7 @@ export const UCI_CONFIGS = [
   'wireless',
   'dropbear',
   'luci',
-  'opkg',
-  'ntp',
-  'timeserver'
+  'opkg'
 ] as const
 
 export type UciConfig = (typeof UCI_CONFIGS)[number]

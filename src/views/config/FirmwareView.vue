@@ -1059,12 +1059,14 @@
       verifyNote.value = '固件文件超过 40 MB 上限，无法刷写。'
       return
     }
-    verified.value = true
     if (uploaded.value && target.size !== uploaded.value.size) {
+      // 大小不一致说明 /tmp 里的文件已不是刚上传的那个，不能放行刷写。
+      verified.value = false
       verifyNote.value = `路由器上的文件为 ${formatBytes(target.size)}，与上传的 ${formatBytes(
         uploaded.value.size
       )} 不一致，请重新上传。`
     } else {
+      verified.value = true
       verifyNote.value = '文件已写入路由器 /tmp，大小与上传文件一致。'
     }
   }

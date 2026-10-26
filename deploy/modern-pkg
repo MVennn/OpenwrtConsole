@@ -501,6 +501,16 @@ ensure_pool() {
 		return 0
 	fi
 	load_available
+	_p_rc=$?
+	# 查询失败（断网/代理不通/超时）时 available.json 为空或不是 JSON 数组。
+	# 这种结果绝不能进缓存，否则页面会一直命中"可安装 0 个"直到索引更新。
+	if [ "$_p_rc" -ne 0 ] || [ ! -s "$WORK/available.json" ] ||
+		[ "$(head -c 1 "$WORK/available.json" 2>/dev/null)" != "[" ]; then
+		printf '%s\n' "apk query failed: $(head -c 200 "$WORK/available.json.err" 2>/dev/null)" >&2
+		build_pool "$WORK/available.json" "$WORK/pool.ndjson" "$1"
+		printf '%s' "$WORK/pool.ndjson"
+		return 0
+	fi
 	build_pool "$WORK/available.json" "$WORK/pool.ndjson" "$1"
 	pool_put "$_p_key" "$WORK/pool.ndjson"
 	if pool_get "$_p_key"; then
@@ -749,7 +759,9 @@ action_install() {
 	require_confirm
 	valid_package_name "$pkg_name" || fail "400 Bad Request" '{"error":"软件包名称不合法"}'
 	cleanup_jobs
-	_id="$(start_job "$T_INSTALL" apk add --no-interactive --no-cache-packages "$pkg_name")"
+	# install 也要联网下载，必须和 update/upgrade 一样走代理并复用索引缓存。
+	apk_env
+	_id="$(start_job "$T_INSTALL" apk --cache-dir "$APK_CACHE_DIR" add --no-interactive --no-cache-packages "$pkg_name")"
 	[ -n "$_id" ] || fail "500 Internal Server Error" '{"error":"无法启动任务"}'
 	ok "{\"ok\":true,\"job_id\":\"$_id\",\"status\":\"running\",\"output\":\"正在安装 $pkg_name\",\"packages\":[]}"
 }

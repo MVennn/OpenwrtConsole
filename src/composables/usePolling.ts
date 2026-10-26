@@ -11,10 +11,16 @@ export function usePolling(task: () => Promise<void>, interval = 5000) {
   const error = ref<Error | null>(null)
   let timer: number | undefined
   let busy = false
+  let pendingManual = false
 
   async function run(silent = false): Promise<void> {
     // Do not stack requests when the router is slow; the next tick will catch up.
-    if (busy) return
+    if (busy) {
+      // A manual refresh that arrives mid-poll must not be dropped silently:
+      // run it once the current request finishes.
+      if (!silent) pendingManual = true
+      return
+    }
     busy = true
     if (!silent) refreshing.value = true
     try {
@@ -26,6 +32,10 @@ export function usePolling(task: () => Promise<void>, interval = 5000) {
     } finally {
       busy = false
       if (!silent) refreshing.value = false
+      if (pendingManual) {
+        pendingManual = false
+        void run(false)
+      }
     }
   }
 

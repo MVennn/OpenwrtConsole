@@ -148,13 +148,16 @@ export function mergeEdits(existing: StagedEdit[], incoming: StagedEdit[]): Stag
   const merged = [...(existing ?? [])]
 
   for (const edit of incoming ?? []) {
+    // Merge by section+option, not by op: "set X" followed by "delete X" is
+    // one logical change (the delete), and keeping both shows a stale set.
     const index = merged.findIndex(
-      (item) => item.op === edit.op && item.section === edit.section && item.option === edit.option
+      (item) => item.section === edit.section && item.option === edit.option
     )
     if (index < 0) {
       merged.push({ ...edit })
       continue
     }
+    // The original "before" is kept so the list reads committed → pending.
     merged[index] = { ...merged[index], ...edit, before: merged[index].before }
   }
 
