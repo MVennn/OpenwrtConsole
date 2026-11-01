@@ -113,3 +113,6 @@ third-party/**/dist/
 
 # CodeGraph 索引（本机生成，不入库）
 /.codegraph/
+
+# 本地 scratch 工作区（对齐 tools/check-docs.py 注释口径）
+/.work/
