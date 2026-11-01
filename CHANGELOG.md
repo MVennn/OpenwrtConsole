@@ -16,7 +16,30 @@
 
 ---
 
+## [0.4.2] — 2026-11-01
+
+面向用户的说明见 [docs/release-notes/0.4.2.md](docs/release-notes/0.4.2.md)。
+
+### 守卫脚本 bug 奇偶同步（2026-11-01）
+
+- `tools/check-secrets.py` 对齐 ClientTriage `c3a3952` 已修的三类漏报 ——
+  混行豁免改逐命中段（不再整行放行）、`re.search` 改 `finditer`（同一行多个
+  命中全查）、`--all` 遵循 `.gitignore`；分叉差异保留，加出处头注释（`e254e48`）
+- `tools/check-docs.py` 对齐 ClientTriage `c3a3952` / WindowsRemoteOps
+  `156562c` 已修的四处功能性 bug —— BOM 首锚点、跨盘符 relpath 崩溃、
+  冻结锚点误报、引言块只认头部；分叉差异保留，加出处头注释（`2b45a83`）
+- 文档脱敏 —— 守卫文档示例中的本机用户名改占位（`481fb47`）
+- 杂务 —— `.gitignore` 补 `/.work/`（对齐 check-docs.py 注释口径，`b5ee005`）；
+  MAINTENANCE 补 10-26 审查修复与 11-01 大扫除两轮维护记录
+
+### 0.4.1 的说明引用（2026-11-01 补）
+
+- `## [0.4.1]` 段补「面向用户的说明见 …」链接 —— 该版说明此前只有
+  VERSIONING §4 一处引用，§4 一更新就是孤儿（ClientTriage 同款坑）
+
 ## [0.4.1] — 2026-10-26
+
+面向用户的说明见 [docs/release-notes/0.4.1.md](docs/release-notes/0.4.1.md)。
 
 ### 全仓审查修复（2026-10-26）
 
