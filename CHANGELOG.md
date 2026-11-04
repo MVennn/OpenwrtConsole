@@ -16,6 +16,13 @@
 
 ---
 
+## [未发布]
+
+### 门面生成脚本依赖提示（2026-11-04）
+
+- `tools/make_social_preview.py` 缺 numpy/Pillow 时给出 `pip install numpy pillow` 提示，
+  不再裸 traceback（2026-11-04 审查 P2 系列项）
+
 ## [0.4.2] — 2026-11-01
 
 面向用户的说明见 [docs/release-notes/0.4.2.md](docs/release-notes/0.4.2.md)。
