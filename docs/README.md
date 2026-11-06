@@ -11,7 +11,7 @@
 
 | 文档 | 一句话定位 |
 |---|---|
-| [ARCHITECTURE.md](ARCHITECTURE.md) | 架构说明：浏览器 SPA → `/ubus` 与 `/cgi-bin/modern-*` → rpcd / 路由器本地 shell 的三层数据流，**10 个数据通道表**与目录分层规则 |
+| [ARCHITECTURE.md](ARCHITECTURE.md) | 架构说明：浏览器 SPA → `/ubus` 与 `/cgi-bin/modern-*` → rpcd / 路由器本地 shell 的三层数据流，**按权限模型拆分的 11 行通道表 / 10 类通道**与目录分层规则 |
 | [CGI-CONTRACT.md](CGI-CONTRACT.md) | 契约**正本**：路由器端 9 个 CGI 的请求 / 响应 JSON 形状、错误码与一次性令牌机制 |
 | [DESIGN.md](DESIGN.md) | 设计令牌与组件规范**正本**：视觉基线、信息层级、对比度标准（**源目录副本，待同步**：只读 / 可写的旧结论已过期，见 [MAINTENANCE.md](MAINTENANCE.md) §8） |
 
@@ -21,7 +21,7 @@
 |---|---|
 | [FEATURES.md](FEATURES.md) | 功能清单**正本**：每个分区能做什么、读与写的分界、已验证环境 |
 | [LIMITS.md](LIMITS.md) | 限制清单**正本**：十四条设计边界（授权白名单、诊断白名单、只支持 apk、内核更新只检测等）与为什么 |
-| [WRITE-LAYER.md](WRITE-LAYER.md) | 写入层：rpcd 的 UCI 授权白名单、写入范式（读现状 → 本地草稿 → 暂存 → 提交 → 应用）、必须走 root CGI 且需要令牌 + 确认词的七类动作 |
+| [WRITE-LAYER.md](WRITE-LAYER.md) | 写入层：rpcd 的 UCI 授权白名单、写入范式（读现状 → 本地草稿 → 暂存 → 提交 → 应用）、必须走 root CGI 且需要令牌 + 确认词的 5 类动作 |
 
 ## 三、流程与规范
 

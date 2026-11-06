@@ -68,7 +68,7 @@ ubus 对象）、`curl`（代理页与固件更新检查 / 下载）、`apk`（�
 那是 `modern-pkg` / `modern-sysupgrade` / `modern-shellcrash` 三个 CGI 加进来**之前**的口径；
 按当前实现是 10 个。
 
-下表把 `/ubus` 按 ubus 对象拆成三行（第 1–3 行）—— 它们共用同一个传输与同一套会话 ACL，
+下表共 11 行，是**通道拆分而非文件计数**；`modern-probe.lua` 是探测助手、不计 CGI。下表把 `/ubus` 按 ubus 对象拆成三行（第 1–3 行）—— 它们共用同一个传输与同一套会话 ACL，
 但**可调用的方法集合不同**，分三行写更贴近实际用法。`modern-login` 不在表里：
 它是唯一**不需要 sid** 的 CGI，单列在下面的「特殊路径」里。
 
@@ -171,7 +171,7 @@ OpenwrtConsole/
 | `composables/` | `utils/` `api/` | 依赖 `views/` |
 | `utils/` | 无（纯函数） | 依赖 `api/` `views/` |
 | `stores/` | `api/ubus.ts` | 依赖 `views/` |
-| `deploy/modern-*` | 无（路由器上的独立程序） | 依赖 `src/`；**接受请求传来的文件路径** |
+| `deploy/modern-*` | 无（路由器上的独立程序） | 依赖 `src/`；**不得接受请求传来的文件路径**（路径为字面常量 + 白名单，见 `AGENTS.md` §2） |
 
 > **v4 打破了两条分层规则（已知例外，不是新规范）**：
 > ① `src/api/configPending.ts` **反向依赖** `composables/useDraft` 的 `Draft` 类型 ——

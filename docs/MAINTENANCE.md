@@ -235,7 +235,7 @@ ssh root@<路由器IP> 'cat > /www/cgi-bin/.modern-uci.new && chmod +x /www/cgi-
 
 ### 本仓的特殊情况：快照
 
-本仓是上游 OpenWrt 运维仓的 `frontend/` 目录的**快照**，两边不自动同步。
+本仓源于上游 OpenWrt 运维仓的 `frontend/` 目录（2026-10-20 初版快照），**此后已独立演进**：仓根是独立 Vue/Vite 工程（`base:'/modern/'`），两边不自动同步。
 - 本仓的改动**不会**回流源目录；源目录的改动**不会**回流本仓。
 - `DEPLOY.md` 与 `PROGRESS.md` **已在本仓重写**（DEPLOY.md 改成环境变量占位符与
   「本仓根目录」的部署路径；PROGRESS.md 补齐 v4 / v5 / v6 三批），**不再是源目录副本**。
@@ -280,7 +280,7 @@ ssh root@<路由器IP> 'cat > /www/cgi-bin/.modern-uci.new && chmod +x /www/cgi-
 
 ## 8. 与源目录的同步状态
 
-本仓是**从上游 OpenWrt 运维仓的 `frontend/` 目录**复制出来的快照，用于让控制台能独立上传 GitHub、
+本仓**源于上游 OpenWrt 运维仓的 `frontend/` 目录**（2026-10-20 初版快照，此后已独立演进），用于让控制台能独立上传 GitHub、
 独立看懂、独立演进。源目录仍在前端开发线里被活跃修改，两边**不会自动同步**。
 
 - **快照时间**：初版 2026-10-20 18:24；**已同步到源目录 2026-10-20 23:20 的状态**。

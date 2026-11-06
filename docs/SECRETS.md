@@ -286,7 +286,7 @@ git diff --cached | grep -nE 'password["'"']?\s*[:=]|secret=|Bearer |PrivateKey'
 ### 3.3 占位用户名不算命中
 
 示例文件里的 `C:/Users/You/...`、`C:/Users/User/...`、`C:/Users/你的用户名/...`
-是给用户照着改的模板，不是本机路径。
+是给用户照着改的模板，不是本机路径；以下路径串仅作守卫正则示例，必须保持截断 / 占位形式。
 
 ---
 

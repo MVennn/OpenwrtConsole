@@ -1,16 +1,16 @@
 # OpenWrt Console · v3 开发契约（可写版本）
 
-> **一句话**：v3 可写层的开发契约（一次性多代理协作契约；长期有效的授权边界与写入范式已提炼到 [WRITE-LAYER.md](WRITE-LAYER.md)）。
+> **一句话**：v3 阶段的历史开发契约（一次性多代理协作契约；仅作该阶段事实留存）。UCI 授权边界、写入范式与 action 名一律以 [WRITE-LAYER.md](WRITE-LAYER.md) 与 [CGI-CONTRACT.md](CGI-CONTRACT.md) 为准。
 
 v3 的目标：把控制台做成 **LuCI 的完整替代品** —— 不只是看，而是能改、能应用、能运维。
 本文件是所有并行子代理的共同约定。
 
-## 0. 现状与边界
+## 0. v3 阶段的边界（历史快照）
 
 - **绝对不要在路由器上做递归扫描或全盘搜索**（`grep -r /etc /var /usr/share`、`find /`、
   遍历 overlay 或 `/tmp`）。已经有代理这么干过：233MB 内存被吃满、I/O 打满，路由器
   疑似触发看门狗重启。只允许读**单个已知路径的文件**，或用 ubus 精确取数据。
-- 路由器的 rpcd 会话**可以**写标准 UCI 配置：`uci.get/set/add/delete/commit/changes/apply` 全部可用。
+- 路由器的 rpcd 会话**可以**写标准 UCI 配置：`uci.get/set/add/delete/commit/changes` 全部可用；`uci.apply` 是历史误写，现役 root CGI action 名为 `uci-apply`（见 [WRITE-LAYER.md](WRITE-LAYER.md)）。
 - rpcd 会话**不能**做：丢弃未提交的改动（`uci.revert`）、重载服务、修改密码、恢复出厂、
   重启。这些走 root CGI `deploy/modern-uci`（已由主代理写好并部署）。
 - rpcd 的 UCI 访问是**按配置文件名授权**的：只有 `dhcp / firewall / network / system /

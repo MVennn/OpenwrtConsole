@@ -48,9 +48,10 @@
   - **触发订阅热更新**（`modern-shellcrash` 的 `sub-update`，**必须带 `confirm=yes`**），
     以及查它的进度（`sub-update-state`）；
   - **启停 ShellCrash 服务**（`modern-shellcrash` 的 `service`），并且**跟踪状态到「已就绪」**：
-    **完成记录 ≠ 状态到位** —— 路由器侧的完成记录只说明「脚本跑完了」，
+    **完成记录在 runner 确认核心状态后写入**：路由器侧的 runner 会先等 `pidof CrashCore`
+    出现（start/restart）或消失（stop），失败则写非 0 退出码；`rc != 0` 仍表示未到位。
     前端必须继续等 `running` 变成期望值（启动 / 重启等 `running === true`，停止等 `running === false`），
-    才算这次动作做完了。
+    才算这次动作做完了；不能只凭请求返回 `started:true` 判断完成。
 - **不得**在本仓里自由文本覆盖那批 yaml 的内容，**不得**在本仓里新建 / 复制那批 yaml 的真源副本。
   规则、节点、策略组的**内容变更**必须回 `ShellcrashRules` 仓改，再由那边的脚本下发到路由器。
 

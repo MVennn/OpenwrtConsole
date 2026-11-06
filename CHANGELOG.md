@@ -705,7 +705,7 @@ ShellCrash 自己的版本表，并在 GitHub 已发布、ShellCrash 尚未收�
   全部形状**读 `deploy/modern-*` 源码得出**，没有编造字段。
 - 调整 文档 —— 新写 [docs/WRITE-LAYER.md](docs/WRITE-LAYER.md)：从 [docs/V3-CONTRACT.md](docs/V3-CONTRACT.md)
   提炼 rpcd 的 UCI 授权白名单、写入范式（读现状 → 本地草稿 → 暂存 → 提交 → 应用）、
-  必须走 root CGI 且需要令牌 + 确认词的七类动作，并登记 `uciApply` 这段死代码的历史
+  必须走 root CGI 且需要令牌 + 确认词的动作清单（现役 5 类，见 [WRITE-LAYER.md](docs/WRITE-LAYER.md) §3），并登记 `uciApply` 这段死代码的历史
   （**本次同步已把它删掉**，应用一律走 `systemOps.applyChanges()` → CGI `modern-uci` 的 `uci-apply`）。
 - 调整 文档 —— 新写 [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md)：按「现象 → 排查步骤 → 原因/解法」
   固定三块结构，标题即检索词（页面白屏 / 登录后立刻掉线 / 路由报 401 / 代理页看不到策略组 /
