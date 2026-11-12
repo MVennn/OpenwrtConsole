@@ -47,7 +47,8 @@
 ```
 
 **运行时依赖**（不在本仓内，部署前需在路由器上具备）：`rpcd-mod-luci`（`luci` / `luci-rpc`
-ubus 对象）、`curl`（代理页与固件更新检查 / 下载）、`apk`（软件包页，24.10+）。
+ubus 对象）、`ucode`（`modern-login` / `modern-data` / `modern-read` 三个 CGI 的解释器，见下方 CGI 表的「解释器」列）、
+`curl`（代理页与固件更新检查 / 下载）、`apk`（软件包页，24.10+）。
 缺少时的表现与装法见 [DEPLOY.md](DEPLOY.md)「路由器运行时依赖」。
 
 **读与写的分工（记住这一条就够用）：**

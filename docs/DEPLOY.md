@@ -20,10 +20,13 @@
 | --- | --- | --- | --- |
 | `rpcd-mod-luci` | 提供 `luci` / `luci-rpc` ubus 对象；概览 / 无线 / 客户端页依赖它们。随 `luci-base` 安装，**无 LuCI 的精简固件必须单独装** | `apk add rpcd-mod-luci`（或 `apk add luci-base`） | `opkg update && opkg install rpcd-mod-luci` |
 | `curl` | 代理页访问 ShellCrash 控制接口；固件页的更新检查与下载 | `apk add curl` | `opkg update && opkg install curl` |
+| `ucode` | `modern-login` / `modern-data` / `modern-read` 这三个 CGI 的解释器（`#!/usr/bin/ucode`，用内建 `fs` / `ubus`）；其余 6 个 CGI（`modern-exec` / `modern-proxy` / `modern-uci` / `modern-pkg` / `modern-sysupgrade` / `modern-shellcrash`）只要 busybox `sh`。随 `luci-base` 装上，无 LuCI 的精简固件需单独装 | `apk add ucode` | `opkg update && opkg install ucode` |
 | `apk` | 软件包页的唯一后端（OpenWrt 24.10+）。只有 `opkg` 的固件上软件包页不可用，会返回可读错误 | 自带 | 无（软件包页不可用） |
 
 缺少 `rpcd-mod-luci` 时，概览 / 无线 / 客户端页会取不到数据；缺少 `curl` 时，代理页的所有请求
 与固件页的检查更新 / 下载会返回明确的 503 错误，而不是给出空应答。
+主动指纹探测助手 `deploy/modern-probe.lua` 另需 Lua 的 `nixio`（随 LuCI 提供，见 `deploy/deploy.sh:27`）；
+缺它时只有该探测降级，其余页面不受影响。
 
 > **部署必须同时更新 `/www/cgi-bin/modern-*`。** 只更新 `dist/` 会让新前端配旧 CGI：
 > 客户端在线状态依赖 `modern-read` 新增的 `what=neighbors`，令牌动作依赖 `modern-uci` 里
@@ -49,6 +52,8 @@ ROUTER_HOST=root@<路由器IP> ./deploy/deploy.sh
 2. 把 9 个 CGI —— `modern-login`、`modern-data`、`modern-read`、`modern-exec`、
    `modern-proxy`、`modern-uci`、`modern-pkg`、`modern-sysupgrade`、`modern-shellcrash` ——
    写入 `/www/cgi-bin/` 并 `chmod +x`（同目录临时文件 + rename 替换，避免与在处理的请求竞态）
+3. 把 `deploy/modern-probe.lua` 装成 `/usr/lib/modern/probe.lua` —— 落在 `/www` 之外，
+   终端浏览器请求不到它，只供 CGI 内部调用（见 `deploy/deploy.sh:28`）
 
 如果使用密码登录，可先配置 SSH 免密，或用 `SSH_ASKPASS` 方式：
 

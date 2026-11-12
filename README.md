@@ -17,13 +17,15 @@
 ## 这是什么
 
 一个装在你自己路由器上的 Web 管理界面，用来替代 LuCI。部署完成后浏览器打开
-`https://<你的路由器IP>/modern/` 就能用，登录用的就是路由器的 root 密码。
+`https://<你的路由器IP>/modern/` 就能用，登录用的就是路由器的 root 密码（会话 1 小时）。
 
-它不重造 OpenWrt 的管理能力，而是复用路由器本来就有的两套后端：**rpcd / ubus** 负责标准 UCI 配置的读写；**9 个 root CGI** 负责 rpcd 够不着的那部分 —— 无线关联终端、dnsmasq 运行时状态、诊断命令、代理桥、特权写操作、apk 软件包、固件刷写、ShellCrash 设置。
+它不重造 OpenWrt 的管理能力，而是复用路由器现成的两套后端：**rpcd / ubus** 负责标准 UCI 配置的读写；**9 个 root CGI** 负责 rpcd 够不着的那部分 —— 登录换会话、无线关联终端与设备指纹、dnsmasq 与邻居表运行时状态、诊断命令、代理桥、特权写操作、apk 软件包、固件刷写、ShellCrash 设置。
 
-它只往路由器的 `/www/modern` 与 `/www/cgi-bin/modern-*` 写，不改 LuCI、不碰 `/etc/config/luci`，LuCI 仍留在 `/cgi-bin/luci/` 作为应急入口。
+它只往路由器的 `/www/modern`、`/www/cgi-bin/modern-*` 与不对外暴露的探测助手 `/usr/lib/modern/probe.lua` 写，不改 LuCI、不碰 `/etc/config/luci`，LuCI 仍留在 `/cgi-bin/luci/` 作为应急入口。
 
 每个分区能做什么，见 [功能一览](https://github.com/MVennn/OpenwrtConsole/blob/main/docs/FEATURES.md)；做不到的地方，见 [已知限制](https://github.com/MVennn/OpenwrtConsole/blob/main/docs/LIMITS.md)。
+
+文档体系当前到 [v4 开发契约](https://github.com/MVennn/OpenwrtConsole/blob/main/docs/V4-CONTRACT.md)，V3 / V2 已转为历史文档，完整索引见 [docs/README.md](https://github.com/MVennn/OpenwrtConsole/blob/main/docs/README.md)。控制台自身的版本号只有一处真源 —— [CHANGELOG](https://github.com/MVennn/OpenwrtConsole/blob/main/CHANGELOG.md) 的版本标题（进位规则见 [版本规范](https://github.com/MVennn/OpenwrtConsole/blob/main/docs/VERSIONING.md)），本页不重复记数。
 
 ## 环境要求
 
@@ -33,13 +35,15 @@
 | 必需依赖 | `rpcd-mod-luci` —— 提供 `luci` / `luci-rpc` 两个 ubus 对象，精简固件要单独装 |
 | 按需依赖 | `curl`（代理页与固件更新检查）、`apk`（软件包页，需 OpenWrt 24.10+） |
 | 登录 | 路由器的 root 密码 |
-| 浏览器 | 任意现代浏览器；uhttpd 默认自签证书，首次访问会有警告 |
+| 浏览器 | 支持 ES2020 的现代浏览器（构建目标 `es2020`）；uhttpd 默认自签证书，首次访问会有警告 |
 | 本地开发 | Node.js 20+（只在本地跑前端时需要） |
+
+「任意 OpenWrt」的确切口径：只要 uhttpd + ubus/rpcd 可用就能跑，不限发行版本，实际取决于固件自带什么 —— 9 个 CGI 里 3 个的解释器是 `ucode`（`deploy/modern-login:1`）、6 个是 busybox `sh`；软件包页只支持 apk（OpenWrt 24.10+），只有 opkg 的固件上该页返回可读错误，见 [已知限制](https://github.com/MVennn/OpenwrtConsole/blob/main/docs/LIMITS.md)。已验证环境见 [功能一览](https://github.com/MVennn/OpenwrtConsole/blob/main/docs/FEATURES.md) §3。
 
 ## 安装
 
 1. 取源码并构建前端产物
-2. 部署到路由器（脚本会把 `dist/` 推到 `/www/modern`、把 9 个 `modern-*` 推到 `/www/cgi-bin/`）：
+2. 部署到路由器（脚本会把 `dist/` 推到 `/www/modern`、把 9 个 `modern-*` 推到 `/www/cgi-bin/`、把 `modern-probe.lua` 装成 `/usr/lib/modern/probe.lua`）：
 
    ```bash
    git clone https://github.com/MVennn/OpenwrtConsole.git && cd OpenwrtConsole
@@ -47,8 +51,10 @@
    ROUTER_HOST=root@<你的路由器IP> ./deploy/deploy.sh
    ```
 
+   `ROUTER_HOST` / `ROUTER_WEB` 都是环境变量，默认 `root@10.0.0.1` 与 `/www/modern`；本地需要 `tar`，SSH 走免密或 `SSH_ASKPASS`。
+
 3. 浏览器打开 `https://<你的路由器IP>/modern/`，用 root 密码登录
-4. 本地开发（可选）：`npm run dev` 之后打开 <http://localhost:5173/modern/>，Vite 会把 `/ubus` 与 `/cgi-bin` 代理到你的路由器；没有路由器也能用随仓的 mock 跑起来 —— 细节见 [贡献指南](https://github.com/MVennn/OpenwrtConsole/blob/main/CONTRIBUTING.md)。
+4. 本地开发（可选）：`npm run dev` 之后打开 <http://localhost:5173/modern/>，Vite 会把 `/ubus` 与 `/cgi-bin` 代理到路由器（默认 `https://10.0.0.1`，换设备用 `ROUTER_URL=https://<路由器IP> npm run dev`）；没有路由器也能用随仓的 mock 跑起来 —— 两条命令的写法见 [贡献指南](https://github.com/MVennn/OpenwrtConsole/blob/main/CONTRIBUTING.md)。
 
 运行时依赖怎么装、缓存怎么处理、怎么回退，见 [部署文档](https://github.com/MVennn/OpenwrtConsole/blob/main/docs/DEPLOY.md)。
 
