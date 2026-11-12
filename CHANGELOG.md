@@ -16,6 +16,58 @@
 
 ---
 
+## [0.4.4] — 2026-11-12
+
+面向用户的说明见 [docs/release-notes/0.4.4.md](docs/release-notes/0.4.4.md)。
+
+本版为**文档修订版**：`src/` 与 `deploy/` 零改动，控制台产物、使用方式与 0.4.3 一致；
+实质新增只有一处 —— 运行时依赖补了 `ucode`。
+
+### 文档正本口径修订（2026-11-12）
+
+- 调整 记忆目录定位 —— `memories/README.md` 由「ZCode 记忆库的同内容快照」改为「dsh-mnemon
+  项目记忆 Document 的 git 快照」，补正本位置（`~/.mnemon`）、按需加载路由
+  （`~/.dsh/skills/on-demand/DOCUMENTS-ROUTING.md`）、热条目只留「结论 + 指针」，
+  以及记忆与代码 / 实测冲突时以代码为准并回写记忆（`5ca2826`）。
+- 调整 通道表表述 —— `docs/ARCHITECTURE.md` 与 `docs/README.md` 写明那张表是「按权限模型
+  拆分的 11 行通道表 / 10 类通道」，是通道拆分而非文件计数；`modern-probe.lua` 是探测助手、
+  不计入 9 个 CGI（`5ca2826`）。
+- 修复 写入层动作数 —— `docs/README.md` 的 WRITE-LAYER 条目由「七类动作」改为「5 类动作」，
+  与 [WRITE-LAYER.md](docs/WRITE-LAYER.md) §3 的现役清单对齐（`5ca2826`）。
+- 调整 历史契约定位 —— `docs/V3-CONTRACT.md` 由「可写版本契约」转为 v3 阶段历史文档：开头声明
+  授权边界 / 写入范式 / action 名以 [WRITE-LAYER.md](docs/WRITE-LAYER.md) 与
+  [CGI-CONTRACT.md](docs/CGI-CONTRACT.md) 为准；`uci.apply` 标注为历史误写
+  （现役 root CGI 动作名是 `uci-apply`）（`5ca2826`）。
+- 调整 快照表述 —— `docs/MAINTENANCE.md` §7 / §8 把「本仓是上游 `frontend/` 的快照」改为
+  「源于 2026-10-20 初版快照、此后已独立演进（仓根是独立 Vue/Vite 工程，`base:'/modern/'`）」（`5ca2826`）。
+- 调整 依赖方向表述 —— `docs/ARCHITECTURE.md` 目录分层表里 `deploy/modern-*` 的「接受请求传来的
+  文件路径」改为「不得接受请求传来的文件路径（路径为字面常量 + 白名单）」，对齐 `AGENTS.md` §2（`5ca2826`）。
+- 修复 链接纪律示例 —— `docs/DOC-RULES.md` §4 的链接写法示例改成行内代码，示例链接不再被当成
+  真实目标去点验（`5ca2826`）。
+- 调整 占位路径说明 —— `docs/SECRETS.md` §3.3 补一句：守卫正则示例里的路径串必须保持截断 / 占位形式（`5ca2826`）。
+- 修复 CHANGELOG 旧段落 —— 0.3.x 段的「七类动作」改为「现役 5 类」并给出 [WRITE-LAYER.md](docs/WRITE-LAYER.md) §3 出处（`5ca2826`）。
+- 调整 ShellCrash 服务判定表述 —— `AGENTS.md` §2 写明「完成记录在 runner 确认 `pidof CrashCore`
+  后写入」，前端仍须等 `running` 到期望值，不能凭 `started:true` 判定完成（`5ca2826`）。
+
+### 依赖与版本契约段补齐（2026-11-12）
+
+- 新增 运行时依赖 `ucode` —— `docs/ARCHITECTURE.md` 运行时依赖段与 `docs/DEPLOY.md` 依赖表补一行：
+  `modern-login` / `modern-data` / `modern-read` 三个 CGI 的解释器（`#!/usr/bin/ucode`），
+  随 `luci-base` 安装、无 LuCI 的精简固件需单独装；缺它这三个页面取不到数据。
+- 新增 探测助手安装落点 —— `docs/DEPLOY.md` 部署步骤补第 3 步：`deploy/modern-probe.lua` 装成
+  `/usr/lib/modern/probe.lua`（落在 `/www` 之外，浏览器请求不到，只供 CGI 内部调用）；
+  并注明它另需 Lua 的 `nixio`，缺它只有主动指纹探测降级。
+- 调整 门面口径 —— 根 `README.md` 补「任意 OpenWrt」的确切口径（uhttpd + ubus/rpcd 即可、不限发行版；
+  9 个 CGI 里 3 个解释器是 `ucode`、6 个是 busybox `sh`；软件包页只支持 apk）、浏览器要求改为
+  「支持 ES2020」、会话有效期 1 小时、部署脚本的 `ROUTER_HOST` / `ROUTER_WEB` 与本地开发换设备用的
+  `ROUTER_URL`；并把「当前是第几版」指回 CHANGELOG 版本标题（单一真源，本页不记数）。
+- 调整 文档体系指向 —— 根 `README.md` 补一句：文档体系当前到 v4 开发契约，V3 / V2 已转为历史文档，
+  完整索引见 `docs/README.md`。
+- 修复 版本契约陈旧链接 —— `docs/VERSIONING.md` §4 的「Release 说明见」链接由 `release-notes/0.4.2.md`
+  改回 `0.4.3.md`（表格已是 0.4.3，链接落后一版）。
+- 修复 跨仓引用仓名 —— `docs/PITFALLS.md` 与 `tools/check-secrets.py` 头注释里的出处由
+  `ZcodeAIModels` 改为 `ModelBus`（该仓已改名），并把「8 个仓」改为「系列各仓」。
+
 ## [0.4.3] — 2026-11-06
 
 面向用户的说明见 [docs/release-notes/0.4.3.md](docs/release-notes/0.4.3.md)。
