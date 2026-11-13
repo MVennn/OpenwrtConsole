@@ -91,10 +91,13 @@ ssh root@<路由器IP> 'chown -R root:root /www/modern && chmod -R a+rX /www/mod
 ## 默认入口与 LuCI
 
 - `https://<路由器IP>/` → 跳转到 `/modern/`（`/www/index.html` 带 `no-cache` meta）
-- LuCI 保留在 `/cgi-bin/luci/`（或 `/index.luci.html`）作为**应急入口**
-- LuCI 主题包已删除（`apk del luci-theme-bootstrap` + 手动装的 argon），因此应急入口
-  打开时是无样式的纯 HTML；功能不受影响。恢复主题：
-  `apk add luci-theme-bootstrap`
+- 入口页真源是 `deploy/landing.html`，`deploy.sh` 每次部署都重写 `/www/index.html`
+- LuCI 保留在 `/cgi-bin/luci/`（或 `/index.luci.html`）作为**应急入口**，皮肤用 argon
+- ⚠️ `/www/index.html` 属于 `luci-base` 包：重装或升级 luci-base 会把它换回官方默认跳转，
+  表现就是「打开 `https://<路由器IP>/` 进了 LuCI 而不是控制台」。重跑 `deploy.sh` 即恢复
+- ⚠️ argon 不在任何官方 feed 里，`/www/luci-static/argon/` 丢了没有任何在线来源；
+  唯一恢复包在 `AX3000TOpenwrt/vault/backup/themes/luci-theme-argon-files.tar.gz`，
+  解包后 `uci set luci.main.mediaurlbase=/luci-static/argon` 并 commit
 
 ## 缓存与版本自愈
 
