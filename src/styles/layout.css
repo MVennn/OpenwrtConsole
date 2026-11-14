@@ -183,6 +183,16 @@
   background: var(--success-soft);
 }
 
+.pill.is-offline {
+  color: var(--warning-text);
+  background: var(--warning-soft);
+}
+
+/* The pulsing dot means "live"; an offline pill keeps it still. */
+.pill.is-offline .live-dot {
+  animation: none;
+}
+
 .live-dot {
   width: 6px;
   height: 6px;

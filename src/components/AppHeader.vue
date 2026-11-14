@@ -15,7 +15,11 @@
     </div>
 
     <div class="header-right">
-      <span class="pill is-live desktop-only">
+      <span v-if="!online" class="pill is-offline" :title="offlineHint">
+        <span class="live-dot" />
+        离线
+      </span>
+      <span v-else class="pill is-live desktop-only">
         <span class="live-dot" />
         实时监控
       </span>
@@ -74,6 +78,7 @@
     Sun
   } from 'lucide-vue-next'
   import { useTheme } from '@/composables/useTheme'
+  import { useNetworkStatus } from '@/composables/useNetworkStatus'
   import { triggerRefresh } from '@/composables/useRefresh'
   import { workspaceOf } from '@/navigation'
   import { logout } from '@/stores/session'
@@ -86,7 +91,10 @@
   const route = useRoute()
   const router = useRouter()
   const { isDark, toggleTheme } = useTheme()
+  const { online } = useNetworkStatus()
   const spinning = ref(false)
+  /** Says what is actually wrong, instead of letting every view time out alone. */
+  const offlineHint = '浏览器已离线，页面上的数据可能不是最新的'
 
   const title = computed(() => (route.meta.title as string) || '控制台')
   const workspace = computed(() => workspaceOf(route.name))

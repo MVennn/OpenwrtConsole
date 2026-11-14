@@ -55,11 +55,12 @@
 </template>
 
 <script setup lang="ts">
-  import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+  import { computed } from 'vue'
   import { RouterLink, useRoute } from 'vue-router'
   import { ChevronLeft, ExternalLink, Router as RouterIcon, X } from 'lucide-vue-next'
   import { useLuciAvailability } from '@/composables/useLuciAvailability'
   import { useMediaQuery } from '@/composables/useMediaQuery'
+  import { useNetworkStatus } from '@/composables/useNetworkStatus'
   import { WORKSPACES, workspaceOf } from '@/navigation'
 
   const props = defineProps<{
@@ -87,23 +88,11 @@
   /**
    * The dot used to be green no matter what, which made a broken uplink look
    * like a healthy management connection. It now follows the browser's own
-   * online state — the router itself is checked by every page request.
+   * online state — the router itself is checked by every page request. The
+   * state lives in useNetworkStatus so the header pill and this dot cannot
+   * disagree.
    */
-  const online = ref(navigator.onLine)
-
-  function updateOnline(): void {
-    online.value = navigator.onLine
-  }
-
-  onMounted(() => {
-    window.addEventListener('online', updateOnline)
-    window.addEventListener('offline', updateOnline)
-  })
-
-  onBeforeUnmount(() => {
-    window.removeEventListener('online', updateOnline)
-    window.removeEventListener('offline', updateOnline)
-  })
+  const { online } = useNetworkStatus()
 </script>
 
 <style scoped>
