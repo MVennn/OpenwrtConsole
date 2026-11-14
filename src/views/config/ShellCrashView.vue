@@ -1220,6 +1220,8 @@
 
   let ticker: number | null = null
   let statusTicker: number | null = null
+  /** Bumped to cancel a running keepStatusFresh() loop. */
+  let statusLoop = 0
 
   function startTicker(): void {
     stopTicker()
@@ -1268,11 +1270,17 @@
    * background even when the action itself was already reported as done.
    */
   function keepStatusFresh(expectRunning: boolean): void {
+    // A generation counter ends the previous loop when a second action starts
+    // one, and ends the running loop on unmount. Without it every action left
+    // another 3 s poller behind, and all of them kept asking the router after
+    // the page was gone.
+    const generation = ++statusLoop
     let rounds = 0
     const tick = async (): Promise<void> => {
       rounds += 1
-      if (rounds > 60) return
+      if (rounds > 60 || generation !== statusLoop) return
       await delay(3000)
+      if (generation !== statusLoop) return
       await pullStatus()
       if (status.value.running === expectRunning) return
       void tick()
@@ -1280,7 +1288,10 @@
     void tick()
   }
 
-  onBeforeUnmount(() => stopTicker())
+  onBeforeUnmount(() => {
+    statusLoop += 1
+    stopTicker()
+  })
 
   /* -------------------------------------------------------------- actions */
 

@@ -402,6 +402,8 @@
   let proxyTick = 0
   let seedTimer: number | undefined
   let proxySeedTimer: number | undefined
+  /** Set on unmount so a timer callback that is already queued stops re-arming. */
+  let unmounted = false
   let delayProbe = false
   let shellCrashTick = 0
 
@@ -580,11 +582,15 @@
   // so the chart renders within a couple of seconds instead of waiting for
   // the next polling tick.
   function scheduleSeed(): void {
-    if (traffic.value.length >= 2 || seedTimer !== undefined) return
+    // Without the guard a callback that was already queued when the view went
+    // away re-arms itself, and the page keeps asking the router for the device
+    // list every 1.2 s long after it is gone.
+    if (unmounted || traffic.value.length >= 2 || seedTimer !== undefined) return
     seedTimer = window.setTimeout(async () => {
       seedTimer = undefined
       try {
         const list = await api.networkDevices()
+        if (unmounted) return
         const device = findWanDevice(list)
         if (device?.stats) pushTraffic(device.stats.rx_bytes, device.stats.tx_bytes)
       } catch {
@@ -594,12 +600,12 @@
     }, 1200)
   }
 
-  async function loadProxy(): Promise<void> {
+  async function loadProxy(signal?: AbortSignal): Promise<void> {
     try {
       const [version, connections, proxies] = await Promise.all([
-        api.shellcrash.version(),
-        api.shellcrash.connections(),
-        api.shellcrash.proxies()
+        api.shellcrash.version(signal),
+        api.shellcrash.connections(signal),
+        api.shellcrash.proxies(signal)
       ])
       proxy.running = Boolean(version?.version)
       proxy.version = version?.version || ''
@@ -612,6 +618,9 @@
       proxy.groups = Object.values(proxies).filter(isVisibleGroup).length
       probeProxyDelay(proxy.node)
     } catch {
+      // Leaving the page aborts the round; keep the last known state instead of
+      // claiming the service stopped.
+      if (signal?.aborted) return
       proxy.running = false
     }
   }
@@ -654,16 +663,16 @@
     }
   }
 
-  const { loaded, error, refreshing, refresh } = usePolling(async () => {
+  const { loaded, error, refreshing, refresh } = usePolling(async ({ signal }) => {
     const [nextBoard, nextInfo, nextInterfaces, nextDevices, nextWireless, nextLeases, nextHints] =
       await Promise.all([
-        api.board(),
-        api.systemInfo(),
-        api.interfaces(),
-        api.networkDevices(),
-        api.wireless(),
-        api.dhcpLeases(),
-        api.hostHints()
+        api.board(signal),
+        api.systemInfo(signal),
+        api.interfaces(signal),
+        api.networkDevices(signal),
+        api.wireless(signal),
+        api.dhcpLeases(signal),
+        api.hostHints(signal)
       ])
 
     board.value = nextBoard
@@ -684,13 +693,13 @@
     scheduleSeed()
 
     try {
-      stations.value = await api.stations()
+      stations.value = await api.stations(signal)
     } catch {
       stations.value = {}
     }
 
     proxyTick += 1
-    if (proxyTick === 1 || proxyTick % 3 === 0) await loadProxy()
+    if (proxyTick === 1 || proxyTick % 3 === 0) await loadProxy(signal)
 
     // The ShellCrash state changes rarely, so it is read every 30 seconds.
     shellCrashTick += 1
@@ -708,12 +717,17 @@
   onMounted(() => {
     // The first full poll waits for seven parallel calls; seed the proxy card
     // earlier so it does not sit in the empty state for a whole round.
-    proxySeedTimer = window.setTimeout(() => void loadProxy(), 1200)
+    proxySeedTimer = window.setTimeout(() => {
+      proxySeedTimer = undefined
+      if (unmounted) return
+      void loadProxy()
+    }, 1200)
   })
 
   onBeforeUnmount(() => {
-    if (seedTimer) window.clearTimeout(seedTimer)
-    if (proxySeedTimer) window.clearTimeout(proxySeedTimer)
+    unmounted = true
+    if (seedTimer !== undefined) window.clearTimeout(seedTimer)
+    if (proxySeedTimer !== undefined) window.clearTimeout(proxySeedTimer)
   })
 
   const trafficOption = computed<EChartsCoreOption>(() => {

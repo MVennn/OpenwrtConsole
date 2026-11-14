@@ -15,19 +15,30 @@ function sessionExpired(): never {
 async function timedFetch(
   input: string,
   init: RequestInit = {},
+  signal?: AbortSignal,
   timeout = 10000
 ): Promise<Response> {
   const controller = new AbortController()
   const timer = window.setTimeout(() => controller.abort(), timeout)
+  // The caller may cancel the request as well, e.g. when the view that started
+  // the poll is gone. That abort is not a timeout and must not be reported as
+  // one, otherwise the page shows "check the router connection" on navigation.
+  const onAbort = (): void => controller.abort()
+  if (signal) {
+    if (signal.aborted) controller.abort()
+    else signal.addEventListener('abort', onAbort)
+  }
   try {
     return await fetch(input, { ...init, signal: controller.signal })
   } catch (err) {
+    if (signal?.aborted) throw err
     if (err instanceof DOMException && err.name === 'AbortError') {
       throw new UbusError('请求超时，请检查路由器连接')
     }
     throw err
   } finally {
     window.clearTimeout(timer)
+    signal?.removeEventListener('abort', onAbort)
   }
 }
 
@@ -93,11 +104,14 @@ async function sessionAlive(): Promise<boolean> {
 
 /**
  * Calls a ubus object over uhttpd's /ubus endpoint using the LuCI session id.
- * The session id is created by /cgi-bin/modern-login and kept in sessionStorage.
+ * The session id is created by /cgi-bin/modern-login and kept in localStorage
+ * (sessionStorage is only read as a fallback for sessions from older builds).
  */
-export async function ubusCall<T = unknown>(  object: string,
+export async function ubusCall<T = unknown>(
+  object: string,
   method: string,
-  params: Record<string, unknown> = {}
+  params: Record<string, unknown> = {},
+  signal?: AbortSignal
 ): Promise<T> {
   const sid = getSessionId()
   if (!sid) sessionExpired()
@@ -113,7 +127,7 @@ export async function ubusCall<T = unknown>(  object: string,
         method: 'call',
         params: [sid, object, method, params]
       })
-    })
+    }, signal)
   } catch (err) {
     if (err instanceof UbusError) throw err
     throw new UbusError('无法连接路由器，请检查网络连接')
@@ -176,17 +190,18 @@ export function isNotFoundError(err: unknown): boolean {
   return err instanceof UbusError && (err.code === 3 || err.code === 4)
 }
 
-export async function cgiGet<T>(path: string): Promise<T> {
+export async function cgiGet<T>(path: string, signal?: AbortSignal): Promise<T> {
   const sid = getSessionId()
   if (!sid) sessionExpired()
 
   // uhttpd does not forward custom headers to CGI and self-signed HTTPS pages
   // may reject Secure cookies, so the validated sid travels in the query.
   const separator = path.includes('?') ? '&' : '?'
-  const response = await timedFetch(`${path}${separator}sid=${encodeURIComponent(sid)}`, {
-    credentials: 'same-origin',
-    cache: 'no-store'
-  })
+  const response = await timedFetch(
+    `${path}${separator}sid=${encodeURIComponent(sid)}`,
+    { credentials: 'same-origin', cache: 'no-store' },
+    signal
+  )
 
   if (response.status === 401) sessionExpired()
   if (!response.ok) throw new UbusError(`请求失败（HTTP ${response.status}）`)
