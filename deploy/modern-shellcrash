@@ -295,7 +295,15 @@ mask_secrets() {
 # Reads one key from the ShellCrash config. The surrounding single quotes of
 # a quoted value are removed, so the console always sees the plain value.
 cfg_get() {
-	_v=$(sed -n "s/^$1=//p" "$CFG_FILE" 2>/dev/null | head -n 1)
+	case "$1" in
+		'' | *[!A-Za-z0-9_]*) return 0 ;;
+	esac
+	# The key is matched as a literal prefix: a value in the config file can
+	# never turn into a regular expression here, and awk stops at the first
+	# hit, so the extra `head` process is gone as well.
+	_v=$(CFG_KEY="$1=" awk 'index($0, ENVIRON["CFG_KEY"]) == 1 {
+		print substr($0, length(ENVIRON["CFG_KEY"]) + 1); exit
+	}' "$CFG_FILE" 2>/dev/null)
 	case "$_v" in
 		\'*\') _v=${_v#\'}; _v=${_v%\'} ;;
 	esac
@@ -323,7 +331,12 @@ running_pid() {
 }
 
 autostart_enabled() {
-	ls "$INITD_DIR" 2>/dev/null | grep -q 'shellcrash'
+	# A glob test says the same as `ls | grep -q` without forking two
+	# processes; an unreadable directory simply matches nothing.
+	for _init in "$INITD_DIR"/*shellcrash*; do
+		[ -e "$_init" ] && return 0
+	done
+	return 1
 }
 
 # Reads a scalar from the runtime mihomo config.
@@ -924,7 +937,11 @@ action_subs() {
 	_update=""
 	_update_url=""
 	if [ -n "$_url_id" ] && [ -f "$SERVERS_LIST" ]; then
-		_row=$(grep "^$_url_id[[:space:]]" "$SERVERS_LIST" 2>/dev/null | head -n 1)
+		# The id is compared as a whole field instead of being pasted into a
+		# regular expression, so a value in the config file cannot change what
+		# the pattern matches. One awk replaces the grep/head pair.
+		_row=$(SUB_ID="$_url_id" awk '$1 == ENVIRON["SUB_ID"] { print; exit }' \
+			"$SERVERS_LIST" 2>/dev/null)
 		_update=$(printf '%s' "$_row" | awk '{print $2}')
 		_update_url=$(printf '%s' "$_row" | awk '{print $3}')
 	fi
