@@ -129,3 +129,33 @@ basename 字符白名单；有 `realpath` 就先规范化再判。多个入口�
   非 GBK 字符降级成 `?` 而不是抛异常。同一问题首次记录见 ModelBus 仓「踩坑总汇」第 36 节（跨仓引用，非本仓路径）。
 - **验证**：`python -I tools/check-docs.py` → `[OK] …`、退出码 0；反证：把 `✓` 改回原样，
   同一命令退出码 1 并抛 `UnicodeEncodeError`。
+
+## 13. 轮询在组件卸载后还在发请求，失败时按固定间隔死循环 【前端】
+
+- **现象**：从仪表盘切到别的页，路由器侧仍能看到每 5 秒一次的状态轮询；路由器变慢或刚重启时，
+  前端每 5 秒把 7 个 ubus 调用再打一遍，页面卡在「检查路由器连接」，负载越滚越高。
+- **根因**：旧的 `usePolling` 用 `setInterval` 起循环，`onUnmounted` 只清了刷新按钮的状态，既没清
+  定时器，也没取消已经发出去的请求；失败轮次与成功轮次用同一个间隔，等于把「路由器已经很难受」
+  翻译成「再快一点打它」。`ShellCrashView` 的 3 秒状态轮询另有一条自己排的定时器，切页后同样继续跑。
+- **解法**：`src/composables/usePolling.ts` 改成单定时器链 —— 每轮结束才排下一轮，`schedule()` 用
+  `timer !== undefined` 保证只有一个 timeout 活着；失败按 `interval × 2^n`（封顶 60 秒）退避，成功一轮
+  立刻回到原间隔；`onUnmounted` 置 `disposed`、清定时器并 `controller.abort()`，任务通过
+  `PollContext.signal` 把取消传进 `timedFetch`（取消不报成超时）；`ShellCrashView` 的轮询改代际计数，
+  切页或新 action 都会让旧循环自行结束。
+- **验证**：`.work/tscheck/probe-polling.mjs` 真跑 → `{"beforeUnmount":4,"afterUnmount":4,"callsAfterUnmount":0,
+  "failingRounds":3,"failuresSeen":3}`，退出码 0。
+- **现状（未全量接入）**：只有 `DashboardView` 把 `ctx.signal` 传进 `timedFetch`，其余十个调用点在切页时
+  在途请求仍会跑完 —— 退避与 `disposed` 已生效（不会无限重试、不会回写已卸载的视图），
+  取消尚未生效。给它们补 signal 是机械改动，但每个调用点都要接 `PollContext`，留作独立一轮。
+
+## 14. 配置值被拼进 `sed` 正则，键名也没校验 【shell】
+
+- **现象**：`deploy/modern-shellcrash` 的 `cfg_get` 在某些配置值上返回错误结果或空值。
+- **根因**：旧实现把「键名 + 配置值」一起拼进 `sed` 表达式，配置值里的 `.` `*` `[` `\` 会被当成正则
+  元字符；同时每读一个键都要额外起一个 `head` 子进程。
+- **解法**：键名先过白名单 `case "$1" in '' | *[!A-Za-z0-9_]*) return 0 ;; esac`，再用
+  `CFG_KEY="$1=" awk 'index($0, ENVIRON["CFG_KEY"]) == 1 { print substr($0, length(ENVIRON["CFG_KEY"]) + 1); exit }'`
+  做字面前缀匹配（键经 `ENVIRON` 传入，不经 `-v` 的转义层），值不再进任何正则，`head` 一并去掉。
+  代价：将来若要读带 `.` 或 `-` 的键，必须先扩白名单，否则静默返回空值（表现是「配置读不到」）。
+- **验证**：`.work/t-console-shell.sh` 对照新旧实现 —— `cfg_get` 五项、`autostart_enabled` 四场景、
+  `action_subs` 三个 id 结果完全一致；注入用例 `key='.*'` 旧实现返回 `<ali as>`、新实现返回 `<>`。

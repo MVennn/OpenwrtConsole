@@ -16,6 +16,27 @@
 
 ---
 
+## [未发布]
+
+### 轮询退避与取消、配置读取加固、顶栏离线提示（2026-11-14）
+
+- 重写 `src/composables/usePolling.ts`：单定时器链 + 失败退避（2×/4×…封顶 60 秒）+ 卸载 `abort`，
+  任务签名改为 `(ctx: PollContext) => Promise<void>`，返回值多出 `failures`；切页后不再有请求打到路由器
+- `src/api/ubus.ts` 的 `timedFetch` 增加 `signal` 参数（`timeout` 仍是第 4 个位置参数），调用方取消不再
+  被报成「请求超时」；`ubusCall` / `cgiGet` 透传 `signal`
+- `src/api/openwrt.ts` 每个读方法增加可选 `signal` 并透传，省略时行为与旧版逐字符一致
+- `src/views/DashboardView.vue` 的 7 个并行读带 `signal`，卸载时保留代理卡旧状态、掐断 `scheduleSeed` 自续链
+- `src/views/config/ShellCrashView.vue` 的 3 秒状态轮询改代际计数，切页与新 action 都会结束旧循环
+- 新增 `src/composables/useNetworkStatus.ts`：模块级 `online` 单一真值 + online/offline 监听；
+  `AppSidebar` 删掉本地监听（净减 12 行），`AppHeader` 离线时显示「离线」胶囊与提示
+- `src/styles/layout.css` 新增 `.pill.is-offline` 配色与静止呼吸点
+- `deploy/modern-shellcrash` 的 `cfg_get` 改键名白名单 + `awk index()` 字面前缀匹配（配置值不再进正则，
+  去掉每键一个 `head` 进程）；`autostart_enabled` 由 `ls | grep -q` 改 glob 判断；`action_subs` 取行改
+  `awk '$1 == ENVIRON["SUB_ID"]'`
+- `docs/ARCHITECTURE.md` composables 计数 7 → 8（新增 `useNetworkStatus`）；`docs/PITFALLS.md` 新增第 13、14 条
+
+---
+
 ## [0.4.4] — 2026-11-12
 
 面向用户的说明见 [docs/release-notes/0.4.4.md](docs/release-notes/0.4.4.md)。

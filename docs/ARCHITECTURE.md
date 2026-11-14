@@ -146,7 +146,7 @@ OpenwrtConsole/
 │  ├─ api/            21 个模块：19 个功能域模块 + configPending.ts（四个配置页共享的暂存区工具）+ proxyState.ts（浏览器本地出口状态）；只做「取数 / 发请求 / 解析成类型」
 │  ├─ views/          页面组件；只做「展示与交互」，不直接 fetch
 │  ├─ components/     44 个非归档组件（按域分子目录，带前缀）；新增 cfg-pending/ 、config-sc/ 、fw-verify/ 三个子目录，proxy-* / monitor-* / DraftNotice.vue 平铺在根
-│  ├─ composables/    7 个：与视图解耦的响应式逻辑（轮询、主题、刷新、构建自愈、useDraft 草稿与未保存守卫、useMediaQuery 媒体查询、useLuciAvailability 入口探测）
+│  ├─ composables/    8 个：与视图解耦的响应式逻辑（轮询、主题、刷新、构建自愈、useDraft 草稿与未保存守卫、useMediaQuery 媒体查询、useLuciAvailability 入口探测、useNetworkStatus 在线状态）
 │  ├─ layouts/        AppLayout（侧栏 + 顶栏 + 滚动内容）
 │  ├─ plugins/        Element Plus 的显式注册与样式清单
 │  ├─ router/         路由表与路由守卫
